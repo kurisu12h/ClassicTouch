@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<title>方案 C 现代卡片：首页</title>
+<link rel="stylesheet" href="common.css">
+<style>
+  body { background: linear-gradient(#f4f4f8, #e8e9ef); color: #111; }
+  h1 { position: absolute; top: 60px; left: 22px; font: 700 32px -apple-system, "PingFang SC"; letter-spacing: .3px; }
+  .glass { background: rgba(255,255,255,.72); border: 1px solid rgba(255,255,255,.9); backdrop-filter: blur(20px);
+           box-shadow: 0 6px 18px rgba(30,35,60,.10), inset 0 1px 0 rgba(255,255,255,.9); }
+  .import { top: 60px; right: 18px; width: 44px; height: 44px; border-radius: 22px; display: grid; place-items: center; }
+  .jit { top: 108px; left: 20px; height: 30px; padding: 0 12px 0 9px; border-radius: 15px; display: flex; align-items: center; gap: 5px;
+         font: 500 13px -apple-system, "PingFang SC"; color: #555a66; }
+  .stat { top: 114px; right: 22px; font: 13px -apple-system, "PingFang SC"; color: #8a8f9c; }
+
+  .card { position: absolute; top: 152px; width: 318px; height: 556px; border-radius: 34px; overflow: hidden; color: #fff;
+          box-shadow: 0 24px 50px rgba(20,24,40,.22), 0 2px 6px rgba(20,24,40,.1); }
+  .card .yr { position: absolute; top: 24px; left: 24px; font: 600 13px -apple-system; letter-spacing: 1.5px; opacity: .55; }
+  .card .os { position: absolute; top: 44px; left: 24px; font: 600 17px -apple-system; opacity: .85; }
+  .card .ver { position: absolute; top: 62px; left: 22px; font: 700 60px -apple-system, "SF Pro Display"; letter-spacing: -1.5px; }
+  .card .chip { position: absolute; top: 140px; left: 24px; padding: 4px 10px; border-radius: 12px; font: 500 12.5px -apple-system, "PingFang SC";
+                color: #ffc76a; background: rgba(255,180,60,.16); border: 1px solid rgba(255,180,60,.38); }
+  .card .dev { position: absolute; top: 184px; left: 50%; transform: translateX(-50%); filter: drop-shadow(0 18px 22px rgba(0,0,0,.45)); }
+  .card .model { position: absolute; top: 432px; left: 24px; font: 600 21px -apple-system, "PingFang SC"; }
+  .card .meta { position: absolute; top: 461px; left: 24px; font: 14px -apple-system, "PingFang SC"; opacity: .65; font-variant-numeric: tabular-nums; }
+  .card .go { position: absolute; left: 20px; right: 20px; bottom: 20px; height: 50px; border-radius: 25px; background: #fff; color: #111;
+              display: grid; place-items: center; font: 600 17px -apple-system, "PingFang SC"; }
+  .card .glow { position: absolute; left: -40px; right: -40px; top: 150px; height: 300px;
+                background: radial-gradient(closest-side, rgba(255,255,255,.16), transparent); }
+
+  .dots { top: 724px; left: 0; right: 0; display: flex; justify-content: center; gap: 8px; }
+  .dots i { width: 7px; height: 7px; border-radius: 4px; background: #c4c7d0; }
+  .dots i.on { width: 20px; background: #3a3d47; }
+
+  .mini { top: 756px; left: 12px; right: 12px; height: 64px; border-radius: 24px; display: flex; align-items: center; gap: 12px; padding: 0 12px 0 16px; }
+  .mini .t { font: 600 15px -apple-system, "PingFang SC"; }
+  .mini .s { margin-top: 2px; font: 13px -apple-system, "PingFang SC"; color: #7b808c; }
+  .mini .play { width: 42px; height: 42px; border-radius: 21px; background: #111; display: grid; place-items: center; }
+</style></head>
+<body>
+<h1>选择系统</h1>
+<div class="abs import glass" data-icon="tray 21 #222 1.9"></div>
+<div class="abs jit glass"><span data-icon="boltOutline 15 #8a8f9c 1.8"></span>JIT 还没开 · 开机时自动开启</div>
+<div class="abs stat">3 个系统 · 5.8 GB</div>
+
+<!-- 横向分页卡片，按系统版本排；这里停在第一张 -->
+<div class="card" style="left:42px; background: linear-gradient(165deg, #55575e 0%, #2a2b30 45%, #141417 100%)">
+  <div class="glow"></div>
+  <div class="yr">2009</div>
+  <div class="os">iPhone OS</div>
+  <div class="ver">3.1.3</div>
+  <div class="chip">实验性 · 熄屏后可能卡住</div>
+  <div class="dev" data-device="ipod2 132 assets/guest-ios3.png"></div>
+  <div class="model">iPod touch（第 2 代）</div>
+  <div class="meta">7E18 · 972 MB</div>
+  <div class="go">开机</div>
+</div>
+<div class="card" style="left:374px; background: linear-gradient(165deg, #6b93bf 0%, #3a5f8a 45%, #1d3350 100%)"></div>
+
+<div class="abs dots"><i class="on"></i><i></i><i></i></div>
+
+<!-- 正在运行的那台：像播放器的迷你条，点一下回到画面 -->
+<div class="abs mini glass">
+  <div data-device="4 24 assets/guest-ios7.png"></div>
+  <div style="flex:1">
+    <div class="t">iPhone 4 · iOS 7.1.2</div>
+    <div class="s">已暂停 · 点按回到画面</div>
+  </div>
+  <div class="play" data-icon="play 18 #fff"></div>
+</div>
+
+<script src="common.js"></script>
+<script>fillDevices(); hostChrome('#111');</script>
+</body></html>

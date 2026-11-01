@@ -1,140 +1,92 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8">
-<title>方案 A 时光机：首页</title>
+<title>方案 A 年表：首页</title>
 <link rel="stylesheet" href="common.css">
 <style>
-  body { background: radial-gradient(120% 60% at 50% 0%, #1f2a4a 0%, #0c1122 55%, #070a14 100%); color: #fff; }
-  /* 表盘一样的同心圆，暗示「时间」 */
-  .dial { position: absolute; top: -260px; left: 50%; width: 640px; height: 640px; margin-left: -320px; border-radius: 50%;
-          background: repeating-radial-gradient(circle, rgba(255,255,255,.035) 0 1px, transparent 1px 38px); }
-  .kicker { top: 64px; left: 22px; font: 600 11px -apple-system; letter-spacing: 2.4px; color: #7f89a8; }
-  h1 { position: absolute; top: 84px; left: 22px; font: 700 30px -apple-system, "PingFang SC"; letter-spacing: .5px; }
-  .sub { top: 126px; left: 22px; font: 14px -apple-system, "PingFang SC"; color: #8d97b5; }
-  .import { top: 64px; right: 18px; width: 42px; height: 42px; border-radius: 21px; display: grid; place-items: center;
-            background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.14); }
+  /* 白纸黑字的年表：大号窄体年份、细线分隔、线描机身；红色只用来标「正在运行」和要注意的事 */
+  :root { --ink: #111; --mid: #6e6e73; --light: #b9b9be; --rule: #e4e4e7; --red: #d7261e; }
+  body { background: #fff; color: var(--ink); }
+  .num { font-family: "DIN Condensed", "DIN Alternate", -apple-system; font-weight: bold; }
+  .app { top: 64px; left: 22px; font: 600 15px -apple-system, "PingFang SC"; }
+  .import { top: 58px; right: 16px; width: 36px; height: 36px; display: grid; place-items: center; }
+  h1 { position: absolute; top: 96px; left: 22px; font: 700 31px -apple-system, "PingFang SC"; letter-spacing: .5px; }
+  .range { position: absolute; top: 100px; right: 22px; font-size: 30px; line-height: 34px; color: var(--light); }
+  .meta { top: 140px; left: 22px; font: 13.5px -apple-system, "PingFang SC"; color: var(--mid); }
+  .bar { top: 170px; left: 22px; right: 22px; height: 3px; background: var(--ink); }
 
-  /* 年份刻度条：能左右拖，拖到哪年下面的时间线就滚到哪年 */
-  .ruler { top: 160px; left: 0; right: 0; height: 74px; }
-  .ruler .base { position: absolute; left: 0; right: 0; top: 30px; height: 1px; background: rgba(255,255,255,.14); }
-  .tick { position: absolute; top: 22px; width: 1px; height: 8px; background: rgba(255,255,255,.18); }
-  .tick.major { top: 16px; height: 14px; background: rgba(255,255,255,.4); }
-  .year { position: absolute; top: 40px; width: 50px; margin-left: -25px; text-align: center;
-          font: 500 12px -apple-system; color: #5d6789; font-variant-numeric: tabular-nums; }
-  .year.has { color: #c9d0e6; }
-  .year.on { color: #ffbe55; font-weight: 700; font-size: 15px; top: 38px; }
-  .dot { position: absolute; top: 5px; width: 6px; height: 6px; margin-left: -3px; border-radius: 3px; background: #ffbe55; opacity: .55; }
-  .needle { position: absolute; top: 0; width: 2px; height: 34px; margin-left: -1px; border-radius: 1px; background: #ffbe55;
-            box-shadow: 0 0 10px #ffbe55, 0 0 2px #ffbe55; }
-  .fade { position: absolute; top: 0; bottom: 0; width: 46px; }
+  .rows { top: 173px; left: 22px; right: 22px; }
+  .r { position: relative; display: flex; align-items: flex-start; border-bottom: 1px solid var(--rule); }
+  .r .y { width: 92px; flex: none; font-size: 46px; line-height: 46px; padding-top: 18px; letter-spacing: -.5px; }
+  .r .c { flex: 1; padding-top: 18px; }
+  .r .m { font: 600 17px -apple-system, "PingFang SC"; }
+  .r .v { margin-top: 3px; font: 13.5px -apple-system, "PingFang SC"; color: var(--mid); font-variant-numeric: tabular-nums; }
+  .r .w { margin-top: 5px; font: 500 13px -apple-system, "PingFang SC"; color: var(--red); }
+  .r .dev { position: absolute; right: 2px; top: 20px; }
+  .r.ghost .y { font-size: 26px; line-height: 26px; padding-top: 16px; color: var(--light); }
+  .r.ghost .c { padding-top: 17px; font: 14px -apple-system, "PingFang SC"; color: #9a9aa0; }
+  .r.later .y, .r.later .c { color: #cfcfd4; }
+  .tag { display: inline-block; margin-left: 8px; padding: 0 6px; font: 500 11px/17px -apple-system, "PingFang SC";
+         color: #a5a5ab; border: 1px solid #d6d6db; border-radius: 4px; }
+  .r.live::before { content: ""; position: absolute; left: -22px; top: 0; bottom: -1px; width: 4px; background: var(--red); }
+  .r.live .y { color: var(--red); }
+  .go { position: absolute; right: 0; top: 66px; height: 36px; padding: 0 16px; border-radius: 8px; background: var(--ink); color: #fff;
+        display: flex; align-items: center; gap: 6px; font: 600 15px -apple-system, "PingFang SC"; }
+  .foot { top: 682px; left: 22px; right: 22px; font: 12.5px -apple-system, "PingFang SC"; color: #9a9aa0; }
 
-  /* 时间线 */
-  .line { position: absolute; left: 31px; top: 256px; height: 480px; width: 2px;
-          background: linear-gradient(#ffbe55 0%, rgba(255,190,85,.25) 60%, rgba(255,190,85,.05) 100%); }
-  .node { position: absolute; left: 25px; width: 14px; height: 14px; border-radius: 7px; background: #0c1122; border: 2px solid #ffbe55; }
-  .node.ghost { border-color: #3a4462; left: 27px; width: 10px; height: 10px; }
-  .node.live { background: #ffbe55; box-shadow: 0 0 0 5px rgba(255,190,85,.18), 0 0 14px rgba(255,190,85,.7); }
-  .ghostrow { position: absolute; left: 54px; font: 13px -apple-system, "PingFang SC"; color: #4f5978; }
-  .ghostrow b { font-weight: 600; color: #6a7495; font-variant-numeric: tabular-nums; margin-right: 6px; }
-  .card { position: absolute; left: 52px; right: 16px; border-radius: 18px; padding: 14px 14px 14px 72px;
-          background: linear-gradient(160deg, rgba(255,255,255,.09), rgba(255,255,255,.04));
-          border: 1px solid rgba(255,255,255,.10); }
-  .card.live { background: linear-gradient(160deg, rgba(255,190,85,.16), rgba(255,190,85,.05)); border-color: rgba(255,190,85,.35); }
-  .card .dev { position: absolute; left: 16px; top: 50%; transform: translateY(-50%); }
-  .era { font: 600 11.5px -apple-system, "PingFang SC"; letter-spacing: 1.2px; color: #ffbe55; }
-  .model { margin-top: 3px; font: 600 18px -apple-system, "PingFang SC"; }
-  .meta { margin-top: 3px; font: 13.5px -apple-system, "PingFang SC"; color: #97a1bf; font-variant-numeric: tabular-nums; }
-  .pill { display: inline-flex; align-items: center; gap: 5px; margin-top: 8px; padding: 3px 9px; border-radius: 11px;
-          font: 500 12px -apple-system, "PingFang SC"; }
-  .pill.exp { color: #ffbe55; background: rgba(255,190,85,.12); border: 1px solid rgba(255,190,85,.3); }
-  .pill.run { color: #7ee2a0; background: rgba(126,226,160,.12); border: 1px solid rgba(126,226,160,.3); }
-  .chev { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); opacity: .45; }
-  .resume { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); width: 44px; height: 44px; border-radius: 22px;
-            background: #ffbe55; display: grid; place-items: center; box-shadow: 0 4px 14px rgba(255,190,85,.35); }
-  .note { position: absolute; left: 54px; top: 736px; font: 12px -apple-system, "PingFang SC"; color: #4f5978; }
-
-  /* JIT 状态条 */
-  .jit { left: 14px; right: 14px; top: 772px; height: 58px; border-radius: 20px; display: flex; align-items: center; gap: 12px; padding: 0 14px;
-         background: rgba(22,28,48,.85); border: 1px solid rgba(255,255,255,.10); backdrop-filter: blur(20px);
-         box-shadow: 0 10px 30px rgba(0,0,0,.4); }
-  .jit .bolt { width: 34px; height: 34px; border-radius: 17px; display: grid; place-items: center; background: rgba(255,255,255,.08); }
+  .jit { top: 740px; left: 22px; right: 22px; padding: 14px 16px; border: 1.5px solid var(--ink); border-radius: 12px;
+         display: flex; gap: 12px; align-items: flex-start; }
   .jit .t { font: 600 15px -apple-system, "PingFang SC"; }
-  .jit .d { font: 12px -apple-system, "PingFang SC"; color: #8d97b5; margin-top: 2px; }
+  .jit .d { margin-top: 3px; font: 13px/1.45 -apple-system, "PingFang SC"; color: var(--mid); }
 </style></head>
 <body>
-<div class="dial"></div>
-<div class="abs kicker">CLASSIC TOUCH</div>
-<h1>想回到哪一年？</h1>
-<div class="abs sub">已导入 3 个系统 · 共 5.8 GB</div>
-<div class="abs import" data-icon="tray 21 #dfe4f2 1.8"></div>
+<div class="abs app">Classic Touch</div>
+<div class="abs import" data-icon="tray 22 #111 1.9"></div>
+<h1>选择系统</h1>
+<div class="range num">2007–2016</div>
+<div class="abs meta">按年份排 · 已导入 3 个 · 共 5.8 GB</div>
+<div class="abs bar"></div>
 
-<div class="abs ruler" id="ruler"><div class="base"></div></div>
-
-<div class="line"></div>
-
-<div class="node ghost" style="top:262px"></div>
-<div class="ghostrow" style="top:257px"><b>2007</b>iPhone OS 1 · 还没导入</div>
-
-<div class="node" style="top:316px"></div>
-<div class="card" style="top:290px; height:122px">
-  <div class="dev" data-device="ipod2 36"></div>
-  <div class="era">2009 · IPHONE OS 3</div>
-  <div class="model">iPod touch（第 2 代）</div>
-  <div class="meta">iPhone OS 3.1.3 · 7E18 · 972 MB</div>
-  <div class="pill exp">实验性 · 熄屏后可能卡住</div>
-  <div class="chev" data-icon="chevron 18 #fff 2.2"></div>
+<div class="abs rows">
+  <div class="r ghost" style="height:58px"><div class="y num">2007–08</div><div class="c">iPhone OS 1、2 · 还没导入</div></div>
+  <div class="r" style="height:112px">
+    <div class="y num">2009</div>
+    <div class="c">
+      <div class="m">iPod touch（第 2 代）</div>
+      <div class="v">iPhone OS 3.1.3 · 7E18 · 972 MB</div>
+      <div class="w">实验性：熄屏后可能卡住</div>
+    </div>
+    <div class="dev" data-line="ipod2 24 #111"></div>
+  </div>
+  <div class="r ghost" style="height:58px"><div class="y num">2010–11</div><div class="c">iOS 4、5 · 还没导入</div></div>
+  <div class="r live" style="height:112px">
+    <div class="y num">2012</div>
+    <div class="c">
+      <div class="m">iPhone 3GS</div>
+      <div class="v">iOS 6.1.6 · 10B500 · 2.16 GB</div>
+      <div class="w">● 运行中，已暂停</div>
+    </div>
+    <div class="go"><span data-icon="play 14 #fff"></span>继续</div>
+  </div>
+  <div class="r" style="height:96px">
+    <div class="y num">2013</div>
+    <div class="c">
+      <div class="m">iPhone 4</div>
+      <div class="v">iOS 7.1.2 · 11D257 · 2.7 GB</div>
+    </div>
+    <div class="dev" data-line="4 23 #111"></div>
+  </div>
+  <div class="r ghost later" style="height:58px"><div class="y num">2014–16</div><div class="c">iOS 8、9、10<span class="tag">以后</span></div></div>
 </div>
-
-<div class="node ghost" style="top:434px"></div>
-<div class="ghostrow" style="top:429px"><b>2010–11</b>iOS 4、iOS 5 · 还没导入</div>
-
-<div class="node live" style="top:490px"></div>
-<div class="card live" style="top:464px; height:122px">
-  <div class="dev" data-device="3gs 36"></div>
-  <div class="era">2012 · iOS 6</div>
-  <div class="model">iPhone 3GS</div>
-  <div class="meta">iOS 6.1.6 · 10B500 · 2.16 GB</div>
-  <div class="pill run">● 运行中 · 已暂停</div>
-  <div class="resume" data-icon="play 20 #1a1408"></div>
-</div>
-
-<div class="node" style="top:626px"></div>
-<div class="card" style="top:600px; height:104px">
-  <div class="dev" data-device="4 34"></div>
-  <div class="era">2013 · iOS 7</div>
-  <div class="model">iPhone 4</div>
-  <div class="meta">iOS 7.1.2 · 11D257 · 2.7 GB</div>
-  <div class="chev" data-icon="chevron 18 #fff 2.2"></div>
-</div>
-<div class="note">一次只开一个系统，换系统时 App 会重新启动</div>
+<div class="abs foot">一次只能开一个系统，换系统时 App 会重新启动。</div>
 
 <div class="abs jit">
-  <div class="bolt" data-icon="boltOutline 18 #ffbe55 1.8"></div>
-  <div style="flex:1">
+  <div style="margin-top:1px" data-icon="boltOutline 20 #111 1.8"></div>
+  <div>
     <div class="t">JIT 还没开</div>
-    <div class="d">点系统后跳到 StikDebug 开启，再自动回来开机</div>
+    <div class="d">点系统后会跳到 StikDebug 开启，开好自动回来开机。要先打开 LocalDevVPN。</div>
   </div>
-  <div data-icon="help 22 #8d97b5 1.6"></div>
 </div>
 
 <script src="common.js"></script>
-<script>
-  // 年份刻度：2007 到 2014，每年 50 pt，当前停在 2012
-  const ruler = document.getElementById('ruler');
-  const years = [2007, 2008, 2009, 2010, 2011, 2012, 2013, 2014];
-  const has = [2009, 2012, 2013], on = 2012;
-  const x = y => 201 + (y - on) * 62;
-  let h = '';
-  for (let y = 2006; y <= 2015; y++) {
-    h += `<div class="tick major" style="left:${x(y)}px"></div>`;
-    for (let q = 1; q < 4; q++) h += `<div class="tick" style="left:${x(y) + q * 15.5}px"></div>`;
-    if (years.includes(y)) h += `<div class="year ${has.includes(y) ? 'has' : ''} ${y === on ? 'on' : ''}" style="left:${x(y)}px">${y}</div>`;
-    if (has.includes(y) && y !== on) h += `<div class="dot" style="left:${x(y)}px"></div>`;
-  }
-  h += `<div class="needle" style="left:201px"></div>`;
-  h += `<div class="fade" style="left:0;background:linear-gradient(90deg,#0d1326,transparent)"></div>`;
-  h += `<div class="fade" style="right:0;background:linear-gradient(-90deg,#0d1326,transparent)"></div>`;
-  ruler.insertAdjacentHTML('beforeend', h);
-  fillDevices();
-  hostChrome('#fff');
-</script>
+<script>fillDevices(); hostChrome('#111');</script>
 </body></html>

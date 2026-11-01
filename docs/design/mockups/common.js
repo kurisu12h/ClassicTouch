@@ -104,3 +104,24 @@ function fillDevices() {
     el.innerHTML = icon(name, Number(size), color, weight && Number(weight));
   });
 }
+
+/** 线描机身（只有轮廓），给排版风格的方案用。kind 同 device()，color 是线的颜色 */
+function deviceLine(kind, width, color) {
+  const spec = { ipod2: { h: 178, top: 32, rx: 15, ear: false, cam: false },
+                 '3gs': { h: 190, top: 38, rx: 17, ear: true, cam: false },
+                 '4':   { h: 196, top: 41, rx: 10, ear: true, cam: true } }[kind];
+  const H = spec.h, sy = spec.top, hy = sy + 114 + (H - sy - 114) / 2, c = color || '#111';
+  return `<svg width="${width}" height="${width * H / 100}" viewBox="-2 -2 104 ${H + 4}" style="display:block" fill="none" stroke="${c}" stroke-width="4">
+    <rect x="0" y="0" width="100" height="${H}" rx="${spec.rx}"/>
+    <rect x="12" y="${sy}" width="76" height="114" stroke-width="3"/>
+    ${spec.ear ? `<path d="M42 ${sy / 2}h16" stroke-linecap="round"/>` : ''}
+    ${spec.cam ? `<circle cx="32" cy="${sy / 2}" r="2" stroke-width="3"/>` : ''}
+    <circle cx="50" cy="${hy}" r="9" stroke-width="3"/>
+  </svg>`;
+}
+document.addEventListener('DOMContentLoaded', () => {
+  document.querySelectorAll('[data-line]').forEach(el => {
+    const [kind, w, color] = el.dataset.line.split(' ');
+    el.innerHTML = deviceLine(kind, Number(w), color);
+  });
+});

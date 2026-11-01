@@ -7,8 +7,11 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		03234A6D26640342414C462F /* ThirdPartyLicenses.txt in Resources */ = {isa = PBXBuildFile; fileRef = AD8BDE0B76585335F4967EF2 /* ThirdPartyLicenses.txt */; };
+		09FCDD8BDBA21FAD32FD383C /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 955FDB1E3A3D58F42BD9CE92 /* Assets.xcassets */; };
 		0ACA86982BBA6FF53914692F /* DeviceProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2512B84DD54D8635A47CB54A /* DeviceProfile.swift */; };
 		0D2DF6F363B50DFA7EB937BD /* DevicePack.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45F5916F2BDA1BAFA79D2BB0 /* DevicePack.swift */; };
+		3733660693167F08D396BD70 /* EmulatorChromeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9D8A19BAB8AF0257DAD4330 /* EmulatorChromeView.swift */; };
 		4069B8631F1B3F42D8A89079 /* GuestText.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E73700A3E47DD044A4B8FF8 /* GuestText.swift */; };
 		4436F9D28E2023420421A43F /* LibraryViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D6D6E19984BD47FBDA549E9 /* LibraryViewController.swift */; };
 		488A5D9C60E116A76F28C181 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EFC776F70A677EB5C931101 /* AppDelegate.swift */; };
@@ -17,9 +20,12 @@
 		63F7D11A79283DD199D8EFDF /* ImportManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = D099692C1B19A19591B8EABF /* ImportManager.swift */; };
 		917BBA88837BB826B81720C6 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = 753B8F260611E621C4A5CCEB /* Localizable.xcstrings */; };
 		9D0A78FE5CD2BF7965BE4D48 /* Stats.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9FD2DE28F6F585AB3F26F28 /* Stats.swift */; };
+		9D5A596D5A5901FDF6841C2C /* LibraryCells.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DDA30BA0ACEDBDCF061C946 /* LibraryCells.swift */; };
+		A5904C1F782D241EEC2B7C03 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 62A2DDDB8A3ACA29CB4220BA /* Theme.swift */; };
 		AAF9D2193210DD0C1A1A5662 /* JIT.swift in Sources */ = {isa = PBXBuildFile; fileRef = FBECF3E065BFEC7059594369 /* JIT.swift */; };
 		CB8312C63484BA5142B22907 /* Engine.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEF040F54EF944E5136AA601 /* Engine.swift */; };
 		CE299956E6DA1CE02437E99B /* LaunchOptions.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC34ECE44FFAEEBBB8F9942E /* LaunchOptions.swift */; };
+		E4612CF8DF10F31682CFB90C /* SettingsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9F0FBAC061D5DB332FEF15D /* SettingsViewController.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -28,15 +34,21 @@
 		45F5916F2BDA1BAFA79D2BB0 /* DevicePack.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevicePack.swift; sourceTree = "<group>"; };
 		478E0983B300CB7AC6FCFEDF /* EmulatorViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmulatorViewController.swift; sourceTree = "<group>"; };
 		5EFC776F70A677EB5C931101 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		62A2DDDB8A3ACA29CB4220BA /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		753B8F260611E621C4A5CCEB /* Localizable.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = Localizable.xcstrings; sourceTree = "<group>"; };
 		805BB8857A4E175880FF1359 /* ClassicTouch.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = ClassicTouch.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		955FDB1E3A3D58F42BD9CE92 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		9D6D6E19984BD47FBDA549E9 /* LibraryViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryViewController.swift; sourceTree = "<group>"; };
+		9DDA30BA0ACEDBDCF061C946 /* LibraryCells.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryCells.swift; sourceTree = "<group>"; };
 		A9FD2DE28F6F585AB3F26F28 /* Stats.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Stats.swift; sourceTree = "<group>"; };
+		AD8BDE0B76585335F4967EF2 /* ThirdPartyLicenses.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = ThirdPartyLicenses.txt; sourceTree = "<group>"; };
 		B1BCE7BB7506281C4210BCA8 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		BC34ECE44FFAEEBBB8F9942E /* LaunchOptions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchOptions.swift; sourceTree = "<group>"; };
 		D099692C1B19A19591B8EABF /* ImportManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImportManager.swift; sourceTree = "<group>"; };
 		DE04B6D82E6BB6C0EA057ADA /* RootViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootViewController.swift; sourceTree = "<group>"; };
 		EEF040F54EF944E5136AA601 /* Engine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Engine.swift; sourceTree = "<group>"; };
+		F9D8A19BAB8AF0257DAD4330 /* EmulatorChromeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmulatorChromeView.swift; sourceTree = "<group>"; };
+		F9F0FBAC061D5DB332FEF15D /* SettingsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsViewController.swift; sourceTree = "<group>"; };
 		FBECF3E065BFEC7059594369 /* JIT.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JIT.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -53,8 +65,10 @@
 			isa = PBXGroup;
 			children = (
 				5EFC776F70A677EB5C931101 /* AppDelegate.swift */,
+				955FDB1E3A3D58F42BD9CE92 /* Assets.xcassets */,
 				45F5916F2BDA1BAFA79D2BB0 /* DevicePack.swift */,
 				2512B84DD54D8635A47CB54A /* DeviceProfile.swift */,
+				F9D8A19BAB8AF0257DAD4330 /* EmulatorChromeView.swift */,
 				478E0983B300CB7AC6FCFEDF /* EmulatorViewController.swift */,
 				EEF040F54EF944E5136AA601 /* Engine.swift */,
 				0E73700A3E47DD044A4B8FF8 /* GuestText.swift */,
@@ -62,10 +76,14 @@
 				B1BCE7BB7506281C4210BCA8 /* Info.plist */,
 				FBECF3E065BFEC7059594369 /* JIT.swift */,
 				BC34ECE44FFAEEBBB8F9942E /* LaunchOptions.swift */,
+				9DDA30BA0ACEDBDCF061C946 /* LibraryCells.swift */,
 				9D6D6E19984BD47FBDA549E9 /* LibraryViewController.swift */,
 				753B8F260611E621C4A5CCEB /* Localizable.xcstrings */,
 				DE04B6D82E6BB6C0EA057ADA /* RootViewController.swift */,
+				F9F0FBAC061D5DB332FEF15D /* SettingsViewController.swift */,
 				A9FD2DE28F6F585AB3F26F28 /* Stats.swift */,
+				62A2DDDB8A3ACA29CB4220BA /* Theme.swift */,
+				AD8BDE0B76585335F4967EF2 /* ThirdPartyLicenses.txt */,
 			);
 			path = ClassicTouch;
 			sourceTree = "<group>";
@@ -138,7 +156,9 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				09FCDD8BDBA21FAD32FD383C /* Assets.xcassets in Resources */,
 				917BBA88837BB826B81720C6 /* Localizable.xcstrings in Resources */,
+				03234A6D26640342414C462F /* ThirdPartyLicenses.txt in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -174,15 +194,19 @@
 				488A5D9C60E116A76F28C181 /* AppDelegate.swift in Sources */,
 				0D2DF6F363B50DFA7EB937BD /* DevicePack.swift in Sources */,
 				0ACA86982BBA6FF53914692F /* DeviceProfile.swift in Sources */,
+				3733660693167F08D396BD70 /* EmulatorChromeView.swift in Sources */,
 				58E54048E1E94E9B98B31663 /* EmulatorViewController.swift in Sources */,
 				CB8312C63484BA5142B22907 /* Engine.swift in Sources */,
 				4069B8631F1B3F42D8A89079 /* GuestText.swift in Sources */,
 				63F7D11A79283DD199D8EFDF /* ImportManager.swift in Sources */,
 				AAF9D2193210DD0C1A1A5662 /* JIT.swift in Sources */,
 				CE299956E6DA1CE02437E99B /* LaunchOptions.swift in Sources */,
+				9D5A596D5A5901FDF6841C2C /* LibraryCells.swift in Sources */,
 				4436F9D28E2023420421A43F /* LibraryViewController.swift in Sources */,
 				520EFB5E543E4AF2182F3C1E /* RootViewController.swift in Sources */,
+				E4612CF8DF10F31682CFB90C /* SettingsViewController.swift in Sources */,
 				9D0A78FE5CD2BF7965BE4D48 /* Stats.swift in Sources */,
+				A5904C1F782D241EEC2B7C03 /* Theme.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

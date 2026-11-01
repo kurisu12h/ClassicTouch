@@ -1,0 +1,103 @@
+firmwarekit-n72-2x-direct-iboot.patch：让 iPod touch 2 代的 iPhone OS 2.x 不靠苹果的 SecureROM 开到主屏（docs/reports/m2-timeline.md）。
+
+问题有两层：
+  1. FirmwareKit 的 N72 配方给 2.x 做的是 SecureROM → NOR 里的 LLB → iBoot 整条链（boot_strategy bootrom），
+     不出 iBoot.bin。苹果的 SecureROM（bootrom_240_4）不在 IPSW 里，我们只有一条「b .」的占位文件，于是 CPU
+     复位后停在地址 0（实测 R15=0，黑屏、串口没有输出）。
+  2. 直接进 iBoot 以后能开到 SpringBoard，但停在「连接 iTunes」：2.x 的 lockdownd 第一次开机打开 BrickState，
+     iPod 上只有配对过的主机经 USB 设一次时间（iTunes 连上时做的事）才会关掉（qemu-ios docs/ipod/from-ipsw.md
+     「2.1.1 home screen: lockdownd's brick state」）。我们没有 USB 主机一侧（usbmuxd 的 qemu 分支、libimobiledevice）。
+
+改动（只动 N72Recipe.swift）：
+  - 2.x 也写出 iBoot.bin（IPSW 里解密过的 iBoot），lock 记 boot_strategy iboot、direct_iboot true，和 3.x 一样直接进
+    iBoot。实测 iBoot-385.49 照常从 NOR 读 DeviceTree、加载内核，NOR 的 SHSH 包装不用改。
+  - 2.x 在卷上预写 private/var/root/Library/Lockdown/data_ark.plist 的 -BrickState = false（属主 root），和 N45Recipe
+    给 1.x 做的一样，不需要 USB 主机。
+3.x 及以后不变。深睡唤醒仍要走 ROM，和 3.x 一样会卡（iPod touch 2 代的已知问题）。
+
+用法：照 LightTouchMac b06012fa4c 克隆一份源码（不改 upstream/），打这个补丁，swift build FirmwareKit。
+基于 samhenrigold/LightTouchMac b06012fa4c。
+diff --git a/Packages/FirmwareKit/Sources/FirmwareKit/N72/N72Recipe.swift b/Packages/FirmwareKit/Sources/FirmwareKit/N72/N72Recipe.swift
+index bcc6da42..f1327d72 100644
+--- a/Packages/FirmwareKit/Sources/FirmwareKit/N72/N72Recipe.swift
++++ b/Packages/FirmwareKit/Sources/FirmwareKit/N72/N72Recipe.swift
+@@ -63,7 +63,8 @@ final class N72Board: Board {
+     var helper: URL?, bootrom: URL?, ident: UnitIdentity?
+     var epoch = 0, major = 0, kcPath = "", kcMember = "", prefix = ""
+     var derived: [String: Any] = [:]
+-    var shipped: [String] { ["nor.bin", "gid-blobs.bin"] + (major >= 3 ? ["iBoot.bin"] : []) }
++    // ClassicTouch: 2.x ships iBoot.bin too and boots it directly, as 3.x does (the SecureROM stays out of the app)
++    var shipped: [String] { ["nor.bin", "gid-blobs.bin", "iBoot.bin"] }
+     var itKeybag: String { SystemEdits.Helpers.name("it_keybag", arch) }
+ 
+     init(_ o: Preparer.Options) throws {
+@@ -153,7 +154,7 @@ final class N72Board: Board {
+                 try Data(contentsOf: c.decFile("kernelcache.mach")),
+                 /Darwin Kernel Version [^\x00]+/
+             ) ?? NSNull(),
+-            "iboot": Self.firstMatch(iboot, /iBoot-[0-9.]+/) ?? "?", "direct_iboot": major >= 3
++            "iboot": Self.firstMatch(iboot, /iBoot-[0-9.]+/) ?? "?", "direct_iboot": true
+         ]
+         prefix = "Firmware/all_flash/all_flash.\(e.board).production/"
+         let img3Members = try ipsw.names().filter { $0.hasPrefix(prefix) && $0.hasSuffix(".img3") }
+@@ -185,7 +186,7 @@ final class N72Board: Board {
+         let (blobs, blobNames) = try Self.gidBlobs(ipsw, entry: e)
+         derived["gid_blobs"] = blobNames
+         try blobs.write(to: c.file("gid-blobs.bin"))
+-        if major >= 3 { try iboot.write(to: c.file("iBoot.bin")) }
++        try iboot.write(to: c.file("iBoot.bin"))
+     }
+ 
+     var volume: URL?
+@@ -211,11 +212,13 @@ final class N72Board: Board {
+             newest = try v.newestDate()
+         }
+         var owners: [(UInt32, String)] = [(0, kcPath)]
++        let seedsBrickState = major < 3
+         let report = try await VolumeMount.withVolume(volume, at: c.work.appendingPathComponent("mnt"), date: newest) {
+             v -> [String: Any] in
+             try v.put(Data(Self.fstabRW.utf8), at: SystemEdits.fstab)
+             try v.makeDirectory((kcPath as NSString).deletingLastPathComponent)
+             try v.put(member: kcMember, of: c.ipsw, at: kcPath)
++            if seedsBrickState { owners += try Self.seedBrickState(v) }
+             return try bake(v, c, owners: &owners)
+         }
+         c.activation = report["activation"] as? Activation.Result
+@@ -266,13 +269,13 @@ final class N72Board: Board {
+             "outputs": [
+                 "nand": ["pages": c.nandHashes.count],
+                 "nor": try Recipe.fileRecord(c, "nor.bin"),
+-                "iboot": major >= 3 ? try Recipe.fileRecord(c, "iBoot.bin") as Any : NSNull(),
++                "iboot": try Recipe.fileRecord(c, "iBoot.bin"),
+                 "gid_blobs": try Recipe.fileRecord(c, "gid-blobs.bin")
+             ],
+             "derived": derived,
+             // 3.x+ enters its decrypted iBoot directly (the bootrom rejects a personalized LLB); 2.x runs the real
+             // bootrom -> NOR LLB -> iBoot chain and ships no iBoot.bin (ipod2g_device.py direct_iboot)
+-            "boot_strategy": major >= 3 ? "iboot" : "bootrom",
++            "boot_strategy": "iboot",
+             // The BCM4325 CIS and NOR wifiaddr belong to the same unit. Older drivers
+             // obtain the card's address before downloading its firmware.
+             "machine": Self.machine.merging([
+@@ -300,6 +303,21 @@ final class N72Board: Board {
+             .first { FileManager.default.fileExists(atPath: $0.path) }
+     }
+ 
++    /// ClassicTouch: 2.x lockdownd turns BrickState on at first boot and, on an iPod, only a paired host setting the
++    /// time clears it (SpringBoard stays on Connect to iTunes). Seed the persistent boolean off, as N45Recipe does for
++    /// 1.x, so no USB host is needed. Returns the paths to own as root.
++    static func seedBrickState(_ v: any VolumeFiles) throws -> [(UInt32, String)] {
++        let library = "private/var/root/Library"
++        let lockdown = library + "/Lockdown"
++        let ark = lockdown + "/data_ark.plist"
++        var owned: [(UInt32, String)] = []
++        if !v.exists(library) { owned.append((0, library)) }
++        if !v.exists(lockdown) { owned.append((0, lockdown)) }
++        try SystemEdits.seedPlist(v, ark) { $0["-BrickState"] = false }
++        owned.append((0, ark))
++        return owned
++    }
++
+     static func firstMatch(_ d: Data, _ r: Regex<Substring>) -> String? {
+         String(decoding: d, as: UTF8.self).firstMatch(of: r).map { String($0.output) }
+     }

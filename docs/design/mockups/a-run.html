@@ -1,67 +1,38 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8">
-<title>方案 A 时光机：运行中</title>
+<title>方案 A 年表：运行中</title>
 <link rel="stylesheet" href="common.css">
 <style>
-  body { background: radial-gradient(120% 70% at 50% 100%, #1f2a4a 0%, #0c1122 55%, #070a14 100%); color: #fff; }
-  .title { top: 60px; left: 0; right: 0; text-align: center; }
-  .title .era { font: 600 11.5px -apple-system, "PingFang SC"; letter-spacing: 1.4px; color: #ffbe55; }
-  .title .name { margin-top: 3px; font: 600 16px -apple-system, "PingFang SC"; }
-  .info { top: 60px; right: 16px; width: 38px; height: 38px; border-radius: 19px; display: grid; place-items: center;
-          background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.12); }
-  .jitchip { top: 64px; left: 16px; height: 30px; padding: 0 11px; border-radius: 15px; display: flex; gap: 5px; align-items: center;
-             font: 500 12.5px -apple-system, "PingFang SC"; color: #ffd28a; font-variant-numeric: tabular-nums;
-             background: rgba(255,190,85,.12); border: 1px solid rgba(255,190,85,.28); }
-  .screen { top: 114px; left: 21px; width: 360px; height: 540px; border-radius: 6px; overflow: hidden;
-            box-shadow: 0 0 0 1px rgba(255,255,255,.14), 0 0 0 7px rgba(255,255,255,.03), 0 20px 60px rgba(0,0,0,.6), 0 0 80px rgba(255,190,85,.08); }
+  /* 运行时换成黑底，免得白边抢客体画面；排版和首页一样：大号年份、细线、方正的按钮 */
+  body { background: #000; color: #fff; }
+  .num { font-family: "DIN Condensed", "DIN Alternate", -apple-system; font-weight: bold; }
+  .yr { top: 60px; left: 22px; font-size: 48px; line-height: 48px; color: #fff; }
+  .cap { top: 64px; left: 106px; }
+  .cap .t { font: 600 16px -apple-system, "PingFang SC"; }
+  .cap .s { margin-top: 3px; font: 12.5px -apple-system, "PingFang SC"; color: #8e8e93; font-variant-numeric: tabular-nums; }
+  .more { top: 64px; right: 14px; width: 36px; height: 36px; display: grid; place-items: center; }
+  .rule { top: 120px; left: 22px; right: 22px; height: 1px; background: #2c2c2e; }
+  .screen { top: 136px; left: 21px; width: 360px; height: 540px; outline: 1px solid #2c2c2e; }
   .screen img { width: 100%; height: 100%; display: block; }
-
-  .mini { top: 676px; left: 0; right: 0; height: 40px; overflow: hidden; }
-  .mini .tick { position: absolute; top: 10px; width: 1px; height: 6px; background: rgba(255,255,255,.16); }
-  .mini .tick.major { top: 6px; height: 10px; background: rgba(255,255,255,.32); }
-  .mini .yr { position: absolute; top: 21px; width: 40px; margin-left: -20px; text-align: center; font: 500 10.5px -apple-system; color: #4d5778; }
-  .mini .yr.on { color: #ffbe55; font-weight: 700; }
-  .mini .needle { position: absolute; top: 2px; left: 201px; width: 2px; height: 17px; margin-left: -1px; background: #ffbe55; box-shadow: 0 0 8px #ffbe55; }
-
-  .dock { top: 724px; left: 0; right: 0; display: flex; justify-content: center; align-items: flex-start; gap: 34px; }
-  .btn { display: flex; flex-direction: column; align-items: center; gap: 7px; font: 500 12px -apple-system, "PingFang SC"; color: #8d97b5; }
-  .btn .c { width: 56px; height: 56px; border-radius: 28px; display: grid; place-items: center;
-            background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.13); margin: 10px 0; }
-  .btn.home .c { width: 76px; height: 76px; border-radius: 38px; margin: 0;
-                 background: radial-gradient(circle at 50% 35%, rgba(255,255,255,.16), rgba(255,255,255,.05));
-                 border: 1.5px solid rgba(255,190,85,.55); box-shadow: 0 0 22px rgba(255,190,85,.2); }
-  .btn.home { color: #ffd28a; }
+  .ctl { top: 712px; left: 22px; right: 22px; height: 64px; display: flex; gap: 10px; }
+  .ctl .b { flex: 1; border: 1.5px solid #48484a; border-radius: 12px; display: flex; align-items: center; justify-content: center; gap: 8px;
+            font: 600 15px -apple-system, "PingFang SC"; }
+  .ctl .b.home { flex: 1.25; background: #fff; color: #000; border-color: #fff; }
 </style></head>
 <body>
-<div class="abs jitchip"><span data-icon="bolt 13 #ffbe55"></span>JIT · 0:54</div>
-<div class="abs title">
-  <div class="era">2012 · iOS 6.1.6</div>
-  <div class="name">iPhone 3GS</div>
-</div>
-<div class="abs info" data-icon="more 20 #dfe4f2"></div>
+<div class="abs yr num">2012</div>
+<div class="abs cap"><div class="t">iPhone 3GS</div><div class="s">iOS 6.1.6 · JIT · 0:54</div></div>
+<div class="abs more" data-icon="more 22 #fff"></div>
+<div class="abs rule"></div>
 
 <div class="abs screen"><img src="assets/guest-ios6.png"></div>
 
-<div class="abs mini" id="mini"></div>
-
-<div class="abs dock">
-  <div class="btn"><div class="c" data-icon="list 22 #dfe4f2 1.8"></div>时间线</div>
-  <div class="btn home"><div class="c" data-icon="ring 30 #ffd28a 2"></div>Home</div>
-  <div class="btn"><div class="c" data-icon="power 22 #dfe4f2 2"></div>电源</div>
+<div class="abs ctl">
+  <div class="b"><span data-icon="back 18 #fff 2.2"></span>年表</div>
+  <div class="b home"><span data-icon="ring 19 #000 2.4"></span>Home</div>
+  <div class="b"><span data-icon="power 18 #fff 2.2"></span>电源</div>
 </div>
 
 <script src="common.js"></script>
-<script>
-  const on = 2012, x = y => 201 + (y - on) * 44;
-  let h = '';
-  for (let y = 2004; y <= 2018; y++) {
-    h += `<div class="tick major" style="left:${x(y)}px"></div>`;
-    for (let q = 1; q < 4; q++) h += `<div class="tick" style="left:${x(y) + q * 11}px"></div>`;
-    if (y >= 2007 && y <= 2014) h += `<div class="yr ${y === on ? 'on' : ''}" style="left:${x(y)}px">${y}</div>`;
-  }
-  h += `<div class="needle"></div>`;
-  document.getElementById('mini').innerHTML = h;
-  fillDevices();
-  hostChrome('#fff');
-</script>
+<script>fillDevices(); hostChrome('#fff');</script>
 </body></html>

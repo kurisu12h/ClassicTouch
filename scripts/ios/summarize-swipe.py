@@ -77,8 +77,9 @@ for name in order:
     gl = [p for p in lines if p[1] == "gl"]
     disp = [p for p in lines if p[1] == "disp"]
     ui = [p for p in lines if p[1] == "ui"]
+    # 每秒一行，但没有 GL 调用（或没发布帧）的那一秒不打：按这段的秒数平均，缺的算 0
+    n = max(round(dt), 1)
     if gl:
-        n = len(gl)
         row["gl"] = {
             "calls": sum(num(p[2]["calls"]) for p in gl) / n,
             "host-ms": sum(num(p[2]["host-ms"]) for p in gl) / n,
@@ -91,17 +92,26 @@ for name in order:
             "writeback-MB": sum(num(p[2]["writeback"], 1) for p in gl) / n,
             "writeback-ms": sum(num(p[2]["writeback"], 2) for p in gl) / n,
             "readpixels-ms": sum(num(p[2]["writeback"], 3) for p in gl) / n,
+            "host-cpu-ms": sum(num(p[2].get("host-cpu-ms", "0")) for p in gl) / n,
+            "readpixels-cpu-ms": sum(num(p[2].get("readpixels-cpu-ms", "0")) for p in gl) / n,
             "reread": sum(num(p[2]["reread"]) for p in gl) / n,
             "reread-MB": sum(num(p[2]["reread"], 1) for p in gl) / n,
             "top": gl[len(gl) // 2][3],
+
         }
     if disp:
-        n = len(disp)
         row["disp"] = {k: sum(num(p[2][k]) for p in disp) / n for k in ("vbl", "swaps", "relatch", "latch-ms", "update-ms")}
     if ui:
-        n = len(ui)
         row["ui"] = {k: sum(num(p[2][k]) for p in ui) / n for k in ("captures", "published", "capture-ms")}
     rows.append(row)
+
+flips = {}
+for line in events:
+    m = re.match(r"([\d.]+) flip (\d+) (begin|end) serial=(\d+)", line)
+    if m:
+        flips.setdefault(m.group(2), {})[m.group(3)] = (float(m.group(1)), int(m.group(4)))
+flip_fps = [(f["end"][1] - f["begin"][1]) / (f["end"][0] - f["begin"][0])
+            for f in flips.values() if "begin" in f and "end" in f and f["end"][0] > f["begin"][0]]
 
 if markdown:
     print("| 段 | 秒 | 帧/秒 | CPU% | 线程（%核） | GL 调用/秒 | GL 宿主 ms/秒 | 上传 次/MB/ms | 写回 次/MB/ms（读回 ms） | 重读 次/MB | 换帧/秒 | 合成 ms/秒 |")
@@ -124,9 +134,14 @@ for r in rows:
                   f" 写回 {g['writeback']:.1f} 次 {g['writeback-MB']:.1f} MB {g['writeback-ms']:.0f} ms（readpixels {g['readpixels-ms']:.0f}）"
                   f" 重读 {g['reread']:.1f} 次 {g['reread-MB']:.1f} MB")
             print(f"{'':13s} gl 最费时的槽位（中间那秒）：{g['top']}")
+            print(f"{'':13s} 其中真正占 CPU：GL 转发 {g['host-cpu-ms']:.0f} ms/s，读回 {g['readpixels-cpu-ms']:.0f} ms/s")
         if d:
             print(f"{'':13s} 显示 vbl {d['vbl']:.0f} 换帧 {d['swaps']:.1f} relatch {d['relatch']:.1f}"
                   f" 合成 {d['latch-ms']:.1f} ms 刷控制台 {d['update-ms']:.1f} ms /s")
         u = r.get("ui")
         if u:
             print(f"{'':13s} 发布 {u['published']:.1f}/{u['captures']:.1f} 帧 {u['capture-ms']:.1f} ms/s")
+
+if flip_fps:
+    print(f"翻页动画（按下到 0.6 秒后，{len(flip_fps)} 次）：帧/秒 " + "、".join(f"{v:.0f}" for v in flip_fps)
+          + f"，平均 {sum(flip_fps) / len(flip_fps):.1f}")

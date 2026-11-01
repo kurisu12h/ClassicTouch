@@ -1,0 +1,579 @@
+ios-gles-perf.patch：iOS 7 锁屏和主屏卡顿的修正，加上找原因用的统计（docs/reports/m2-ios7-perf.md）。
+
+原因：iOS 7 的 CoreAnimation 画一帧时，在显示表面和一个离屏目标之间来回切换十几到二十几次，每次在离屏目标上
+调 glFlush。GL 桥的 glFlush 会把所有「已渲染、还没写回」的表面写回客体内存，于是还没画完的整屏显示表面
+（640x960，2.3 MB）每帧被 glReadPixels 读回十几到二十几次；有用的只有回到默认帧缓冲（或 glFinish）时那一次，
+显示就是在那之后换帧。iPhone 18 Pro 上一次读回 6 到 14 毫秒，vCPU 线程大部分时间耗在这上面：拖锁屏 26 帧、
+主屏按住拖 5 帧。
+
+改动：
+  - gles-host.c：glFlush 时如果绑着的不是显示用的帧缓冲，只写回这个帧缓冲自己的表面，以及已经「脏」了
+    50 毫秒以上的表面（gles_surface_flush_partial）；绑着显示帧缓冲时、glFinish、回到默认帧缓冲，和以前一样全写。
+    别的上下文或客体 CPU 要读的表面照样会写：在它自己的帧缓冲上 flush 时、帧结束时、本组把这块内存当纹理绑定时
+    （gles_bind_surface 原有的 gles_surface_flush(cpu, base)）、或脏了 50 毫秒以后。
+  - 统计和追踪，环境变量打开，不开时每次调用只多一个判断：
+    IT_PERF=1：每秒一行，GL 桥（调用数、宿主耗时和其中的 CPU 时间、最费时的槽位、表面上传、写回和 glReadPixels、
+    缓存没命中的重读，「[perf] gl」）、A4 显示（VBL、换帧、合成耗时，「[perf] disp」，s5l8930_display.c）、
+    发给 App 的帧（「[perf] ui」，qemu-ios-ui.c）。时间戳是 CLOCK_UPTIME_RAW，和 App 的 systemUptime 对得上。
+    IT_PERF_TRACE=起,止 或 IT_PERF_TRACE_EVERY=秒：在客体虚拟时钟的这些时间里逐次记写回、flush、切帧缓冲和换帧。
+基于 samhenrigold/qemu-ios b225694505，打在 ios-eagl-es2.patch 之后（文件名排序就是这个顺序）。
+
+diff --git a/hw/arm/gles-host.c b/hw/arm/gles-host.c
+--- a/hw/arm/gles-host.c
++++ b/hw/arm/gles-host.c
+@@ -388,6 +388,7 @@
+     uint64_t gen;
+     unsigned npages;
+     bool detached;      /* detached from its texture, which still holds its pixels (gles_surface_forget) */
++    int64_t dirty_since;    /* when it was last marked dirty, QEMU_CLOCK_REALTIME (gles_surface_flush_partial) */
+     ram_addr_t pages[];
+ } GLESSurface;
+ #define GLES_SURFACE_SNAP_BYTES 36
+@@ -901,8 +902,131 @@
+ static inline uint64_t gles_t(void)
+ {
+     return gles_prof ? qemu_clock_get_ns(QEMU_CLOCK_REALTIME) : 0;
++}
++
++/*
++ * IT_PERF=1: where the bridge's host time goes, a line a second on stderr ("[perf] gl"), whatever
++ * the guest presents through (IT_GLES_PROF counts presents, which 6.x and 7.x CoreAnimation never
++ * makes). The calls and their host time, the slots that took most of it, glGetError's share
++ * under IT_GLES_STRICT, surface pixels read from guest memory and uploaded, rendered surfaces
++ * read back (glReadPixels) and written to guest memory, and the binds that re-read a surface a
++ * detached texture still held (gles_surface_copy has no blit on an ES host). up= is the host's
++ * uptime (CLOCK_UPTIME_RAW, the app's ProcessInfo.systemUptime), to line the lines up with the
++ * app's. Off, it costs a branch per call.
++ */
++#define GLES_PERF_SLOTS (GLES_ID_MAX + 1 + 16 + 1)
++static int gles_perf = -1;
++static struct {
++    uint64_t calls, call_ns, err_ns;
++    uint64_t up_n, up_bytes, up_ns, fetch_ns;
++    uint64_t calls_cpu_ns, wb_n, wb_bytes, wb_ns, rp_ns, rp_cpu_ns;
++    uint64_t recopy_n, recopy_bytes;
++    uint64_t slot_ns[GLES_PERF_SLOTS], slot_n[GLES_PERF_SLOTS];
++    uint64_t next;
++} gp;
++
++/* The GL ids, then the engine's own operations (GLES_OP_*) by their number past GLES_OP_BASE. */
++static unsigned gles_perf_slot(uint32_t slot)
++{
++    if (slot <= GLES_ID_MAX) return slot;
++    if (slot >= GLES_OP_BASE && slot < GLES_OP_BASE + 16) return GLES_ID_MAX + 1 + slot - GLES_OP_BASE;
++    return GLES_PERF_SLOTS - 1;
++}
++
++static uint64_t gles_perf_now(void)
++{
++#ifdef __APPLE__
++    return clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
++#else
++    return get_clock();
++#endif
++}
++
++/* IT_PERF_TRACE=FROM,TO (seconds of the guest's virtual clock, which starts with the machine and runs
++ * with the host's here): every writeback and flush in that window, one line each ("[trace]"), to
++ * see which surfaces a frame writes back. s5l8930_display.c traces its swaps in the same window. */
++static int64_t gles_trace_from, gles_trace_to;
++
++/* This thread's CPU time: what of the wall time above the thread spent running rather than waiting. */
++static uint64_t gles_perf_cpu(void)
++{
++#ifdef __APPLE__
++    return clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID);
++#else
++    struct timespec ts;
++    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
++    return ts.tv_sec * 1000000000ull + ts.tv_nsec;
++#endif
++}
++
++static bool gles_perf_on(void)
++{
++    if (gles_perf < 0) {
++        const char *v = getenv("IT_PERF");
++        gles_perf = v ? atoi(v) : 0;
++        v = getenv("IT_PERF_TRACE");
++        double from, to;
++        if (v && sscanf(v, "%lf,%lf", &from, &to) == 2) {
++            gles_trace_from = from * 1e9;
++            gles_trace_to = to * 1e9;
++        }
++    }
++    return gles_perf > 0;
+ }
+ 
++/* IT_PERF_TRACE_EVERY=S: the first 0.2 s of every S seconds of virtual time instead, so each stretch
++ * of a scripted run gets a sample whenever it falls. */
++static bool gles_tracing(void)
++{
++    static int64_t every = -1;
++    if (every < 0) {
++        const char *v = getenv("IT_PERF_TRACE_EVERY");
++        every = v ? atof(v) * 1e9 : 0;
++    }
++    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
++    if (every > 0) return now % every < 200000000;
++    return gles_trace_to && now >= gles_trace_from && now < gles_trace_to;
++}
++
++/* The line for the second that ended, once one has. */
++static void gles_perf_report(uint64_t now)
++{
++    if (now < gp.next) return;
++    if (gp.next) {
++        unsigned top[5] = { 0 };
++        for (unsigned i = 0; i < GLES_PERF_SLOTS; i++) {
++            for (unsigned k = 0; k < 5; k++) {
++                if (gp.slot_ns[i] > gp.slot_ns[top[k]]) {
++                    memmove(top + k + 1, top + k, (4 - k) * sizeof(top[0]));
++                    top[k] = i;
++                    break;
++                }
++            }
++        }
++        fprintf(stderr, "[perf] gl up=%.3f calls=%" PRIu64 " host-ms=%.1f err-ms=%.1f"
++                " upload=%" PRIu64 "/%.1fMB/%.1fms(fetch %.1fms)"
++                " writeback=%" PRIu64 "/%.1fMB/%.1fms(readpixels %.1fms) host-cpu-ms=%.1f readpixels-cpu-ms=%.1f"
++                " reread=%" PRIu64 "/%.1fMB top:",
++                now / 1e9, gp.calls, gp.call_ns / 1e6, gp.err_ns / 1e6,
++                gp.up_n, gp.up_bytes / 1048576.0, gp.up_ns / 1e6, gp.fetch_ns / 1e6,
++                gp.wb_n, gp.wb_bytes / 1048576.0, gp.wb_ns / 1e6, gp.rp_ns / 1e6,
++                gp.calls_cpu_ns / 1e6, gp.rp_cpu_ns / 1e6,
++                gp.recopy_n, gp.recopy_bytes / 1048576.0);
++        for (unsigned k = 0; k < 5 && gp.slot_ns[top[k]]; k++) {
++            if (top[k] <= GLES_ID_MAX) {
++                fprintf(stderr, " %s", gles_id_name(top[k]));
++            } else {
++                fprintf(stderr, " op%u", top[k] - GLES_ID_MAX - 1);
++            }
++            fprintf(stderr, "=%" PRIu64 "/%.1fms", gp.slot_n[top[k]], gp.slot_ns[top[k]] / 1e6);
++        }
++        fprintf(stderr, "\n");
++    }
++    uint64_t next = now - now % 1000000000ull + 1000000000ull;
++    memset(&gp, 0, sizeof(gp));
++    gp.next = next;
++}
++
+ /* ---------------------------------------------------------------- context */
+ 
+ /*
+@@ -4647,8 +4771,28 @@
+ }
+ 
+ /* The pixels of `s` into the bound texture of its target, as desktop GL takes them. */
++static int gles_surface_upload_1(GLESSurface *s, uint32_t fmt, uint8_t *pixels);
++
+ static int gles_surface_upload(GLESSurface *s, uint32_t fmt, uint8_t *pixels)
+ {
++    uint64_t t0 = gles_perf > 0 ? gles_perf_now() : 0;
++    int r = gles_surface_upload_1(s, fmt, pixels);
++
++    if (t0 && gles_tracing()) {
++        fprintf(stderr, "[trace] up=%.6f upload ctx=%08x base=%08x %ux%u fmt=%08x ram=%" PRIx64 " ms=%.2f\n",
++                t0 / 1e9, gles_cur_ctx, s->base, s->width, s->height, fmt,
++                s->npages ? (uint64_t)s->pages[0] : 0, (gles_perf_now() - t0) / 1e6);
++    }
++    if (t0) {
++        gp.up_n++;
++        gp.up_bytes += (uint64_t)s->width * s->height * gles_surface_bpp(fmt);
++        gp.up_ns += gles_perf_now() - t0;
++    }
++    return r;
++}
++
++static int gles_surface_upload_1(GLESSurface *s, uint32_t fmt, uint8_t *pixels)
++{
+     unsigned target = s->target, w = s->width, h = s->height;
+     GLenum glfmt = GL_BGRA, type = GL_UNSIGNED_BYTE;
+     char fourcc[12];
+@@ -4746,6 +4890,7 @@
+ static void gles_surface_fetch(GLESSurface *s, uint8_t *pixels)
+ {
+     unsigned rowbytes = s->width * gles_surface_bpp(s->format);
++    uint64_t t0 = gles_perf > 0 ? gles_perf_now() : 0;
+ 
+     WITH_RCU_READ_LOCK_GUARD() {
+         for (unsigned row = 0; row < s->height; row++) {
+@@ -4762,6 +4907,7 @@
+             }
+         }
+     }
++    if (t0) gp.fetch_ns += gles_perf_now() - t0;
+ }
+ 
+ /*
+@@ -4974,7 +5120,11 @@
+             GLESSurface *src = value;
+             if (src->detached && GPOINTER_TO_UINT(key) != (unsigned)texture &&
+                 gles_surface_same(src, surface) && !gles_surface_changed(src)) {
+-                if (!gles_surface_copy(GPOINTER_TO_UINT(key), src, texture, target)) break;
++                if (!gles_surface_copy(GPOINTER_TO_UINT(key), src, texture, target)) {
++                    gp.recopy_n++;
++                    gp.recopy_bytes += (uint64_t)w * h * bpp;
++                    break;
++                }
+                 surface->gen = src->gen;
+                 g_hash_table_replace(gh.surfaces, GUINT_TO_POINTER(texture), g_steal_pointer(&surface));
+                 return 0;
+@@ -5071,13 +5221,35 @@
+         gles_refuse("surface:render:%s", gles_fourcc(s->format, fourcc));
+         return -1;
+     }
++    if (!s->dirty) s->dirty_since = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+     s->dirty = true;
+     return 0;
+ }
+ 
+ /* Texture `texture`'s pixels into its surface's guest memory. */
++static int gles_surface_writeback_1(CPUState *cpu, GLuint texture, GLESSurface *s);
++
+ static int gles_surface_writeback(CPUState *cpu, GLuint texture, GLESSurface *s)
+ {
++    uint64_t t0 = gles_perf > 0 ? gles_perf_now() : 0;
++    int r = gles_surface_writeback_1(cpu, texture, s);
++
++    if (t0 && gles_tracing()) {
++        fprintf(stderr, "[trace] up=%.6f wb ctx=%08x tex=%u base=%08x %ux%u stride=%u fmt=%08x win=%d"
++                " ram=%" PRIx64 " pages=%u ms=%.2f\n", t0 / 1e9, gles_cur_ctx, texture, s->base, s->width,
++                s->height, s->stride, s->format, s->window, s->npages ? (uint64_t)s->pages[0] : 0, s->npages,
++                (gles_perf_now() - t0) / 1e6);
++    }
++    if (t0) {
++        gp.wb_n++;
++        gp.wb_bytes += (uint64_t)s->width * s->height * 4;
++        gp.wb_ns += gles_perf_now() - t0;
++    }
++    return r;
++}
++
++static int gles_surface_writeback_1(CPUState *cpu, GLuint texture, GLESSurface *s)
++{
+     GLint framebuffer = 0;
+     bool rgb555 = s->format == GLES_SURFACE_RGB555;
+     unsigned bpp = (s->format == GLES_SURFACE_RGB565 || rgb555) ? 2 : 4;
+@@ -5089,10 +5261,15 @@
+     if (!gh.sync_fbo) gh.sync_fbo = gles_private_name(glIsFramebufferEXT);
+     glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, gh.sync_fbo);
+     glFramebufferTexture2DEXT(GL_FRAMEBUFFER_EXT, GL_COLOR_ATTACHMENT0_EXT, s->target, texture, 0);
++    uint64_t rp0 = gles_perf > 0 ? gles_perf_now() : 0, rc0 = rp0 ? gles_perf_cpu() : 0;
+     gles_read_pixels(0, 0, s->width, s->height,
+         bpp == 2 && !rgb555 ? GL_RGB : s->format == GLES_SURFACE_RGBA32 ? GL_RGBA : GL_BGRA,
+         bpp == 2 && !rgb555 ? GL_UNSIGNED_SHORT_5_6_5 : GL_UNSIGNED_BYTE,
+         bpp == 2 && !rgb555 ? 2 : 4, 1, pixels, (size_t)s->width * s->height * 4);
++    if (rp0) {
++        gp.rp_ns += gles_perf_now() - rp0;
++        gp.rp_cpu_ns += gles_perf_cpu() - rc0;
++    }
+     glFramebufferTexture2DEXT(GL_FRAMEBUFFER_EXT, GL_COLOR_ATTACHMENT0_EXT, s->target, 0, 0);
+     glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, framebuffer);
+     if (glGetError() != GL_NO_ERROR) {
+@@ -5165,6 +5342,41 @@
+     return 0;
+ }
+ 
++/*
++ * A glFlush with an offscreen framebuffer bound: write back that framebuffer's surface, and any other
++ * that has been rendered and left unwritten for a while, but not the one the frame is in the middle of.
++ * iOS 7's CoreAnimation draws a frame into its display surface, steps out to an offscreen target for a
++ * layer's pass (a backdrop, a mask, an icon's group), flushes there and steps back, a dozen to two dozen
++ * times a frame on the lock screen and Home; gles_surface_flush wrote the half-drawn display surface back
++ * into guest memory at every one of those flushes, and the only copy anyone reads is the one written when
++ * the frame returns to the default framebuffer (or at glFinish) and the panel latches it. On the phone a
++ * full-screen readback costs 6 to 14 ms, so that was most of the vCPU thread (docs/reports/m2-ios7-perf.md).
++ * A surface another context or the CPU reads is still written: at its own framebuffer's flush, at the
++ * frame's end, when this group binds its memory as a texture (gles_bind_surface), or once it has been
++ * dirty GLES_FLUSH_STALE_NS, for a client that renders, steps away and flushes for another reader.
++ */
++#define GLES_FLUSH_STALE_NS (50 * 1000 * 1000)
++static int gles_surface_flush_partial(CPUState *cpu)
++{
++    GHashTableIter it;
++    gpointer key, value;
++    GLint kind = 0, texture = 0;
++    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
++
++    if (!gh.surfaces) return 0;
++    glGetFramebufferAttachmentParameterivEXT(GL_FRAMEBUFFER_EXT,
++        GL_COLOR_ATTACHMENT0_EXT, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE_EXT, &kind);
++    if (kind == GL_TEXTURE) glGetFramebufferAttachmentParameterivEXT(GL_FRAMEBUFFER_EXT,
++        GL_COLOR_ATTACHMENT0_EXT, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME_EXT, &texture);
++    g_hash_table_iter_init(&it, gh.surfaces);
++    while (g_hash_table_iter_next(&it, &key, &value)) {
++        GLESSurface *s = value;
++        if (s->dirty && ((GLint)GPOINTER_TO_UINT(key) == texture || now - s->dirty_since >= GLES_FLUSH_STALE_NS) &&
++            gles_surface_writeback(cpu, GPOINTER_TO_UINT(key), s)) return -1;
++    }
++    return 0;
++}
++
+ /* IOSurface storage is shared with guest DMA. A texture may be imported before
+  * the scaler fills it; refresh sampled aliases at draw time. Never replace the
+  * current render target with its older guest-memory copy. */
+@@ -7419,12 +7631,16 @@
+     }
+ 
+     case GLES_SLOT_FINISH:
++        if (gles_tracing()) fprintf(stderr, "[trace] up=%.6f finish ctx=%08x fb=%u\n", gles_perf_now() / 1e9, gles_cur_ctx, gh.bound_framebuffer);
+         glFinish();
+         return gles_sync_surface(cpu) ? -1 : gles_surface_flush(cpu, 0);
+ 
+     case GLES_SLOT_FLUSH:
++        if (gles_tracing()) fprintf(stderr, "[trace] up=%.6f flush ctx=%08x fb=%u\n", gles_perf_now() / 1e9, gles_cur_ctx, gh.bound_framebuffer);
+         glFlush();
+-        return gles_sync_surface(cpu) ? -1 : gles_surface_flush(cpu, 0);
++        if (gles_sync_surface(cpu)) return -1;
++        /* the drawable bound: the frame is done, as at glFinish; an offscreen one: see gles_surface_flush_partial */
++        return gles_is_drawable(gh.bound_framebuffer) ? gles_surface_flush(cpu, 0) : gles_surface_flush_partial(cpu);
+ 
+     case GLES_SLOT_GET_ERROR: {
+         GLenum error = gh.error;
+@@ -7607,6 +7823,7 @@
+          * mid-frame switches are between two FBOs and stay deferred. A failed
+          * write keeps the surface marked for the next flush; a batched bind has
+          * no fault to raise. */
++        if (gles_tracing()) fprintf(stderr, "[trace] up=%.6f bindfb ctx=%08x %u -> %u\n", gles_perf_now() / 1e9, gles_cur_ctx, gh.bound_framebuffer, a[1]);
+         if (!a[1]) gles_surface_flush(cpu, 0);
+         /*
+          * Leaving an offscreen target that was drawn into: say what it
+@@ -8120,8 +8337,30 @@
+     return r;
+ }
+ 
++static int64_t gles_host_call_allowed_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
++                                        uint32_t argc, const uint32_t *a);
++
+ static int64_t gles_host_call_allowed(CPUState *cpu, uint32_t slot, uint32_t ctx,
+                                       uint32_t argc, const uint32_t *a)
++{
++    if (!gles_perf_on()) return gles_host_call_allowed_1(cpu, slot, ctx, argc, a);
++
++    uint64_t t0 = gles_perf_now(), c0 = gles_perf_cpu(), dt;
++    int64_t r = gles_host_call_allowed_1(cpu, slot, ctx, argc, a);
++    unsigned i = gles_perf_slot(slot);
++
++    dt = gles_perf_now() - t0;
++    gp.calls++;
++    gp.call_ns += dt;
++    gp.calls_cpu_ns += gles_perf_cpu() - c0;
++    gp.slot_n[i]++;
++    gp.slot_ns[i] += dt;
++    gles_perf_report(t0 + dt);
++    return r;
++}
++
++static int64_t gles_host_call_allowed_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
++                                        uint32_t argc, const uint32_t *a)
+ {
+     uint64_t t0;
+     int64_t r;
+@@ -8166,12 +8405,16 @@
+          * reading immediately after is the only attribution that holds, and it
+          * is what turns "something in this frame is wrong" into a slot number.
+          */
++        uint64_t e0 = gles_perf > 0 ? gles_perf_now() : 0;
+         while (glGetError() != GL_NO_ERROR) {
+             /* drain whatever was pending from before this call */
+         }
++        if (e0) gp.err_ns += gles_perf_now() - e0;
+         r = gles_host_call_1(cpu, slot, ctx, argc, a);
+         {
++            uint64_t e1 = gles_perf > 0 ? gles_perf_now() : 0;
+             GLenum e = glGetError();
++            if (e1) gp.err_ns += gles_perf_now() - e1;
+             if (e != GL_NO_ERROR && gles_refuse("glerror:%u:0x%x", slot, e)) {
+                 fprintf(stderr, "[gles] slot %u raised GL error 0x%x "
+                         "(args 0x%x 0x%x 0x%x)\n", slot, e,
+diff --git a/hw/arm/s5l8930_display.c b/hw/arm/s5l8930_display.c
+--- a/hw/arm/s5l8930_display.c
++++ b/hw/arm/s5l8930_display.c
+@@ -326,10 +326,84 @@
+         s->next_vbl = now + VBL_PERIOD_NS(s);
+     }
+     timer_mod(s->vbl, s->next_vbl);
++}
++
++/*
++ * IT_PERF=1: the panel's second on stderr ("[perf] disp"): VBLs, swaps latched, quiet relatches,
++ * and the host time latching (reading the layers from guest memory, composing them) and painting
++ * the console (display_update), all on the main loop with the BQL held. up= is CLOCK_UPTIME_RAW,
++ * as gles-host.c's lines. A test aid for the iOS host (docs/reports/m2-ios7-perf.md).
++ */
++static int disp_perf = -1;
++static struct {
++    uint64_t vbl, swaps, relatch, latch_ns, update_ns, next;
++} dp;
++
++static uint64_t disp_perf_now(void)
++{
++#ifdef __APPLE__
++    return clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
++#else
++    return get_clock();
++#endif
++}
++
++static void disp_perf_report(uint64_t now)
++{
++    if (now < dp.next) return;
++    if (dp.next) {
++        fprintf(stderr, "[perf] disp up=%.3f vbl=%" PRIu64 " swaps=%" PRIu64 " relatch=%" PRIu64
++                " latch-ms=%.1f update-ms=%.1f\n", now / 1e9, dp.vbl, dp.swaps, dp.relatch,
++                dp.latch_ns / 1e6, dp.update_ns / 1e6);
++    }
++    uint64_t next = now - now % 1000000000ull + 1000000000ull;
++    memset(&dp, 0, sizeof(dp));
++    dp.next = next;
+ }
+ 
++/* IT_PERF_TRACE=FROM,TO: each swap latched in that window of the virtual clock (gles-host.c). */
++static bool disp_tracing(void)
++{
++    static int64_t from = -1, to;
++    if (from < 0) {
++        const char *v = getenv("IT_PERF_TRACE");
++        double f, t;
++        from = 0;
++        if (v && sscanf(v, "%lf,%lf", &f, &t) == 2) {
++            from = f * 1e9;
++            to = t * 1e9;
++        }
++    }
++    static int64_t every = -1;
++    if (every < 0) {
++        const char *v = getenv("IT_PERF_TRACE_EVERY");
++        every = v ? atof(v) * 1e9 : 0;
++    }
++    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
++    if (every > 0) return now % every < 200000000;
++    return to && now >= from && now < to;
++}
++
++static hwaddr dart_xlate(S5L8930DisplayState *s, uint32_t va);
++static void vbl_tick_1(void *opaque);
++
+ /* One frame: the queued swaps complete and the VBLs fire. */
+ static void vbl_tick(void *opaque)
++{
++    if (disp_perf < 0) {
++        const char *v = getenv("IT_PERF");
++        disp_perf = v ? atoi(v) : 0;
++    }
++    if (disp_perf > 0) {
++        dp.vbl++;
++        vbl_tick_1(opaque);
++        disp_perf_report(disp_perf_now());
++    } else {
++        vbl_tick_1(opaque);
++    }
++}
++
++static void vbl_tick_1(void *opaque)
+ {
+     S5L8930DisplayState *s = opaque;
+ 
+@@ -392,10 +466,22 @@
+      * animation ever needs measuring. */
+     frame_timeline_record(&s->ftl, s->pipe[0].swap_id, new_frame);
+     if (s->pipe[0].swap_pending) {
++        uint64_t t0 = disp_perf > 0 ? disp_perf_now() : 0;
+         s->pipe[0].swap_pending = false;
+         s->quiet_vbls = 0;
+         s->swaps++;
++        if (t0 && disp_tracing()) {
++            uint32_t *r = s->pipe[0].regs;
++            fprintf(stderr, "[trace] up=%.6f swap %u layers=%08x ui0=%08x(%" HWADDR_PRIx ") ui1=%08x(%" HWADDR_PRIx ")\n",
++                    t0 / 1e9, s->pipe[0].swap_id, r[DP_LAYERS / 4],
++                    r[(DP_UI_BASE(0) + DP_UI_ADDR) / 4], dart_xlate(s, r[(DP_UI_BASE(0) + DP_UI_ADDR) / 4]),
++                    r[(DP_UI_BASE(1) + DP_UI_ADDR) / 4], dart_xlate(s, r[(DP_UI_BASE(1) + DP_UI_ADDR) / 4]));
++        }
+         front_latch(s);
++        if (t0) {
++            dp.swaps++;
++            dp.latch_ns += disp_perf_now() - t0;
++        }
+     } else if (++s->quiet_vbls >= QUIET_RELATCH_VBLS) {
+         /*
+          * No swap for a quarter second, yet the buffer can still change:
+@@ -404,7 +490,12 @@
+          * Real scanout reads memory live, so follow it: re-latch every VBL
+          * while no swaps come. Swapping clients are latched on their swaps.
+          */
++        uint64_t t0 = disp_perf > 0 ? disp_perf_now() : 0;
+         front_latch(s);
++        if (t0) {
++            dp.relatch++;
++            dp.latch_ns += disp_perf_now() - t0;
++        }
+     }
+     s->pipe[1].swap_pending = false;
+     pipe_frame_end(&s->pipe[0]);
+@@ -417,7 +508,9 @@
+      * surface already holds this frame.
+      */
+     if (s->con && qemu_console_is_visible(s->con)) {
++        uint64_t t0 = disp_perf > 0 ? disp_perf_now() : 0;
+         graphic_hw_update(s->con);
++        if (t0) dp.update_ns += disp_perf_now() - t0;
+     }
+     /* ponytail: the frame is the only CLCD source raised, the one AppleCLCD enables (its LUT and dither updates). */
+     s->clcd_status |= CLCD_IRQ_FRAME;
+diff --git a/contrib/ios-app/qemu-ios-ui.c b/contrib/ios-app/qemu-ios-ui.c
+--- a/contrib/ios-app/qemu-ios-ui.c
++++ b/contrib/ios-app/qemu-ios-ui.c
+@@ -286,7 +286,33 @@
+      */
+     if (surface) {
+         ios.pending = true;
++    }
++}
++
++/*
++ * IT_PERF=1: frames published to the app in the last second, and the host time capturing them (the
++ * comparison with the last frame and the copy), on stderr as "[perf] ui". up= is CLOCK_UPTIME_RAW.
++ */
++static int ios_perf = -1;
++static struct {
++    uint64_t calls, published, ns, next;
++} ip;
++
++static void ios_publish_perf(uint64_t serial, uint64_t t0)
++{
++    uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
++
++    ip.calls++;
++    ip.published += ios.serial != serial;
++    ip.ns += now - t0;
++    if (now < ip.next) return;
++    if (ip.next) {
++        fprintf(stderr, "[perf] ui up=%.3f captures=%" PRIu64 " published=%" PRIu64 " capture-ms=%.1f\n",
++                now / 1e9, ip.calls, ip.published, ip.ns / 1e6);
+     }
++    uint64_t next = now - now % 1000000000ull + 1000000000ull;
++    memset(&ip, 0, sizeof(ip));
++    ip.next = next;
+ }
+ 
+ static void ios_publish(QemuConsole *con)
+@@ -298,7 +324,17 @@
+     }
+     surface = qemu_console_surface(con);
+     if (surface) {
+-        ios_capture(surface);
++        if (ios_perf < 0) {
++            const char *v = getenv("IT_PERF");
++            ios_perf = v ? atoi(v) : 0;
++        }
++        if (ios_perf > 0) {
++            uint64_t t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW), serial = ios.serial;
++            ios_capture(surface);
++            ios_publish_perf(serial, t0);
++        } else {
++            ios_capture(surface);
++        }
+         ios.pending = false;
+     }
+ }

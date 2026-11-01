@@ -14,7 +14,7 @@ names=("$@")
 (( ${#names} )) || names=(a-home a-run b-home b-run c-home c-run overview)
 
 for n in $names; do
-  if [[ $n == overview ]]; then size=1500,2060; scale=2; else size=402,874; scale=3; fi
+  if [[ $n == overview ]]; then size=1260,2110; scale=2; else size=402,874; scale=3; fi
   "$chrome" --headless=new --disable-gpu --hide-scrollbars --user-data-dir="$profile" \
     --force-device-scale-factor=$scale --window-size=$size --virtual-time-budget=1500 \
     --allow-file-access-from-files --screenshot="$out/ui-$n.png" "file://$here/mockups/$n.html" 2>/dev/null

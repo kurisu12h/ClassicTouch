@@ -5,7 +5,8 @@
 #   2. 启动 App：-device <id> -tcg <后端> -guestpng 1（每秒存一张客体画面）。
 #   3. 逐张 OCR（M0 的 work/tools/ocr/ocr，Vision 文字识别）：第一次看到「slide to unlock」记为到锁屏，
 #      立刻经 Documents/control/unlock 让 App 按 Home 再滑动；之后看到主屏图标名（Settings、Safari……）记为到主屏，
-#      再空闲 IDLE 秒（默认 20）量主屏待机的 CPU，最后 control/quit 让 QEMU 正常退出。
+#      再空闲 IDLE 秒（默认 20）量主屏待机的 CPU，最后 control/quit 让 QEMU 正常退出。没出锁屏就直接认出三个以上
+#      主屏图标名的，也记为到主屏（锁屏记「未到达」）。
 #   4. 汇总：锁屏、主屏时间，这期间的 CPU 秒和平均 CPU%（占一个核），footprint，主屏待机 CPU%。
 # 时间都是 App 里从调 qemu_ios_main 起算的墙钟秒（stats.csv、guest-NNNN.png 的编号）。
 #
@@ -63,6 +64,12 @@ while [ $(($(date +%s) - t0)) -lt "$LIMIT" ]; do
             && grep -Eq 'Settings|Safari|App Store|Calendar|Photos' <<<"$text"; then
             home=$t
             echo "主屏：$t 秒"
+            quit_at=$(($(date +%s) + IDLE))
+        elif [ -z "$lock" ] && [ -z "$home" ] && ! grep -qi 'slide to' <<<"$text" \
+            && [ "$(grep -Eo 'Settings|Safari|Calendar|Photos|Stocks|Maps|Mail|Phone|Notes' <<<"$text" | sort -u | wc -l)" -ge 3 ]; then
+            # iPhone OS 1.0、2.x 有时不经过锁屏直接到主屏（从黄金状态冷启动的 1.0、激活后第一次开机的 2.x）
+            home=$t
+            echo "主屏（没经过锁屏）：$t 秒"
             quit_at=$(($(date +%s) + IDLE))
         fi
     done

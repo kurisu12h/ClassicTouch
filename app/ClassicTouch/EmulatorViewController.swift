@@ -1,5 +1,5 @@
-// 模拟器画面：客体画面、Home 键和电源键，左上「返回列表」，顶上一行状态（运行时间、CPU、内存、帧数）。触摸是单指，
-// 坐标按客体屏幕归一化。开哪台、什么时候暂停由 RootViewController 管（一个进程只开一台，见 Engine.swift）。
+// 模拟器画面：客体画面，外面一圈是「年表」外观（EmulatorChromeView：顶上大号年份和机型、一行运行状态（运行时间、CPU、
+// 内存、帧数），底部「年表」「Home」「电源」三个键）。触摸是单指，坐标按客体屏幕归一化。开哪台、什么时候暂停由 RootViewController 管（一个进程只开一台，见 Engine.swift）。
 //
 // 脚本用的测试入口（启动参数，Xcode 的 Arguments、simctl launch 或 devicectl process launch 都能传；没有参数时读
 // Documents/autostart.json，同名键，见 LaunchOptions.swift，从 StikDebug 拉起时用）。真实用户从列表开机时这些都不开：
@@ -47,10 +47,12 @@ final class EmulatorViewController: UIViewController {
     private var afterExit: (() -> Void)?
 
     private let screen = ScreenView()
-    private let status = UILabel()
-    private let backButton = UIButton(type: .system)
-    private let homeButton = UIButton(type: .system)
-    private let powerButton = UIButton(type: .system)
+    private let chrome = EmulatorChromeView()
+    // 状态行和三个键在 chrome 里，这里沿用原来的名字
+    private var status: UILabel { chrome.status }
+    private var backButton: UIButton { chrome.back }
+    private var homeButton: UIButton { chrome.home }
+    private var powerButton: UIButton { chrome.power }
 
     private var displayLink: CADisplayLink?
     private var timer: Timer?
@@ -94,6 +96,10 @@ final class EmulatorViewController: UIViewController {
     private var swipeHomeStarted = false
     private var swipeDone = false
     private var inSegment = false
+    // 还没认出锁屏时：屏幕变暗就按 Home 叫醒（lockWakeAt），每 5 秒记一次识别到的文字（lastOCRLog）
+    private var maxBacklight: Int32 = 0
+    private var lockWakeAt: Double = -1000
+    private var lastOCRLog: Double = -1000
 
     init(deviceID: String, backend: Engine.Backend?, test: Bool, options: LaunchOptions, documents: URL) {
         self.deviceID = deviceID
@@ -113,45 +119,26 @@ final class EmulatorViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .black
-
-        status.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
-        status.textColor = UIColor(white: 1, alpha: 0.75)
-        status.numberOfLines = 2
-        status.textAlignment = .center
-        status.adjustsFontSizeToFitWidth = true
-        status.minimumScaleFactor = 0.7
-        view.addSubview(status)
+        // 先加 chrome，客体屏幕盖在上面；chrome 的空白处不接触摸
+        view.addSubview(chrome)
 
         screen.backgroundColor = UIColor(white: 0.05, alpha: 1)
         screen.layer.magnificationFilter = .linear
         screen.isHidden = true
         view.addSubview(screen)
 
-        backButton.setTitle(String(localized: "‹ 返回列表"), for: .normal)
-        backButton.tintColor = .white
-        backButton.titleLabel?.font = .systemFont(ofSize: 15)
-        backButton.contentHorizontalAlignment = .left
         backButton.addAction(UIAction { [weak self] _ in
             self?.event("back_to_list")
             self?.onBackToList?()
         }, for: .touchUpInside)
-        view.addSubview(backButton)
 
-        homeButton.setTitle("Home", for: .normal)
-        powerButton.setTitle(String(localized: "电源"), for: .normal)
         for (button, target) in [(homeButton, QemuButton.home), (powerButton, QemuButton.power)] {
-            button.tintColor = .white
-            button.layer.borderColor = UIColor(white: 1, alpha: 0.4).cgColor
-            button.layer.borderWidth = 1
             button.isHidden = true
             button.addAction(UIAction { [weak self] _ in self?.engine?.button(target, down: true) }, for: .touchDown)
             for up: UIControl.Event in [.touchUpInside, .touchUpOutside, .touchCancel] {
                 button.addAction(UIAction { [weak self] _ in self?.engine?.button(target, down: false) }, for: up)
             }
-            view.addSubview(button)
         }
-        homeButton.layer.cornerRadius = 28
-        powerButton.layer.cornerRadius = 6
 
         screen.onTouch = { [weak self] phase, x, y in self?.engine?.touch(phase, x: x, y: y) }
         boot(id: deviceID, backend: requestedBackend)
@@ -159,16 +146,9 @@ final class EmulatorViewController: UIViewController {
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        let safe = view.bounds.inset(by: view.safeAreaInsets)
-        backButton.frame = CGRect(x: safe.minX + 12, y: safe.minY, width: 96, height: 32)
-        status.frame = CGRect(x: backButton.frame.maxX, y: safe.minY, width: safe.width - 2 * 108, height: 32)
-        let area = CGRect(x: safe.minX, y: status.frame.maxY + 4, width: safe.width, height: safe.height - 32 - 4 - 96)
-        let scale = min(area.width / guestSize.width, area.height / guestSize.height)
-        let size = CGSize(width: guestSize.width * scale, height: guestSize.height * scale)
-        screen.frame = CGRect(x: area.midX - size.width / 2, y: area.minY + (area.height - size.height) / 2,
-                              width: size.width, height: size.height)
-        homeButton.frame = CGRect(x: safe.midX - 28, y: screen.frame.maxY + 20, width: 56, height: 56)
-        powerButton.frame = CGRect(x: screen.frame.maxX - 64, y: screen.frame.maxY + 32, width: 64, height: 32)
+        chrome.frame = view.bounds
+        chrome.layoutIfNeeded()
+        screen.frame = chrome.screenFrame(for: guestSize)
     }
 
     /// 回到列表或 App 进后台时停（reason 记进 events.log），回来时继续
@@ -221,6 +201,7 @@ final class EmulatorViewController: UIViewController {
                 note = "（没有调试器，JIT 退回解释器）"
             }
             #endif
+            chrome.configure(profile, backend: backend == .jit ? "JIT" : String(localized: "解释器"))
 
             let stamp = DateFormatter()
             stamp.dateFormat = "yyyyMMdd-HHmmss"
@@ -415,6 +396,14 @@ final class EmulatorViewController: UIViewController {
             event("auto_unlock \(autoUnlocks)")
             unlock(engine)
         }
+        // 锁屏亮着却一直没认出来时它会自己变暗、停动画：按一下 Home 叫醒再认（亮着时按 Home 什么也不做）
+        let backlight = engine.backlightLevel
+        maxBacklight = max(maxBacklight, backlight)
+        if lockSeenAt == nil, maxBacklight > 0, backlight > 0, backlight * 2 < maxBacklight, now - lockWakeAt >= 15 {
+            lockWakeAt = now
+            event("lock_wake backlight=\(backlight)")
+            pressHome(engine)
+        }
         // 锁屏段测量时不跑文字识别（它也算在本进程的 CPU 里）
         guard !ocrBusy, !(swipe && lockSeenAt != nil && swipeLockDoneAt == nil), let image = lastImage else { return }
         ocrBusy = true
@@ -424,11 +413,17 @@ final class EmulatorViewController: UIViewController {
                 guard let self else { return }
                 self.ocrBusy = false
                 let t = ProcessInfo.processInfo.systemUptime - self.start
+                if self.lockSeenAt == nil, self.sawBacklight, t - self.lastOCRLog >= 5 {
+                    self.lastOCRLog = t
+                    self.event("ocr " + texts.prefix(6).joined(separator: " | "))
+                }
                 if self.lockSeenAt == nil, GuestText.isLockScreen(texts) {
                     self.lockSeenAt = t
                     self.event(String(format: "lock_seen %.1f", t))
                     self.lastAutoUnlock = -1000  // 马上解锁，别等到它熄屏进深睡
-                } else if self.lockSeenAt != nil, self.homeSeenAt == nil, GuestText.isHomeScreen(texts) {
+                } else if self.homeSeenAt == nil, GuestText.isHomeScreen(texts),
+                          self.lockSeenAt != nil || GuestText.homeMarkCount(texts) >= 3 {
+                    // 1.0 从黄金状态冷启动、iPod 的 2.x 激活后第一次开机不经过锁屏（没有 lock_seen）
                     self.homeSeenAt = t
                     self.event(String(format: "home_seen %.1f", t))
                 }
@@ -453,24 +448,28 @@ final class EmulatorViewController: UIViewController {
         }
     }
 
-    /// 滑动测试的锁屏段（认出锁屏后马上开始）：静止 4 秒（iOS 7 的「滑动解锁」微光是连续动画）；
-    /// 3 次在锁屏底部按住往右拖到 0.55 再拖回来松手（1.6 秒一次，不解锁，iOS 7 整个锁屏跟着手走，3.x、6.x 是滑块）；
-    /// 然后慢慢滑动解锁。期间不按 Home、不做文字识别。
+    /// 滑动测试的锁屏段（认出锁屏后马上开始）：先按一下 Home（锁屏不碰几秒就变暗、停掉动画，文字识别又可能晚几秒，
+    /// 按一下让它亮着；亮着时按 Home 什么也不做）。1.5 秒后 3 次在锁屏底部按住往右拖到 0.55 再拖回来松手（1.6 秒一次，
+    /// 不解锁；iOS 7 整个锁屏跟着手走，3.x、6.x 是滑块）；再静止 4 秒（iOS 7 的「滑动解锁」微光是连续动画）；
+    /// 然后慢慢滑动解锁。期间不做文字识别。
     private func swipeLock(_ engine: Engine) {
         let y = 0.9
-        var steps: [(Double, () -> Void)] = [(0, { self.segment("lock_static", "begin") }),
-                                              (4, { self.segment("lock_static", "end"); self.segment("lock_drag", "begin") })]
+        var steps: [(Double, () -> Void)] = [(0, { self.pressHome(engine) }),
+                                              (1.5, { self.segment("lock_drag", "begin") })]
         for i in 0..<3 {
-            steps.append((4.2 + 2.0 * Double(i), {
+            steps.append((1.6 + 2.0 * Double(i), {
                 engine.drag(path: [(0.15, y), (0.55, y), (0.15, y)], milliseconds: 1600)
             }))
         }
-        steps.append((10.4, { self.segment("lock_drag", "end") }))
-        steps.append((10.6, {
+        // 3.x、6.x 的锁屏不碰几秒就熄，iPod touch 2 代熄久了会进深睡（用占位 SecureROM 时唤不醒），小屏机型只静止 2.5 秒
+        let still = guestSize.width < 640 ? 2.5 : 4.0
+        steps.append((7.8, { self.segment("lock_drag", "end"); self.segment("lock_static", "begin") }))
+        steps.append((7.8 + still, { self.segment("lock_static", "end") }))
+        steps.append((8.0 + still, {
             self.event("swipe_unlock")
             engine.drag(path: [(0.12, y), (0.95, y)], milliseconds: 700)
         }))
-        steps.append((11.5, { self.swipeLockDoneAt = ProcessInfo.processInfo.systemUptime - self.start }))
+        steps.append((9.0 + still, { self.swipeLockDoneAt = ProcessInfo.processInfo.systemUptime - self.start }))
         schedule(steps)
     }
 
@@ -482,7 +481,12 @@ final class EmulatorViewController: UIViewController {
                                               (9, { self.segment("home_static", "end"); self.segment("home_swipe", "begin") })]
         for i in 0..<6 {
             let path = i % 2 == 0 ? [(0.8, y), (0.2, y)] : [(0.2, y), (0.8, y)]
-            steps.append((9.2 + 1.5 * Double(i), { engine.drag(path: path, milliseconds: 250) }))
+            // 翻页动画本身的帧数：从手指按下到 0.6 秒后（翻页之间是静止的，整段平均会被拉低）
+            steps.append((9.2 + 1.5 * Double(i), {
+                self.event(String(format: "flip %d begin serial=%llu", i, self.serial))
+                engine.drag(path: path, milliseconds: 250)
+            }))
+            steps.append((9.8 + 1.5 * Double(i), { self.event(String(format: "flip %d end serial=%llu", i, self.serial)) }))
         }
         steps.append((18.5, { self.segment("home_swipe", "end"); self.segment("home_drag", "begin") }))
         steps.append((18.6, {

@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<title>Classic Touch 界面方案总览</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 1260px; height: 2110px; overflow: hidden; }
+  body { font-family: -apple-system, "PingFang SC", sans-serif; -webkit-font-smoothing: antialiased;
+         background: #f3f3f6; color: #1d1d22; padding: 48px 56px; }
+  header h1 { font: 700 34px -apple-system, "PingFang SC"; }
+  header p { margin-top: 8px; font: 17px -apple-system, "PingFang SC"; color: #6b6f7a; }
+  .row { display: flex; gap: 44px; margin-top: 40px; padding: 30px; border-radius: 28px; background: #fff;
+         box-shadow: 0 2px 10px rgba(20,24,40,.06); height: 600px; }
+  .txt { width: 534px; display: flex; flex-direction: column; }
+  .head { display: flex; align-items: center; gap: 16px; }
+  .letter { font: 800 15px -apple-system; letter-spacing: 2px; color: #8a8f9c; }
+  .name { font: 700 30px -apple-system, "PingFang SC"; margin-top: 2px; }
+  .icon { width: 72px; height: 72px; border-radius: 17px; flex: none; position: relative; overflow: hidden;
+          box-shadow: 0 4px 12px rgba(0,0,0,.18), inset 0 0 0 .5px rgba(0,0,0,.2); }
+  .desc { margin-top: 20px; font: 16px/1.7 -apple-system, "PingFang SC"; color: #33363d; }
+  .facts { margin-top: auto; display: grid; grid-template-columns: 92px 1fr; row-gap: 10px; font: 15px/1.5 -apple-system, "PingFang SC"; }
+  .facts dt { color: #8a8f9c; }
+  .facts dd { color: #1d1d22; }
+  .phones { display: flex; gap: 34px; }
+  .ph { display: flex; flex-direction: column; align-items: center; gap: 12px; font: 600 15px -apple-system, "PingFang SC"; color: #6b6f7a; }
+  .frame { width: 248px; height: 539px; border-radius: 40px; overflow: hidden; position: relative;
+           box-shadow: 0 0 0 7px #1b1b1f, 0 0 0 8px #3a3a40, 0 18px 40px rgba(20,24,40,.25); }
+  .frame iframe { width: 402px; height: 874px; border: 0; transform: scale(.6169); transform-origin: 0 0; position: absolute; left: 0; top: 0; }
+</style></head>
+<body>
+<header>
+  <h1>Classic Touch 界面方案：三选一</h1>
+  <p>每套两屏：左边首页（选择系统），右边运行中的模拟器画面。机身都是自己用矢量画的简化外形，没有苹果标志、产品图或商标字样。屏幕里的客体画面是我们自己跑出来的截图。</p>
+</header>
+
+<section class="row">
+  <div class="txt">
+    <div class="head">
+      <div class="icon" style="background:#fff">
+        <svg width="72" height="72" viewBox="0 0 72 72"><text x="36" y="47" text-anchor="middle" fill="#111" font-family="DIN Condensed" font-weight="bold" font-size="34">2009</text>
+          <rect x="13" y="52" width="46" height="3.5" fill="#d7261e"/></svg>
+      </div>
+      <div><div class="letter">方案 A</div><div class="name">年表</div></div>
+    </div>
+    <p class="desc">白底黑字，像一本年鉴：大号窄体年份（系统自带的 DIN Condensed）、细线分隔、线描机身，红色只标「正在运行」和「实验性」。没导入的年份是灰的，iOS 8 到 10 留了标「以后」的位置。运行画面换成黑底，顶上大号年份，下面三个方正的大按键。</p>
+    <dl class="facts">
+      <dt>好在哪</dt><dd>时间感靠排版而不是特效，干净又有个性；不模仿任何一代苹果的界面。</dd>
+      <dt>客体屏幕</dt><dd>360 × 540 pt（原机的 1.125 倍）</dd>
+      <dt>实现量</dt><dd>中等偏小，约 600 行。首页是普通表格换样式，加线描机身。</dd>
+      <dt>要留意</dt><dd>年份按大版本首发年算（3.1.3 记 2009）；没导入、「以后」的年份只是提示，点了看说明。</dd>
+    </dl>
+  </div>
+  <div class="phones">
+    <div class="ph"><div class="frame"><iframe src="a-home.html" scrolling="no"></iframe></div>首页</div>
+    <div class="ph"><div class="frame"><iframe src="a-run.html" scrolling="no"></iframe></div>运行中</div>
+  </div>
+</section>
+
+<section class="row">
+  <div class="txt">
+    <div class="head">
+      <div class="icon" style="background: repeating-linear-gradient(90deg, #c5ccd4 0 3px, #cfd5db 3px 4px)">
+        <svg width="72" height="72" viewBox="0 0 72 72"><rect x="22" y="9" width="28" height="54" rx="7" fill="#d9dce1"/>
+          <rect x="23.5" y="10.5" width="25" height="51" rx="6" fill="#111"/><rect x="26" y="19" width="20" height="30" fill="#4f78a8"/>
+          <circle cx="36" cy="55" r="3" fill="#2a2b2e"/></svg>
+        <div style="position:absolute;left:-10px;right:-10px;top:-30px;height:62px;border-radius:50%;background:linear-gradient(rgba(255,255,255,.7),rgba(255,255,255,.15))"></div>
+      </div>
+      <div><div class="letter">方案 B</div><div class="name">怀旧拟物</div></div>
+    </div>
+    <p class="desc">致敬 iOS 6 以前的质感：蓝灰渐变导航栏、竖条纹背景、白色圆角分组表格、玻璃高光按钮。运行画面把客体屏幕装进自己画的机身，屏幕按原机 1:1 显示；点机身上的圆键就是 Home，顶部按键就是电源，每个机型一种机身。</p>
+    <dl class="facts">
+      <dt>好在哪</dt><dd>老玩家一打开就有「回来了」的感觉，App 和里面的老系统浑然一体。</dd>
+      <dt>客体屏幕</dt><dd>320 × 480 pt（原机 1:1），比现在铺满全宽小约 20%</dd>
+      <dt>实现量</dt><dd>最大。纹理、高光、机身全用代码画，至少 4 种机身，约 1000 行以上。</dd>
+      <dt>要留意</dt><dd>纹理和高光做糙了反而显得廉价，细节要多调几轮。</dd>
+    </dl>
+  </div>
+  <div class="phones">
+    <div class="ph"><div class="frame"><iframe src="b-home.html" scrolling="no"></iframe></div>首页</div>
+    <div class="ph"><div class="frame"><iframe src="b-run.html" scrolling="no"></iframe></div>运行中</div>
+  </div>
+</section>
+
+<section class="row">
+  <div class="txt">
+    <div class="head">
+      <div class="icon" style="background: linear-gradient(160deg, #f6f6f9, #dfe1e8)">
+        <svg width="72" height="72" viewBox="0 0 72 72"><rect x="30" y="14" width="30" height="44" rx="8" fill="#6b93bf"/>
+          <rect x="12" y="14" width="30" height="44" rx="8" fill="#2a2b30"/><text x="27" y="41" text-anchor="middle" fill="#fff" font-family="-apple-system" font-weight="800" font-size="15">3.1</text></svg>
+      </div>
+      <div><div class="letter">方案 C</div><div class="name">现代卡片</div></div>
+    </div>
+    <p class="desc">跟现在的 iOS 一个路子：大标题，横滑的大号机型卡片（大版本号，机身插图里放这台上次关机前的画面），正在运行的那台像音乐播放器一样停在底部。运行画面全黑，客体屏幕铺满全宽，底部一个玻璃胶囊放 Home 和电源。</p>
+    <dl class="facts">
+      <dt>好在哪</dt><dd>干净，和系统自带 App 一致；屏幕最大最清楚，最快能做完。</dd>
+      <dt>客体屏幕</dt><dd>402 × 603 pt（铺满全宽，原机的 1.26 倍，和现在一样）</dd>
+      <dt>实现量</dt><dd>最小，约 500 行。iOS 26 以上用系统玻璃材质，16 到 25 退回毛玻璃。</dd>
+      <dt>要留意</dt><dd>卡片里的「上次画面」要等这台开过一次才有（App 不能自带苹果系统的截图），之前显示占位。</dd>
+    </dl>
+  </div>
+  <div class="phones">
+    <div class="ph"><div class="frame"><iframe src="c-home.html" scrolling="no"></iframe></div>首页</div>
+    <div class="ph"><div class="frame"><iframe src="c-run.html" scrolling="no"></iframe></div>运行中</div>
+  </div>
+</section>
+</body></html>

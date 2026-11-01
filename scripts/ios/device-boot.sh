@@ -197,6 +197,7 @@ if [ "${STIK:-0}" = 1 ]; then
         xcrun devicectl device process signal --device "$PHONE" --pid "$p" --signal SIGKILL --quiet >/dev/null 2>&1 || true
         echo "已结束 App（PID $p）"
     done
+    # 1.0、2.x 不经过锁屏时 App 只记 home_seen，锁屏就是「未到达」
     lock="$(grep -o 'lock_seen [0-9.]*' "$L/events.log" | awk '{printf "%d", $2}' || true)"
     home="$(grep -o 'home_seen [0-9.]*' "$L/events.log" | awk '{printf "%d", $2}' || true)"
     echo "锁屏：${lock:-未到达} 秒；主屏：${home:-未到达} 秒"
@@ -224,6 +225,12 @@ while [ $(($(date +%s) - t0)) -lt "$LIMIT" ]; do
             && grep -Eq 'Settings|Safari|App Store|Calendar|Photos' <<<"$text"; then
             home=$t
             echo "主屏：$t 秒"
+            quit_at=$(($(date +%s) + IDLE))
+        elif [ -z "$lock" ] && [ -z "$home" ] && ! grep -qi 'slide to' <<<"$text" \
+            && [ "$(grep -Eo 'Settings|Safari|Calendar|Photos|Stocks|Maps|Mail|Phone|Notes' <<<"$text" | sort -u | wc -l)" -ge 3 ]; then
+            # iPhone OS 1.0、2.x 有时不经过锁屏直接到主屏（同 sim-boot.sh）
+            home=$t
+            echo "主屏（没经过锁屏）：$t 秒"
             quit_at=$(($(date +%s) + IDLE))
         fi
     done

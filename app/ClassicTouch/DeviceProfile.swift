@@ -1,13 +1,17 @@
 // 一台做好的设备（LightTouchMac 的 FirmwareKit 输出目录）怎么拼 QEMU 的 argv。
-// 规则照 LightTouchMac 的 Packages/HostRuntime/Sources/HostRuntime/BootRecipe.swift（iPod 和 iPad 两种）
-// 和本项目 tools/m0/bench.py。M1 只支持 boot_strategy 为 iboot（iPod touch 2 代）和 kboot（3GS、iPhone 4、
-// iPod touch 3/4 代、初代 iPad）的设备；初代 iPhone 和 iPod touch 1 代要 pflash，以后再说。
+// 规则照 LightTouchMac 的 Packages/HostRuntime/Sources/HostRuntime/BootRecipe.swift（iPod、iPod1G、iPad 三种）
+// 和本项目 tools/m0/bench.py、tools/timeline/tl.py。支持的开机方式：
+//   iboot   iPod touch 2 代：直接进解密过的 iBoot（3.x；2.x 要用打过 patches/firmwarekit-n72-2x-direct-iboot.patch
+//           的 FirmwareKit 做，原版给 2.x 做的是要真 SecureROM 的 bootrom 链，这里不支持）
+//   kboot   3GS、iPhone 4、iPod touch 3/4 代、初代 iPad：直接进内核
+//   s5l8900 初代 iPhone、iPod touch 1 代的 1.x（lock 里没有 boot_strategy，按机型认）：iBoot 加 pflash 的 NOR
 //
 // 目录约定（App 的 Documents 下）：
-//   devices/<id>/            设备本体，只读：device.lock.json、nand/、nor.bin、kboot.bin 或 iBoot.bin + gid-blobs.bin
+//   devices/<id>/            设备本体，只读：device.lock.json、nand/、nor.bin、kboot.bin 或 iBoot.bin（+ gid-blobs.bin）
 //   devices/<id>/state/      可写状态：nor.bin（第一次启动从本体克隆）和 overlay/（NAND 页覆盖层）或 nand/（就地写的 NAND）
 //   devices/<id>/golden-state/  可选：-resetstate 时克隆成 state/ 的起点
 //   bootrom/bootrom_240_4    iPod touch 2 代的 SecureROM（可选，见 placeholderBootrom）
+//   bootrom/bootrom_s5l8900  S5L8900 的 SecureROM（可选，见 s5l8900Bootrom）
 //   logs/                    QEMU 的 stderr、串口、统计、截图
 // SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -70,9 +74,13 @@ struct DeviceProfile {
     }
 
     /// iPod touch 2 代用的是占位 SecureROM（见 placeholderBootrom），客体熄屏进深睡后按 Home 唤不醒。以后补唤醒的模拟再去掉。
+    /// S5L8900 的两台在上游就没模拟深睡唤醒（qemu-ios docs/ipod1g/README.md 欠账 9），一样标出来。
     var experimentalNote: String? {
-        board == "n72ap" ? String(localized: "实验性：熄屏后可能卡住") : nil
+        board == "n72ap" || isS5L8900 ? String(localized: "实验性：熄屏后可能卡住") : nil
     }
+
+    /// 初代 iPhone 和 iPod touch 1 代（S5L8900，iPhone OS 1.x），qemu-ios 的 iPhone-2G / iPod-Touch-1G 机型
+    var isS5L8900: Bool { board == "m68ap" || board == "n45ap" }
 
     /// 客体主版本号（iOS 7 在解释器下基本不能用，提示要更重）
     var majorVersion: Int { Int(productVersion.split(separator: ".").first ?? "") ?? 0 }
@@ -99,7 +107,8 @@ struct DeviceProfile {
         guard let info = boards[board] else { throw EngineError("\(id)：不认识的机型 \(board)") }
         self.board = board
         self.info = info
-        bootStrategy = lock["boot_strategy"] as? String ?? "kboot"
+        // FirmwareKit 给 1.x 的 lock 不写 boot_strategy（Light Touch 按机型的 SoC 分）
+        bootStrategy = lock["boot_strategy"] as? String ?? (board == "m68ap" || board == "n45ap" ? "s5l8900" : "kboot")
         productVersion = lock["product_version"] as? String ?? "?"
         build = lock["build"] as? String ?? "?"
         dieID = (lock["identity"] as? [String: Any])?["die_id"] as? String
@@ -126,10 +135,10 @@ struct DeviceProfile {
         if fm.fileExists(atPath: golden.path) { try fm.copyItem(at: golden, to: state) }
     }
 
-    /// iPod touch 2 代的 NAND 是「镜像库」（geometry.json 的 storage_format 为 nand-xor-blank-v2），QEMU 就地写、
-    /// 不接受 nandrw 覆盖层；照 LightTouchMac 的 PreparedDeviceBoot.liveNAND，第一次启动把它克隆到 state/nand。
+    /// iPod touch 2 代和 S5L8900 的 NAND 是「镜像库」（geometry.json 的 storage_format 为 nand-xor-blank-v2），QEMU
+    /// 就地写、不接受 nandrw 覆盖层；照 LightTouchMac 的 PreparedDeviceBoot.liveNAND，第一次启动把它克隆到 state/nand。
     /// 3GS 等 kboot 机型的 NAND 控制器支持页覆盖层（nand-overlay），和 M0 一样用 state/overlay。
-    var writesNANDInPlace: Bool { bootStrategy == "iboot" }
+    var writesNANDInPlace: Bool { board == "n72ap" || isS5L8900 }
 
     /// 第一次启动：可写的 NOR 从本体克隆一份，建 NAND 覆盖层或克隆 NAND。已有的状态（比如 Mac 上走完设置向导的）原样用。
     /// APFS 上 FileManager 的复制是克隆，不额外占空间。
@@ -201,8 +210,14 @@ struct DeviceProfile {
             if info.hasCellular { m += ",baseband=on" }
             m += options
             argv += ["-M", m]
+        case "s5l8900":
+            // BootRecipe.iPod1G：直接进解密过的 iBoot（初代 iPhone 是 iBoot-159），NOR 是 pflash，内存用机型默认的
+            // 128 MB。机型自带基带（初代 iPhone）、Wi-Fi，蓝牙在 UART3。lock 的 machine 里有 imei、wifi-mac。
+            var m = "\(info.machine),bootrom=\(DeviceProfile.esc(try s5l8900Bootrom(beside: bootrom).path))"
+            m += ",iboot=\(path("iBoot.bin")),nand=\(statePath("nand"))" + options
+            argv += ["-M", m, "-drive", "if=pflash,format=raw,file=\(statePath("nor.bin"))"]
         default:
-            throw EngineError("\(id)：M1 还不支持 boot_strategy=\(bootStrategy)")
+            throw EngineError("\(id)：还不支持 boot_strategy=\(bootStrategy)")
         }
         argv += ["-accel", accel, "-display", "none", "-no-shutdown", "-audio", "driver=none", "-serial", "file:\(serial)"]
         if info.hasUSBHost && usbKeyboard { argv += ["-device", "usb-kbd,bus=usb-bus.0,max-power=20"] }
@@ -222,5 +237,20 @@ func placeholderBootrom(in documents: URL) throws -> URL {
     try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     let placeholder = dir.appendingPathComponent("placeholder-b-self.bin")
     try Data([0xFE, 0xFF, 0xFF, 0xEA]).write(to: placeholder)
+    return placeholder
+}
+
+/// S5L8900 的 SecureROM：bootrom/bootrom_s5l8900 有就用，没有就用同样一条「b .」的占位文件。qemu-ios 只把它放在
+/// 0x20000000 给 iBoot 的跳转表用，跳转表里 iBoot 要调的两个槽（8900 映像校验、解密）机型自己指到桩上
+/// （hw/arm/ipod_touch_1g.c 的 n45_stage_boot_chain），所以占位文件就能开到主屏（2026-11-02 Mac 和模拟器实测）。
+/// `bootrom` 是 placeholderBootrom 给的 iPod touch 2 代那份，这里只借它的目录。
+func s5l8900Bootrom(beside bootrom: URL) throws -> URL {
+    let dir = bootrom.deletingLastPathComponent()
+    let real = dir.appendingPathComponent("bootrom_s5l8900")
+    if FileManager.default.fileExists(atPath: real.path) { return real }
+    let placeholder = dir.appendingPathComponent("placeholder-s5l8900-b-self.bin")
+    if !FileManager.default.fileExists(atPath: placeholder.path) {
+        try Data([0xFE, 0xFF, 0xFF, 0xEA]).write(to: placeholder)
+    }
     return placeholder
 }

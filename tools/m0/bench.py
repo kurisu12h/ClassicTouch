@@ -539,9 +539,10 @@ def cmd_setup(a):
     os.makedirs(os.path.join(state, "overlay"))
     shutil.copy(os.path.join(a.device, "nor.bin"), os.path.join(state, "nor.bin"))
     nand = os.path.join(a.device, "nand")
-    if json.load(open(os.path.join(nand, "geometry.json"))).get("storage_format") in ("nand-xor-ff-v2",
-                                                                                    "nand-xor-blank-v2"):
-        # an image store (PreparedDeviceBoot.liveNAND): clonefile each chip into overlay/nand, made writable
+    if json.load(open(os.path.join(nand, "geometry.json"))).get("storage_format") == "nand-xor-blank-v2":
+        # the n72's image store (PreparedDeviceBoot.liveNAND): clonefile each chip into overlay/nand, made writable.
+        # Not for the kboot boards' nand-xor-ff-v2: Machine boots those with nand-overlay=overlay, and QEMU refuses
+        # a v2 overlay that is not empty ("v2 requires an empty or explicitly v2 overlay").
         live = os.path.join(state, "overlay", "nand")
         os.makedirs(live)
         for name in sorted(os.listdir(nand)):
