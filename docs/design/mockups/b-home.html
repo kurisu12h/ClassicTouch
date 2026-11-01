@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<title>方案 B 怀旧拟物：首页</title>
+<link rel="stylesheet" href="common.css">
+<style>
+  body { font-family: "Helvetica Neue", "PingFang SC", sans-serif;
+         background: repeating-linear-gradient(90deg, #c5ccd4 0 5px, #cbd2d8 5px 7px); }
+  /* 老式蓝灰导航栏：上亮下暗、中间一道分界，标题刻字阴影 */
+  .nav { top: 0; left: 0; right: 0; height: 98px;
+         background: linear-gradient(#b4c0d0 0%, #93a4bb 55%, #8496b0 56%, #6c82a2 100%);
+         border-bottom: 1px solid #2d3642; box-shadow: inset 0 -1px 0 rgba(255,255,255,.18), 0 1px 3px rgba(0,0,0,.25); }
+  .nav h1 { position: absolute; top: 62px; left: 0; right: 0; text-align: center; color: #fff;
+            font: bold 20px "Helvetica Neue", "PingFang SC"; text-shadow: 0 -1px 0 rgba(0,0,0,.45); }
+  .barbtn { position: absolute; top: 61px; height: 31px; border-radius: 5px; display: grid; place-items: center; padding: 0 10px;
+            color: #fff; font: bold 13px "Helvetica Neue", "PingFang SC"; text-shadow: 0 -1px 0 rgba(0,0,0,.4);
+            background: linear-gradient(#9aabc3 0%, #7187a8 50%, #5f7699 51%, #577091 100%);
+            border: 1px solid rgba(25,35,55,.75); box-shadow: inset 0 1px 0 rgba(255,255,255,.3), 0 1px 0 rgba(255,255,255,.25); }
+
+  .hdr { position: absolute; left: 20px; font: bold 17px "Helvetica Neue", "PingFang SC"; color: #4c566c; text-shadow: 0 1px 0 #fff; }
+  .foot { position: absolute; left: 22px; right: 22px; text-align: center; font: 14px "Helvetica Neue", "PingFang SC";
+          line-height: 19px; color: #4c566c; text-shadow: 0 1px 0 rgba(255,255,255,.9); }
+  .group { position: absolute; left: 10px; right: 10px; background: #fff; border: 1px solid #a9adb5; border-radius: 10px;
+           box-shadow: 0 1px 0 rgba(255,255,255,.7); overflow: hidden; }
+  .row { position: relative; display: flex; align-items: center; padding: 0 12px 0 14px; border-top: 1px solid #e0e0e0; }
+  .row:first-child { border-top: 0; }
+  .row .dev { width: 30px; margin-right: 12px; display: flex; justify-content: center; }
+  .row .tx { flex: 1; min-width: 0; }
+  .row .t { font: bold 16.5px "Helvetica Neue", "PingFang SC"; color: #000; }
+  .row .s { margin-top: 2px; font: 14px "Helvetica Neue", "PingFang SC"; color: #7f7f7f; }
+  .row .v { font: 15.5px "Helvetica Neue", "PingFang SC"; color: #385487; margin-right: 8px; }
+  .chev { width: 9px; height: 13px; }
+  .badge { display: inline-block; margin-left: 6px; padding: 1px 6px 2px; border-radius: 5px; vertical-align: 2px;
+           font: bold 11px "Helvetica Neue", "PingFang SC"; color: #fff; text-shadow: 0 -1px 0 rgba(0,0,0,.25);
+           background: linear-gradient(#f9be4f, #e68a12); border: 1px solid #c4700a; box-shadow: inset 0 1px 0 rgba(255,255,255,.4); }
+  .warn { color: #c25f00 !important; }
+  .go { height: 32px; padding: 0 14px; border-radius: 6px; display: grid; place-items: center;
+        font: bold 15px "Helvetica Neue", "PingFang SC"; color: #fff; text-shadow: 0 -1px 0 rgba(0,0,0,.35);
+        background: linear-gradient(#8bd97c 0%, #55b947 50%, #3fa532 51%, #379a2b 100%);
+        border: 1px solid #2a7a20; box-shadow: inset 0 1px 0 rgba(255,255,255,.45), 0 1px 1px rgba(0,0,0,.15); }
+  .tile { width: 29px; height: 29px; border-radius: 6.5px; display: grid; place-items: center; margin-right: 12px; position: relative; overflow: hidden;
+          box-shadow: 0 1px 2px rgba(0,0,0,.35), inset 0 0 0 .5px rgba(0,0,0,.3); }
+  .tile::after { content: ""; position: absolute; left: -4px; right: -4px; top: -16px; height: 30px; border-radius: 50%;
+                 background: linear-gradient(rgba(255,255,255,.65), rgba(255,255,255,.12)); }
+</style></head>
+<body>
+<div class="abs nav">
+  <h1>选择系统</h1>
+  <div class="barbtn" style="right:10px" data-icon="tray 18 #fff 2.2"></div>
+</div>
+
+<div class="hdr" style="top:114px">正在运行</div>
+<div class="group" style="top:142px">
+  <div class="row" style="height:66px">
+    <div class="dev" data-device="ipod2 25"></div>
+    <div class="tx"><div class="t">iPod touch（第 2 代）</div><div class="s">iPhone OS 3.1.3 · 已暂停</div></div>
+    <div class="go">继续</div>
+  </div>
+</div>
+
+<div class="hdr" style="top:226px">系统</div>
+<div class="group" style="top:254px">
+  <div class="row" style="height:86px">
+    <div class="dev" data-device="ipod2 25"></div>
+    <div class="tx">
+      <div class="t">iPod touch（第 2 代）<span class="badge">实验性</span></div>
+      <div class="s">iPhone OS 3.1.3 · 7E18</div>
+      <div class="s warn" style="font-size:13px">熄屏后可能卡住</div>
+    </div>
+    <div class="v">972 MB</div><svg class="chev" viewBox="0 0 9 13"><path d="M1.5 1.5l5 5-5 5" fill="none" stroke="#8a8a8f" stroke-width="2.6"/></svg>
+  </div>
+  <div class="row" style="height:68px">
+    <div class="dev" data-device="3gs 25"></div>
+    <div class="tx"><div class="t">iPhone 3GS</div><div class="s">iOS 6.1.6 · 10B500</div></div>
+    <div class="v">2.16 GB</div><svg class="chev" viewBox="0 0 9 13"><path d="M1.5 1.5l5 5-5 5" fill="none" stroke="#8a8a8f" stroke-width="2.6"/></svg>
+  </div>
+  <div class="row" style="height:68px">
+    <div class="dev" data-device="4 24"></div>
+    <div class="tx"><div class="t">iPhone 4</div><div class="s">iOS 7.1.2 · 11D257</div></div>
+    <div class="v">2.7 GB</div><svg class="chev" viewBox="0 0 9 13"><path d="M1.5 1.5l5 5-5 5" fill="none" stroke="#8a8a8f" stroke-width="2.6"/></svg>
+  </div>
+</div>
+<div class="foot" style="top:487px">一次只能开一个系统，换系统时 App 会重新启动。</div>
+
+<div class="hdr" style="top:530px">加速</div>
+<div class="group" style="top:558px">
+  <div class="row" style="height:46px">
+    <div class="tile" style="background:linear-gradient(#ffd23f,#f39a0c)"><span style="position:relative;z-index:1" data-icon="bolt 18 #fff 1"></span></div>
+    <div class="tx"><div class="t">JIT</div></div>
+    <div class="v">还没开</div><svg class="chev" viewBox="0 0 9 13"><path d="M1.5 1.5l5 5-5 5" fill="none" stroke="#8a8a8f" stroke-width="2.6"/></svg>
+  </div>
+</div>
+<div class="foot" style="top:614px">点系统后会跳到 StikDebug 开 JIT，开好后<br>自动回来开机。要先打开 LocalDevVPN。</div>
+
+<div class="hdr" style="top:676px">关于</div>
+<div class="group" style="top:704px">
+  <div class="row" style="height:46px">
+    <div class="tx"><div class="t" style="font-weight:normal">开源许可</div></div>
+    <div class="v">GPL-2.0+</div><svg class="chev" viewBox="0 0 9 13"><path d="M1.5 1.5l5 5-5 5" fill="none" stroke="#8a8a8f" stroke-width="2.6"/></svg>
+  </div>
+  <div class="row" style="height:46px">
+    <div class="tx"><div class="t" style="font-weight:normal">致谢</div></div>
+    <div class="v">qemu-ios 等</div><svg class="chev" viewBox="0 0 9 13"><path d="M1.5 1.5l5 5-5 5" fill="none" stroke="#8a8a8f" stroke-width="2.6"/></svg>
+  </div>
+</div>
+
+<script src="common.js"></script>
+<script>fillDevices(); hostChrome('#fff', '#000');</script>
+</body></html>

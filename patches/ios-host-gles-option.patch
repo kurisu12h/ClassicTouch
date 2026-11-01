@@ -1,0 +1,60 @@
+ios-host-gles-option.patch：给 meson 加 host_gles 构建开关（-Dhost_gles=disabled / --disable-host-gles）。
+
+原因：iOS SDK 带 OpenGLES.framework，上游 meson 只要找到它就自动编 EAGL 版 GL 桥（gles-host.c + gles-host-eagl.c），
+没有办法关。M1 第一次开机要先不用宿主 GL（调研报告 4.5）：GL 桥换成 gles-host-stub.c，客体探测 GLES HLE 失败后
+退回自己的软件合成，把「能不能开机」和「GL 对不对」分开验证，也让快照不被 GL 状态挡住。
+默认值 auto，行为和上游一样；只有显式 disabled 才走 stub。
+基于 samhenrigold/qemu-ios b225694505。
+
+diff --git a/meson.build b/meson.build
+index be28191129..4102f5d67a 100644
+--- a/meson.build
++++ b/meson.build
+@@ -1250,10 +1250,12 @@ endif
+ # which is what keeps a tile-based GPU from being drained by a glReadPixels
+ # every frame. gles-host.c falls back to that readback if any of it is missing
+ # at RUNTIME, but the link needs all three.
++# -Dhost_gles=disabled builds the stub on iOS too, so a first boot can run on the
++# guest's software compositor alone (and stay snapshot-safe) before the EAGL path is tried.
+ host_gles = dependency('appleframeworks',
+                        modules: ['OpenGLES', 'Foundation', 'IOSurface',
+                                  'CoreFoundation'],
+-                       required: false)
++                       required: get_option('host_gles'))
+ 
+ vmnet = dependency('appleframeworks', modules: 'vmnet', required: get_option('vmnet'))
+ if vmnet.found() and not cc.has_header_symbol('vmnet/vmnet.h',
+diff --git a/meson_options.txt b/meson_options.txt
+index c4b726e840..0c2baa5124 100644
+--- a/meson_options.txt
++++ b/meson_options.txt
+@@ -206,6 +206,8 @@ option('lzo', type : 'feature', value : 'auto',
+        description: 'lzo compression support')
+ option('pvg', type: 'feature', value: 'auto',
+        description: 'macOS paravirtualized graphics support')
++option('host_gles', type: 'feature', value: 'auto',
++       description: 'iOS host OpenGL ES (EAGL) behind the GLES bridge')
+ option('rbd', type : 'feature', value : 'auto',
+        description: 'Ceph block device driver')
+ option('opengl', type : 'feature', value : 'auto',
+diff --git a/scripts/meson-buildoptions.sh b/scripts/meson-buildoptions.sh
+index ca5b113119..ba922c2f56 100644
+--- a/scripts/meson-buildoptions.sh
++++ b/scripts/meson-buildoptions.sh
+@@ -171,6 +171,7 @@ meson_options_help() {
+   printf "%s\n" '  plugins         TCG plugins via shared library loading'
+   printf "%s\n" '  png             PNG support with libpng'
+   printf "%s\n" '  pvg             macOS paravirtualized graphics support'
++  printf "%s\n" '  host-gles       iOS host OpenGL ES (EAGL) behind the GLES bridge'
+   printf "%s\n" '  qatzip          QATzip compression support'
+   printf "%s\n" '  qcow1           qcow1 image format support'
+   printf "%s\n" '  qed             qed image format support'
+@@ -447,6 +448,8 @@ _meson_option_parse() {
+     --prefix=*) quote_sh "-Dprefix=$2" ;;
+     --enable-pvg) printf "%s" -Dpvg=enabled ;;
+     --disable-pvg) printf "%s" -Dpvg=disabled ;;
++    --enable-host-gles) printf "%s" -Dhost_gles=enabled ;;
++    --disable-host-gles) printf "%s" -Dhost_gles=disabled ;;
+     --enable-qatzip) printf "%s" -Dqatzip=enabled ;;
+     --disable-qatzip) printf "%s" -Dqatzip=disabled ;;
+     --enable-qcow1) printf "%s" -Dqcow1=enabled ;;

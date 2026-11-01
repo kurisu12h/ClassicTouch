@@ -1,0 +1,939 @@
+ios-eagl-es2.patch：iOS 宿主的 EAGL 后端补上 OpenGL ES 2.0，每个客体 GL 上下文一个 EAGLContext。
+
+原因：上游 gles-host-eagl.c 整个进程只建一个 ES 1.1 上下文，不认客体的上下文和共享组。iOS 4 以后的 CoreAnimation
+（iOS 6、7 在 backboardd 里）建 API 2 的上下文跑着色器，ES 1.1 执行不了；关掉宿主 GL（stub）时 iOS 7.1.2 的
+SpringBoard 一建 GL 上下文就崩、开不到锁屏（docs/reports/m1-stage4-ios7.md）。而且纯 EAGL 构建在现在的主干上已经
+编不过（ES 1.1 头文件里没有 GL_UNPACK_ROW_LENGTH 等，20 个错误），上游 8 月转做 Mac 后只维护了 ANGLE 那一支。
+
+改法：让 iOS 的 EAGL 构建走 ANGLE 那条「每个客体上下文一个宿主 ES 上下文」的路（上游 10-21 已让 n90ap 11D257 在
+Mac 上全程走 ANGLE 合成），只把上下文的建立、切换、释放换成 EAGL：
+  - gles-host.c：新宏 GLES_HOST_ES_CONTEXTS（ANGLE 和 iOS EAGL 都定义），原来只给 CGL、ANGLE 编的每上下文代码
+    （gles_context_operation、共享组的根上下文、矩形纹理、APPLE_fence、GLSL 原样提交、无快照）都认它；iOS 上同时包含
+    OpenGLES 的 ES1 和 ES3 头文件；整屏帧缓冲和 ANGLE 一样走读回。
+  - 新文件 gles-host-eagl.c.inc：EAGL 上下文结构和生命周期（客体 API 2 建 ES 3.0，API 0、1 建 ES 1.1，同组共享根上下文的
+    EAGLSharegroup），APPLE_fence 自己记（iOS 没有 NV_fence 可借，语义和 ANGLE 版一样：设过的栅栏都算已完成），
+    然后包含 gles-host-angle.c.inc 的 ES 适配。
+  - gles-host-angle.c.inc：EGL 生命周期和 NV_fence 那两段只给 ANGLE 编；BGRA 纹理在 iOS 上用 RGBA 内部格式
+    （APPLE_texture_format_BGRA8888）。ANGLE 构建的行为不变。
+  - gles-host-eagl.c：改成按 API 建上下文、设为当前、释放三个纯 C 函数（仍走 Objective-C 运行时，原因见文件头），
+    每次调用包一层自动释放池；去掉只能给一个上下文用的 IOSurface 颜色附件。
+  - 后台：qemu_ios_set_foreground(false)（App 在 willResignActive 时调）以前只改一个标志，vCPU 线程上正在执行的那次 GL
+    调用会跨过去；现在等它做完才返回（最多 1 秒），回到前台时打出后台期间拒绝了多少次调用。
+基于 samhenrigold/qemu-ios b225694505，要和 ios-host-gles-option.patch 一起用（构建时 -Dhost_gles=enabled）。
+
+diff --git a/hw/arm/gles-host-angle.c.inc b/hw/arm/gles-host-angle.c.inc
+index 392367c5ca..6e6f5dde7f 100644
+--- a/hw/arm/gles-host-angle.c.inc
++++ b/hw/arm/gles-host-angle.c.inc
+@@ -2,7 +2,11 @@
+  * Each guest context has its own native state; the group retains a root only
+  * for the shared namespace. No window/swap or second transport is involved.
+  * A guest ES 2.0 context is an ANGLE ES 2.0 (or later) context, the rest ES 1.1:
+- * ANGLE runs no fixed function in a programmable context, nor shaders in an ES1 one. */
++ * ANGLE runs no fixed function in a programmable context, nor shaders in an ES1 one.
++ * Past the EGL lifetime, the ES adapters below serve EAGL on iOS as well
++ * (gles-host-eagl.c.inc), whose contexts are split by API the same way: there
++ * the context type and angle_current are EAGL's. */
++#ifdef GLES_HOST_ANGLE
+ #include <EGL/egl.h>
+ #include <EGL/eglext.h>
+ #include <dlfcn.h>
+@@ -111,6 +115,7 @@ static void CGLReleaseContext(CGLContextObj c)
+     g_hash_table_unref(c->rect_size);
+     g_free(c);
+ }
++#endif /* GLES_HOST_ANGLE */
+ 
+ /* Desktop clip-plane setters receive doubles reconstructed from guest floats. */
+ static void gles_angle_clip_plane(GLenum plane, const double *value)
+@@ -170,12 +175,19 @@ static const void *gles_angle_unpack(GLsizei w, GLsizei h, GLenum fmt, GLenum ty
+     return *tight;
+ }
+ 
++/* EAGL takes BGRA texels into RGBA storage (APPLE_texture_format_BGRA8888), as iOS apps upload them. */
++#ifdef GLES_HOST_ANGLE
++#define GLES_ES_BGRA_STORAGE GL_BGRA_EXT
++#else
++#define GLES_ES_BGRA_STORAGE GL_RGBA
++#endif
+ static void gles_angle_tex_image_2d(GLenum target, GLint level, GLint ifmt, GLsizei w, GLsizei h,
+                                     GLint border, GLenum fmt, GLenum type, const void *pixels)
+ {
+     g_autofree uint8_t *tight = NULL;
+-    if (ifmt == GL_RGBA && (fmt == GL_BGRA_EXT || fmt == GL_RGB || fmt == GL_ALPHA ||
+-                            fmt == GL_LUMINANCE || fmt == GL_LUMINANCE_ALPHA)) ifmt = fmt;
++    if (ifmt == GL_RGBA && fmt == GL_BGRA_EXT) ifmt = GLES_ES_BGRA_STORAGE;
++    else if (ifmt == GL_RGBA && (fmt == GL_RGB || fmt == GL_ALPHA ||
++                                 fmt == GL_LUMINANCE || fmt == GL_LUMINANCE_ALPHA)) ifmt = fmt;
+     glTexImage2D(target, level, ifmt, w, h, border, fmt, type, gles_angle_unpack(w, h, fmt, type, pixels, &tight));
+ }
+ #undef glTexImage2D
+@@ -245,8 +257,10 @@ static void gles_angle_get_clip_plane(GLenum plane, double *value)
+ 
+ /* APPLE_fence is NV_fence with every fence set to "all completed". An object other than a fence
+  * is never pending: the executor copies the guest's texels and arrays into the host at each call,
+- * so the guest may always reuse the memory it named. */
++ * so the guest may always reuse the memory it named. iOS has no NV_fence, and EAGL keeps the
++ * same answers itself (gles-host-eagl.c.inc). */
+ #define GL_FENCE_APPLE 0x8A0B
++#ifdef GLES_HOST_ANGLE
+ #define glGenFencesAPPLE glGenFencesNV
+ #define glDeleteFencesAPPLE glDeleteFencesNV
+ #define glSetFenceAPPLE(fence) glSetFenceNV(fence, GL_ALL_COMPLETED_NV)
+@@ -261,6 +275,7 @@ static void glFinishObjectAPPLE(GLenum object, GLint name)
+ {
+     if (object == GL_FENCE_APPLE) glFinishFenceNV(name);
+ }
++#endif
+ 
+ /*
+  * GL_TEXTURE_RECTANGLE (APPLE/ARB_texture_rectangle), which 2.x and 3.x CoreAnimation composites with
+diff --git a/hw/arm/gles-host-eagl.c b/hw/arm/gles-host-eagl.c
+index 46d63256fc..a59dbaa5d6 100644
+--- a/hw/arm/gles-host-eagl.c
++++ b/hw/arm/gles-host-eagl.c
+@@ -1,11 +1,19 @@
+ /*
+- * OpenGL ES 1.1 high-level emulation -- the iOS half of the host context.
++ * OpenGL ES high-level emulation -- the iOS half of the host contexts.
+  *
+  * gles-host.c is the renderer and it is platform-neutral; this file is the one
+  * thing it cannot do for itself, which is ask iOS for a context. On macOS the
+- * same two functions are a dozen lines of CGL inside gles-host.c.
++ * same functions are a dozen lines of CGL inside gles-host.c.
+  *
+- * WHY THIS IS ALLOWED TO BE SO SMALL. The guest is an iPod touch running iOS
++ * ONE CONTEXT PER GUEST CONTEXT. This file used to make one ES 1.1 context for
++ * the whole process, which is all an iPod touch on 3.1.3 needs. From iOS 4 on
++ * CoreAnimation composites with ES 2.0, in contexts and share groups of its
++ * own, so the executor now gives every guest context a native one, exactly as
++ * it does on ANGLE (gles-host-eagl.c.inc): ES 1.1 for a guest API 0 or 1,
++ * ES 3.0 for API 2, a group's contexts on its root's EAGLSharegroup. What
++ * follows about the API applies to the ES 1.1 contexts.
++ *
++ * WHY THIS IS ALLOWED TO BE SO SMALL. The first guest was an iPod touch running iOS
+  * 3.1.3, so the API the guest issues -- fixed-function GLES 1.1, glMatrixMode
+  * and glOrthof and glLightfv -- is still exactly the API OpenGLES.framework
+  * exports today (verified against the iPhoneOS 26.5 SDK: 457 entry points, all
+@@ -14,11 +22,13 @@
+  * design is a copy into the guest's own CoreAnimation surface (see
+  * gles_present_to_surface), so the host context never needs a CAEAGLLayer, a
+  * window or presentRenderbuffer. An offscreen FBO in a bare EAGLContext is the
+- * entire requirement -- with, since the present has to be cheap on a tiler, an
+- * IOSurface for its color attachment rather than plain texture storage. That
+- * second half is the rest of this file.
++ * entire requirement. The panel-sized drawable once had an IOSurface for its
++ * color attachment, one for the process like the context; with a context per
++ * guest context it presents by readback as on ANGLE, and from iOS 4 on what
++ * reaches the screen is CoreAnimation's own surfaces, written back by
++ * gles_surface_writeback either way.
+  *
+- * WHY C AND objc_msgSend RATHER THAN AN .m FILE. This is three message sends,
++ * WHY C AND objc_msgSend RATHER THAN AN .m FILE. This is a handful of message sends,
+  * and writing them in Objective-C costs more than it looks. meson picks a
+  * target's linker driver from the languages of its sources -- and of anything
+  * it links -- so a single .m anywhere in qemu-system-arm switches the link from
+@@ -33,15 +43,19 @@
+  * The proper fix is one line in configure, teaching it to emit objc_link_args
+  * beside c_link_args; with that this file could be an .m and read a little
+  * better. It would not do anything different. What it does now is the same
+- * three messages the compiler would have emitted, and it is a leaf: nothing
+- * else in the tree calls it, so the cost of the idiom is contained here.
++ * messages the compiler would have emitted, and it is a leaf: only
++ * gles-host-eagl.c.inc calls it, so the cost of the idiom is contained here.
+  *
+  * THREADING. EAGL's current context is thread-local, exactly like CGL's. Every
+  * QC_GLES request arrives on the one vCPU thread that traps out of the guest,
+- * so the context is created on that thread and stays current on it; no other
+- * thread in the process touches GL. gles_eagl_make_current is the same cheap
+- * thread-local comparison the CGL path does rather than an unconditional call
+- * into the GL stack.
++ * so the contexts are created on that thread and made current on it; no other
++ * thread in the process touches GL. gles-host-eagl.c.inc remembers which one
++ * is current, so a request costs a thread-local comparison rather than a call
++ * into the GL stack, and nothing here is asked for the current context.
++ *
++ * AUTORELEASE. The vCPU thread has no autorelease pool of its own, and what
++ * UIKit's pool would have drained there piles up for the life of the thread.
++ * Each entry point below pushes and pops one around its sends.
+  *
+  * Copyright (c) 2026 the qemu-ios contributors.
+  */
+@@ -51,246 +65,86 @@
+ #include <objc/message.h>
+ #include <objc/runtime.h>
+ 
+-#include <CoreFoundation/CoreFoundation.h>
+-#include <IOSurface/IOSurfaceRef.h>
++void *gles_eagl_context_new(unsigned api, void *share);
++bool gles_eagl_context_set_current(void *context);
++void gles_eagl_context_release(void *context);
+ 
+-bool gles_eagl_context_create(void);
+-void gles_eagl_make_current(void);
+-bool gles_eagl_iosurface_bind(uint32_t width, uint32_t height,
+-                              unsigned long target,
+-                              unsigned long internal_format,
+-                              unsigned long format, unsigned long type);
+-void *gles_eagl_iosurface_lock(size_t *stride);
+-void gles_eagl_iosurface_unlock(void);
+-
+-/* EAGLRenderingAPI, from <OpenGLES/EAGL.h>. ES 1.1 specifically: an ES 2.0
+- * context would create happily and then be unable to execute a single one of
+- * the guest's calls, because it has no fixed-function pipeline at all. There
+- * would be nothing to fall back to it FOR. */
+-#define EAGL_RENDERING_API_GLES1 1
++/* libobjc's own pool entry points, which @autoreleasepool compiles to. */
++void *objc_autoreleasePoolPush(void);
++void objc_autoreleasePoolPop(void *pool);
+ 
+ /* objc_msgSend has no callable prototype on arm64 -- it must be cast to the
+  * exact signature of the method being sent, because the ABI for the call is
+- * the method's, not a variadic one. */
++ * the method's, not a variadic one. EAGLRenderingAPI is an NSUInteger. */
+ typedef id (*msg_id_t)(id, SEL);
+-typedef id (*msg_id_ul_t)(id, SEL, unsigned long);
++typedef id (*msg_id_ul_id_t)(id, SEL, unsigned long, id);
+ typedef BOOL (*msg_bool_id_t)(id, SEL, id);
+ typedef void (*msg_void_t)(id, SEL);
+-typedef BOOL (*msg_bool_sel_t)(id, SEL, SEL);
+-
+-/*
+- * -[EAGLContext texImageIOSurface:target:internalFormat:width:height:
+- *               format:type:plane:]
+- *
+- * Ten arguments including self and _cmd, so the last two land on the stack --
+- * which is precisely why the prototype has to match the method's declared types
+- * exactly rather than approximately. NSUInteger is unsigned long, the width,
+- * height and plane arguments are genuinely uint32_t, and getting either wrong
+- * would put `plane` somewhere the callee does not look.
+- */
+-typedef BOOL (*msg_teximage_t)(id, SEL, IOSurfaceRef, unsigned long,
+-                               unsigned long, uint32_t, uint32_t,
+-                               unsigned long, unsigned long, uint32_t);
+ 
+-/*
+- * Deliberately never released, matching the CGL path: the context lives for
+- * the life of the process, and tearing it down from a thread it may not be
+- * current on is a worse hazard than the leak.
+- */
+-static id gles_ctx;
+-static Class gles_eagl_class;
+-
+-bool gles_eagl_context_create(void)
++static Class gles_eagl_class(void)
+ {
+-    id fresh;
+-
+-    if (gles_ctx) {
+-        return true;
+-    }
+-
+     /* Not dlopen'd or weak-linked: the machine is linked against
+      * OpenGLES.framework, so if the class is missing the process would not
+      * have started. The check is for the day Apple withdraws it. */
+-    gles_eagl_class = objc_getClass("EAGLContext");
+-    if (!gles_eagl_class) {
+-        fprintf(stderr, "[gles] no EAGLContext class; the guest will fall "
+-                "back to software GL\n");
+-        return false;
+-    }
+-
+-    /* [[EAGLContext alloc] initWithAPI:kEAGLRenderingAPIOpenGLES1] */
+-    fresh = ((msg_id_t)objc_msgSend)((id)gles_eagl_class,
+-                                     sel_registerName("alloc"));
+-    gles_ctx = fresh ?
+-        ((msg_id_ul_t)objc_msgSend)(fresh, sel_registerName("initWithAPI:"),
+-                                    EAGL_RENDERING_API_GLES1) : NULL;
+-    if (!gles_ctx) {
+-        /* ES 1.1 has been deprecated since iOS 12 and initWithAPI: answers nil
+-         * rather than failing loudly when an API level is not supported. */
+-        fprintf(stderr, "[gles] EAGL ES 1.1 context unavailable on this OS; "
+-                "the guest will fall back to software GL\n");
+-        return false;
+-    }
+-
+-    /* [EAGLContext setCurrentContext:ctx] */
+-    if (!((msg_bool_id_t)objc_msgSend)((id)gles_eagl_class,
+-                                       sel_registerName("setCurrentContext:"),
+-                                       gles_ctx)) {
+-        fprintf(stderr, "[gles] EAGL setCurrentContext failed\n");
+-        ((msg_void_t)objc_msgSend)(gles_ctx, sel_registerName("release"));
+-        gles_ctx = NULL;
+-        return false;
+-    }
+-
+-    return true;
++    static Class cls;
++    if (!cls) cls = objc_getClass("EAGLContext");
++    return cls;
+ }
+ 
+-void gles_eagl_make_current(void)
+-{
+-    id cur = ((msg_id_t)objc_msgSend)((id)gles_eagl_class,
+-                                      sel_registerName("currentContext"));
+-
+-    if (cur != gles_ctx) {
+-        ((msg_bool_id_t)objc_msgSend)((id)gles_eagl_class,
+-                                      sel_registerName("setCurrentContext:"),
+-                                      gles_ctx);
+-    }
+-}
+-
+-/* ---------------------------------------------------------------- IOSurface */
+-
+ /*
+- * The render target the CPU can read without asking GL for it.
+- *
+- * The frame has to reach guest memory every present -- the guest's
+- * CoreAnimation owns the destination and the request is synchronous -- so the
+- * pixels cross the CPU/GPU line either way. What is negotiable is HOW. A
+- * glReadPixels out of an ordinary texture attachment is the worst available
+- * answer on a tile-based GPU: it forces the tiler to resolve on demand, into
+- * driver-owned staging the CPU then copies again, with a full pipeline drain in
+- * front of it. An IOSurface attachment is the same render target with system
+- * memory as its backing store, so once the GPU is done the pixels are simply
+- * THERE and the present is a memcpy out of a mapped page.
+- *
+- * ORDERING. IOSurfaceLock without kIOSurfaceLockAvoidSync is the synchronizing
+- * read: that flag exists to let a caller BAIL OUT of "a potentially expensive
+- * paging operation (such as readback from a GPU to system memory)", which is
+- * Apple documenting that the default lock performs exactly that wait. So the
+- * lock is the guarantee, and it is a better one than glFinish -- it waits for
+- * the work that touches THIS surface rather than draining every queue in the
+- * context. The caller still owes it a glFlush first, because a lock can only
+- * wait for commands the driver has actually been given.
++ * [[EAGLContext alloc] initWithAPI:api sharegroup:[share sharegroup]], +1, or
++ * NULL with the reason on stderr; the guest's context then fails like any other
++ * the host cannot make.
+  */
+-static IOSurfaceRef gles_surf;
+-
+-static void gles_dict_set_int(CFMutableDictionaryRef d, CFStringRef key, int v)
+-{
+-    CFNumberRef n = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &v);
+-
+-    if (n) {
+-        CFDictionarySetValue(d, key, n);
+-        CFRelease(n);
+-    }
+-}
+-
+-bool gles_eagl_iosurface_bind(uint32_t width, uint32_t height,
+-                              unsigned long target,
+-                              unsigned long internal_format,
+-                              unsigned long format, unsigned long type)
++void *gles_eagl_context_new(unsigned api, void *share)
+ {
+-    CFMutableDictionaryRef props;
+-    SEL sel = sel_registerName("texImageIOSurface:target:internalFormat:"
+-                               "width:height:format:type:plane:");
+-
+-    if (!gles_ctx) {
+-        return false;
+-    }
+-    if (gles_surf) {
+-        /* Bound once, for the life of the process, like the context. */
+-        return true;
+-    }
+-
+-    /*
+-     * texImageIOSurface: has been deprecated since iOS 12 and the whole
+-     * framework is on borrowed time, so ask before sending rather than trap on
+-     * the day it goes. gles-host.c keeps the glReadPixels path for exactly this
+-     * case: slow pixels beat no pixels.
+-     */
+-    if (!((msg_bool_sel_t)objc_msgSend)(gles_ctx,
+-                                        sel_registerName("respondsToSelector:"),
+-                                        sel)) {
+-        fprintf(stderr, "[gles] EAGL has no texImageIOSurface:; presenting by "
+-                "readback\n");
+-        return false;
+-    }
+-
+-    props = CFDictionaryCreateMutable(kCFAllocatorDefault, 0,
+-                                      &kCFTypeDictionaryKeyCallBacks,
+-                                      &kCFTypeDictionaryValueCallBacks);
+-    if (!props) {
+-        return false;
+-    }
+-    gles_dict_set_int(props, kIOSurfaceWidth, (int)width);
+-    gles_dict_set_int(props, kIOSurfaceHeight, (int)height);
+-    gles_dict_set_int(props, kIOSurfaceBytesPerElement, 4);
+-    /* 'BGRA' -- the byte order CoreAnimation uses in the guest, so the present
+-     * is a copy and never a swizzle. Deliberately no kIOSurfaceBytesPerRow:
+-     * IOSurface picks the alignment the GPU wants and the caller reads the
+-     * result back out of IOSurfaceGetBytesPerRow. */
+-    gles_dict_set_int(props, kIOSurfacePixelFormat, 0x42475241);
+-
+-    gles_surf = IOSurfaceCreate(props);
+-    CFRelease(props);
+-    if (!gles_surf) {
+-        fprintf(stderr, "[gles] IOSurfaceCreate failed; presenting by "
+-                "readback\n");
+-        return false;
+-    }
+-
+-    /* Binds to whichever texture the caller left bound on `target`, exactly as
+-     * glTexImage2D would -- this REPLACES that call, it does not accompany it. */
+-    if (!((msg_teximage_t)objc_msgSend)(gles_ctx, sel, gles_surf, target,
+-                                        internal_format, width, height,
+-                                        format, type, 0)) {
+-        fprintf(stderr, "[gles] texImageIOSurface rejected the surface; "
+-                "presenting by readback\n");
+-        CFRelease(gles_surf);
+-        gles_surf = NULL;
+-        return false;
+-    }
+-
+-    return true;
++    void *pool = objc_autoreleasePoolPush();
++    Class cls = gles_eagl_class();
++    id group = NULL, fresh = NULL;
++
++    if (!cls) {
++        fprintf(stderr, "[gles-eagl] no EAGLContext class; no host GL\n");
++        goto out;
++    }
++    if (share) {
++        group = ((msg_id_t)objc_msgSend)((id)share, sel_registerName("sharegroup"));
++    }
++    fresh = ((msg_id_t)objc_msgSend)((id)cls, sel_registerName("alloc"));
++    fresh = fresh ? ((msg_id_ul_id_t)objc_msgSend)(fresh, sel_registerName("initWithAPI:sharegroup:"),
++                                                   api, group) : NULL;
++    if (!fresh) {
++        /* initWithAPI: answers nil rather than failing loudly, for an API level
++         * this OS lacks and, Apple documents, for a share group whose first
++         * context had another API. */
++        fprintf(stderr, "[gles-eagl] EAGL refused an ES %u context%s\n", api,
++                group ? " in its share group" : "");
++    }
++out:
++    objc_autoreleasePoolPop(pool);
++    return fresh;
+ }
+ 
+-/*
+- * Returns the frame's first byte, or NULL if the surface cannot be read -- in
+- * which case the caller must fall back for this frame rather than present
+- * whatever was there before. Rows run bottom-up, GL's way round.
+- */
+-void *gles_eagl_iosurface_lock(size_t *stride)
++/* [EAGLContext setCurrentContext:context]; NULL makes none current. */
++bool gles_eagl_context_set_current(void *context)
+ {
+-    void *base;
++    void *pool = objc_autoreleasePoolPush();
++    Class cls = gles_eagl_class();
++    bool ok = cls && ((msg_bool_id_t)objc_msgSend)((id)cls, sel_registerName("setCurrentContext:"),
++                                                   (id)context);
+ 
+-    if (!gles_surf) {
+-        return NULL;
+-    }
+-    if (IOSurfaceLock(gles_surf, kIOSurfaceLockReadOnly, NULL) != 0) {
+-        return NULL;
+-    }
+-    base = IOSurfaceGetBaseAddress(gles_surf);
+-    if (!base) {
+-        IOSurfaceUnlock(gles_surf, kIOSurfaceLockReadOnly, NULL);
+-        return NULL;
++    if (!ok) {
++        fprintf(stderr, "[gles-eagl] setCurrentContext failed\n");
+     }
+-    *stride = IOSurfaceGetBytesPerRow(gles_surf);
+-    return base;
++    objc_autoreleasePoolPop(pool);
++    return ok;
+ }
+ 
+-void gles_eagl_iosurface_unlock(void)
++/* Called with the context no longer current (gles-host-eagl.c.inc). */
++void gles_eagl_context_release(void *context)
+ {
+-    if (gles_surf) {
+-        /* Symmetrical with the lock's flags; the header calls anything else
+-         * undefined behavior. */
+-        IOSurfaceUnlock(gles_surf, kIOSurfaceLockReadOnly, NULL);
++    void *pool = objc_autoreleasePoolPush();
++    if (context) {
++        ((msg_void_t)objc_msgSend)((id)context, sel_registerName("release"));
+     }
++    objc_autoreleasePoolPop(pool);
+ }
+diff --git a/hw/arm/gles-host.c b/hw/arm/gles-host.c
+index ab1b0af03f..d9699802b0 100644
+--- a/hw/arm/gles-host.c
++++ b/hw/arm/gles-host.c
+@@ -7,8 +7,9 @@
+  * GLESCreateSharegroup, and once the engine is ours there is no reason to keep
+  * that rendezvous alive.
+  *
+- * The host context is legacy-profile CGL on macOS and an EAGL ES 1.1 context
+- * on iOS (see the include block below, and gles-host-eagl.c). CGL on modern
++ * The host context is legacy-profile CGL on macOS and, on iOS, an EAGL context
++ * per guest context, ES 1.1 or ES 3.0 by the guest's API (see the include block
++ * below, gles-host-eagl.c.inc and gles-host-eagl.c). CGL on modern
+  * macOS is still a
+  * genuine fixed-function GL 2.1 implementation (measured: "2.1 Metal - 91.7",
+  * glMatrixMode/glOrtho/glColor4f/glVertexPointer/glDrawArrays all real). ES 1.1
+@@ -53,9 +54,9 @@
+  * context, so those are the only parts that are conditional:
+  *
+  *   macOS   OpenGL.framework, a legacy CGL context (created here).
+- *   iOS     OpenGLES.framework ES 1.1, an EAGLContext (created in
+- *           gles-host-eagl.m -- context creation is the one piece that has to
+- *           be Objective-C).
++ *   iOS     OpenGLES.framework, an EAGLContext per guest context, ES 1.1
++ *           or ES 3.0 by the guest's API (created in gles-host-eagl.c, through
++ *           the Objective-C runtime; the ES adapters are ANGLE's).
+  *
+  * iOS is the easier of the two targets, not the harder one: the guest API IS
+  * the host API there, so the desktop-vs-ES differences run the other way. What
+@@ -72,6 +73,14 @@
+ 
+ #ifdef GLES_HOST_EAGL
+ 
++/*
++ * GLES_HOST_ES_CONTEXTS: an ES host that gives every guest context a native context of
++ * its own, ES 1.1 for a guest API 0 or 1 and a programmable one for API 2, the group
++ * sharing through a root (ANGLE, and EAGL on iOS). Neither runs both pipelines in one
++ * context the way CGL's legacy context does, so the executor's per-context paths and
++ * the ES adapters in gles-host-angle.c.inc serve both.
++ */
++#define GLES_HOST_ES_CONTEXTS 1
+ #ifdef GLES_HOST_ANGLE
+ #define GL_GLES_PROTOTYPES 1
+ #define GL_GLEXT_PROTOTYPES 1
+@@ -86,8 +95,19 @@
+ #define GL_UNSIGNED_INT_8_8_8_8_REV 0x8367
+ #include "gles-host-angle.c.inc"
+ #else
++/* OpenGLES.framework: ES 1.1 for the fixed-function contexts, ES 3.0 (which runs the
++ * guest's ES 2.0 as it is) for the programmable ones, as ANGLE gives. Apple deprecated
++ * the whole API in iOS 12 and has kept it since; the warnings say nothing new. */
++#define GLES_SILENCE_DEPRECATION 1
+ #include <OpenGLES/ES1/gl.h>
+ #include <OpenGLES/ES1/glext.h>
++#include <OpenGLES/ES3/gl.h>
++#include <OpenGLES/ES3/glext.h>
++#define GL_UNSIGNED_SHORT_4_4_4_4_REV 0x8365
++#define GL_UNSIGNED_SHORT_1_5_5_5_REV 0x8366
++#define GL_UNSIGNED_INT_8_8_8_8 0x8035
++#define GL_UNSIGNED_INT_8_8_8_8_REV 0x8367
++#include "gles-host-eagl.c.inc"
+ #endif
+ 
+ /* Framebuffer objects are core in ES 1.1's OES form. Same tokens, same
+@@ -167,17 +187,6 @@
+ #define GL_BGRA                       GL_BGRA_EXT
+ #endif
+ 
+-/* Context management and the IOSurface render target live in
+- * gles-host-eagl.c; both need Objective-C. */
+-bool gles_eagl_context_create(void);
+-void gles_eagl_make_current(void);
+-bool gles_eagl_iosurface_bind(uint32_t width, uint32_t height,
+-                              unsigned long target,
+-                              unsigned long internal_format,
+-                              unsigned long format, unsigned long type);
+-void *gles_eagl_iosurface_lock(size_t *stride);
+-void gles_eagl_iosurface_unlock(void);
+-
+ #else /* macOS: legacy CGL */
+ 
+ #include <OpenGL/OpenGL.h>
+@@ -395,7 +404,7 @@ typedef struct {
+ } GLESPVRTC;
+ 
+ typedef struct {
+-#if !defined(GLES_HOST_EAGL) || defined(GLES_HOST_ANGLE)
++#if !defined(GLES_HOST_EAGL) || defined(GLES_HOST_ES_CONTEXTS)
+     CGLContextObj root;
+ #endif
+     unsigned refs;
+@@ -418,7 +427,7 @@ typedef struct {
+     bool failed;
+     /* 0: older guest did not supply its API; 1/2: explicit GLES version. */
+     uint32_t api_version;
+-#if !defined(GLES_HOST_EAGL) || defined(GLES_HOST_ANGLE)
++#if !defined(GLES_HOST_EAGL) || defined(GLES_HOST_ES_CONTEXTS)
+     CGLContextObj cgl;
+ #endif
+     GLuint fbo, tex, depth, sync_fbo;   /* sync_fbo: gles_surface_writeback's scratch */
+@@ -809,7 +818,7 @@ static bool gles_charge_texture(uint32_t target, uint32_t level, uint64_t bytes)
+     if (target >= GL_TEXTURE_CUBE_MAP_POSITIVE_X && target <= GL_TEXTURE_CUBE_MAP_NEGATIVE_Z) {
+         face = target - GL_TEXTURE_CUBE_MAP_POSITIVE_X + 1;
+         glGetIntegerv(GL_TEXTURE_BINDING_CUBE_MAP, &name);
+-#if !defined(GLES_HOST_EAGL) || defined(GLES_HOST_ANGLE)
++#if !defined(GLES_HOST_EAGL) || defined(GLES_HOST_ES_CONTEXTS)
+     } else if (target == GL_TEXTURE_RECTANGLE_ARB) {
+         face = 7;
+         glGetIntegerv(GL_TEXTURE_BINDING_RECTANGLE_ARB, &name);
+@@ -905,14 +914,25 @@ static inline uint64_t gles_t(void)
+  * returns -1, which is the guest's cue to fall back to its software renderer.
+  * A missing context is therefore never fatal to the emulator.
+  */
+-#if defined(GLES_HOST_ANGLE)
++#if defined(GLES_HOST_ES_CONTEXTS)
+ 
++/* ANGLE's and EAGL's present by readback: the drawable is an ordinary texture
++ * (gles-host-eagl.c says why EAGL no longer keeps its one IOSurface). */
+ static bool gles_platform_context_create(void)
+ {
++#ifdef GLES_HOST_ANGLE
+     if (!gles_angle_create(gh.group ? gh.group->root : NULL, gh.api_version == 2, &gh.cgl)) return false;
++#else
++    if (!gles_eagl_create(gh.group ? gh.group->root : NULL, gh.api_version == 2, &gh.cgl)) return false;
++#endif
+     if (gh.group && !gh.group->root) gh.group->root = CGLRetainContext(gh.cgl);
+     if (CGLSetCurrentContext(gh.cgl) != 0) return false;
+-    fprintf(stderr, "[gles-angle] context api=%u renderer=%s version=%s\n",
++    fprintf(stderr, "[gles-%s] context api=%u renderer=%s version=%s\n",
++#ifdef GLES_HOST_ANGLE
++            "angle",
++#else
++            "eagl",
++#endif
+             gh.api_version, glGetString(GL_RENDERER), glGetString(GL_VERSION));
+     return true;
+ }
+@@ -921,40 +941,6 @@ static bool gles_platform_attach_iosurface(void) { return false; }
+ static void *gles_platform_frame_lock(size_t *stride) { return NULL; }
+ static void gles_platform_frame_unlock(void) {}
+ 
+-#elif defined(GLES_HOST_EAGL)
+-
+-static bool gles_platform_context_create(void)
+-{
+-    return gles_eagl_context_create();
+-}
+-
+-static inline void gles_platform_make_current(void)
+-{
+-    gles_eagl_make_current();
+-}
+-
+-/*
+- * Make the frame buffer's color attachment an IOSurface, if this OS still
+- * allows it. The caller has the texture bound; on success this has taken the
+- * place of its glTexImage2D.
+- */
+-static bool gles_platform_attach_iosurface(void)
+-{
+-    return gles_eagl_iosurface_bind(GLES_FB_WIDTH, GLES_FB_HEIGHT,
+-                                    GL_TEXTURE_2D, GL_RGBA, GL_BGRA,
+-                                    GL_UNSIGNED_BYTE);
+-}
+-
+-static inline void *gles_platform_frame_lock(size_t *stride)
+-{
+-    return gles_eagl_iosurface_lock(stride);
+-}
+-
+-static inline void gles_platform_frame_unlock(void)
+-{
+-    gles_eagl_iosurface_unlock();
+-}
+-
+ #else /* CGL */
+ 
+ static bool gles_platform_context_create(void)
+@@ -2219,7 +2205,7 @@ static unsigned gles_query_count(uint32_t pname)
+     case GL_MAX_MODELVIEW_STACK_DEPTH:
+     case GL_MAX_PROJECTION_STACK_DEPTH:
+     case GL_MAX_TEXTURE_SIZE:
+-#if !defined(GLES_HOST_EAGL) || defined(GLES_HOST_ANGLE)
++#if !defined(GLES_HOST_EAGL) || defined(GLES_HOST_ES_CONTEXTS)
+     case GL_MAX_RECTANGLE_TEXTURE_SIZE_ARB:
+     case GL_TEXTURE_BINDING_RECTANGLE_ARB:
+ #endif
+@@ -4293,7 +4279,7 @@ static int64_t gles_pvrtc_upload(CPUState *cpu, uint32_t target, uint32_t level,
+     } else {
+         /* An ES host takes RGBA texels only into RGBA storage (GL_RGB would be GL_INVALID_OPERATION, and so would a
+          * replacement's RGBA glTexSubImage2D); the RGB formats decode with alpha 255, so they sample the same. */
+-#ifdef GLES_HOST_ANGLE
++#ifdef GLES_HOST_ES_CONTEXTS
+         GLenum internal = GL_RGBA;
+ #else
+         GLenum internal = (format == PVRTC_RGB_2BPP || format == PVRTC_RGB_4BPP) ? GL_RGB : GL_RGBA;
+@@ -4409,7 +4395,7 @@ static bool gles_surface_read(CPUState *cpu, uint32_t base, uint32_t stride,
+     return true;
+ }
+ 
+-#if !defined(GLES_HOST_EAGL) || defined(GLES_HOST_ANGLE)
++#if !defined(GLES_HOST_EAGL) || defined(GLES_HOST_ES_CONTEXTS)
+ /* NV12 to BGRA, ITU-R BT.601 in 16.16 fixed point, each chroma sample covering its 2x2 block: what
+  * VTPixelTransferSession made of '420v' (video range) and '420f' (full range), within 1 per channel
+  * (0.55% and 0.49% of all Y, Cb, Cr combinations differ by 1). Its full range scales chroma by 256/255,
+@@ -4841,7 +4827,7 @@ static void gles_surface_forget(GLenum target)
+     GLESSurface *s;
+ 
+     if (!gh.surfaces) return;
+-#if !defined(GLES_HOST_EAGL) || defined(GLES_HOST_ANGLE)
++#if !defined(GLES_HOST_EAGL) || defined(GLES_HOST_ES_CONTEXTS)
+     if (target == GL_TEXTURE_RECTANGLE_ARB) {
+         glGetIntegerv(GL_TEXTURE_BINDING_RECTANGLE_ARB, &name);
+     } else
+@@ -4906,7 +4892,7 @@ static int64_t gles_bind_surface(CPUState *cpu, const uint32_t *a, uint32_t id)
+     GLenum binding = GL_TEXTURE_BINDING_2D;
+     g_autofree uint8_t *pixels = NULL;
+     if (target != GL_TEXTURE_2D) {
+-#if !defined(GLES_HOST_EAGL) || defined(GLES_HOST_ANGLE)
++#if !defined(GLES_HOST_EAGL) || defined(GLES_HOST_ES_CONTEXTS)
+         if (target != GL_TEXTURE_RECTANGLE_ARB) {
+             gles_refuse("surface:target:0x%x", target);
+             return -1;
+@@ -5001,7 +4987,7 @@ static int64_t gles_bind_surface(CPUState *cpu, const uint32_t *a, uint32_t id)
+     if (surface->npages) {
+         gles_surface_fetch(surface, pixels);    /* every page was just mapped: no fault can come */
+     } else if (nv12) {
+-#if !defined(GLES_HOST_EAGL) || defined(GLES_HOST_ANGLE)
++#if !defined(GLES_HOST_EAGL) || defined(GLES_HOST_ES_CONTEXTS)
+         if ((w | h) & 1) {
+             gles_refuse("surface:nv12:odd-size");
+             gles_debug_texture(target);
+@@ -5187,12 +5173,12 @@ static bool gles_refresh_surfaces_1(CPUState *cpu)
+     if (!gh.surfaces || !g_hash_table_size(gh.surfaces)) return true;
+     GLint active, units = 0, kind = 0, attachment = 0;
+     GLenum targets[] = { GL_TEXTURE_2D,
+-#if !defined(GLES_HOST_EAGL) || defined(GLES_HOST_ANGLE)
++#if !defined(GLES_HOST_EAGL) || defined(GLES_HOST_ES_CONTEXTS)
+         GL_TEXTURE_RECTANGLE_ARB,
+ #endif
+     };
+     GLenum bindings[] = { GL_TEXTURE_BINDING_2D,
+-#if !defined(GLES_HOST_EAGL) || defined(GLES_HOST_ANGLE)
++#if !defined(GLES_HOST_EAGL) || defined(GLES_HOST_ES_CONTEXTS)
+         GL_TEXTURE_BINDING_RECTANGLE_ARB,
+ #endif
+     };
+@@ -5771,7 +5757,7 @@ static bool gles_es2_call(CPUState *cpu, uint32_t slot, uint32_t argc,
+             g_autofree char *part = gles_es2_string(cpu, strs[i], lens ? lens[i] : -1);
+             g_string_append_len(src, part, MIN(strlen(part), GLES_MAX_STRING - src->len));
+         }
+-#ifdef GLES_HOST_ANGLE
++#ifdef GLES_HOST_ES_CONTEXTS
+         glsl = g_strdup(src->str);              /* an ES host compiles ES GLSL as it is */
+ #else
+         glsl = gles_es2_glsl(src->str);
+@@ -7250,7 +7236,7 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
+         else glGetTexParameterfv(a[0], a[1], p);
+         return gles_write_xparams(cpu, a[2], a[1], n, p);
+     }
+-#if !defined(GLES_HOST_EAGL) || defined(GLES_HOST_ANGLE)
++#if !defined(GLES_HOST_EAGL) || defined(GLES_HOST_ES_CONTEXTS)
+     case 774: case 775: {                       /* glGetClipPlanef/x(plane, equation[4]) */
+         double d[4] = { 0 };
+         float p[4];
+@@ -7913,17 +7899,39 @@ static int64_t gles_host_call_1(CPUState *cpu, uint32_t slot, uint32_t ctx,
+  * and the vCPU thread has no idea the app was backgrounded -- it will keep
+  * servicing guest GL calls into a context the system has already disowned. The
+  * app clears this on the way out and sets it on the way back in; the guest sees
+- * the same -1 it gets from any other host refusal and falls back to software.
++ * the same -1 it gets from any other host refusal (a context it asks for then
++ * fails; an ordinary call does nothing, as the front end ignores the answer).
++ *
++ * A call that read the flag before it changed still runs to its end on the
++ * vCPU thread, so clearing it waits that call out: once the app's
++ * willResignActive returns, nothing more reaches GL. A call takes milliseconds
++ * (a batch is many calls, each checking the flag); the wait is capped at a
++ * second all the same, for a call that never comes back.
+  */
+ static bool gles_allowed = true;
++static int gles_in_call;
++static uint64_t gles_refused_away;
+ 
+ void gles_host_set_allowed(bool allowed)
+ {
+     GLES_ON_ANGLE_VOID(gles_angle_host_set_allowed(allowed));
+-    gles_allowed = allowed;
++    qatomic_set(&gles_allowed, allowed);
++    smp_mb();
++    if (!allowed) {
++        int64_t until = g_get_monotonic_time() + G_USEC_PER_SEC;
++        while (qatomic_read(&gles_in_call) && g_get_monotonic_time() < until) {
++            g_usleep(200);
++        }
++        if (qatomic_read(&gles_in_call)) {
++            fprintf(stderr, "[gles] a GL call is still running a second after the app left the foreground\n");
++        }
++    } else if (qatomic_read(&gles_refused_away)) {
++        fprintf(stderr, "[gles] foreground again: %" PRIu64 " GL calls refused while away\n",
++                qatomic_xchg(&gles_refused_away, 0));
++    }
+ }
+ 
+-#if !defined(GLES_HOST_EAGL) || defined(GLES_HOST_ANGLE)
++#if !defined(GLES_HOST_EAGL) || defined(GLES_HOST_ES_CONTEXTS)
+ static GHashTable *gles_contexts, *gles_groups;
+ static uint32_t gles_handle = 0x80000000;
+ 
+@@ -8050,8 +8058,8 @@ static int64_t gles_context_operation(unsigned slot, unsigned ctx, unsigned argc
+ }
+ 
+ static void gles_drop_all(void);
+-#ifdef GLES_HOST_ANGLE
+-static void gles_snapshot_register(void) {} /* migration blocker is held for live EGL state */
++#ifdef GLES_HOST_ES_CONTEXTS
++static void gles_snapshot_register(void) {} /* migration blocker is held for live ES state */
+ #else
+ #include "gles-host-snapshot.c.inc"
+ #endif
+@@ -8082,25 +8090,44 @@ static void gles_drop_all(void)
+ void gles_host_reset(void)
+ {
+     GLES_ON_ANGLE_VOID(gles_angle_host_reset());
+-#if !defined(GLES_HOST_EAGL) || defined(GLES_HOST_ANGLE)
++#if !defined(GLES_HOST_EAGL) || defined(GLES_HOST_ES_CONTEXTS)
+     gles_snapshot_register();
+     gles_drop_all();
+ #endif
+ }
+ 
++static int64_t gles_host_call_allowed(CPUState *cpu, uint32_t slot, uint32_t ctx,
++                                      uint32_t argc, const uint32_t *a);
++
+ int64_t gles_host_call(CPUState *cpu, uint32_t slot, uint32_t ctx,
+                        uint32_t argc, const uint32_t *a)
+ {
+     GLES_ON_ANGLE(gles_angle_host_call(cpu, slot, ctx, argc, a));
+-    uint64_t t0;
+     int64_t r;
+ 
+-    if (!gles_allowed) {
++    /* Marked in a call before the flag is read, as gles_host_set_allowed clears the flag before it
++     * reads the mark: one of the two always sees the other. */
++    qatomic_set(&gles_in_call, 1);
++    smp_mb();
++    if (!qatomic_read(&gles_allowed)) {
++        qatomic_set(&gles_in_call, 0);
++        qatomic_inc(&gles_refused_away);
+         return -1;
+     }
++    r = gles_host_call_allowed(cpu, slot, ctx, argc, a);
++    smp_mb();
++    qatomic_set(&gles_in_call, 0);
++    return r;
++}
++
++static int64_t gles_host_call_allowed(CPUState *cpu, uint32_t slot, uint32_t ctx,
++                                      uint32_t argc, const uint32_t *a)
++{
++    uint64_t t0;
++    int64_t r;
+ 
+     if (slot >= GLES_OP_NEW_SHAREGROUP && slot <= GLES_OP_DELETE_CONTEXT) {
+-#if !defined(GLES_HOST_EAGL) || defined(GLES_HOST_ANGLE)
++#if !defined(GLES_HOST_EAGL) || defined(GLES_HOST_ES_CONTEXTS)
+         r = gles_context_operation(slot, ctx, argc, a);
+         if (r < 0) gles_refuse("context:op:%u", slot);
+         return r;
+@@ -8108,7 +8135,7 @@ int64_t gles_host_call(CPUState *cpu, uint32_t slot, uint32_t ctx,
+         return 0; /* legacy EAGL backend, no native-context handles */
+ #endif
+     }
+-#if !defined(GLES_HOST_EAGL) || defined(GLES_HOST_ANGLE)
++#if !defined(GLES_HOST_EAGL) || defined(GLES_HOST_ES_CONTEXTS)
+     GLESHost *state = gles_contexts ? g_hash_table_lookup(gles_contexts, GUINT_TO_POINTER(ctx)) : NULL;
+     if (ctx >= 0x80000000 && !state) {
+         gles_refuse("context:unknown");
+diff --git a/hw/arm/gles-host-eagl.c.inc b/hw/arm/gles-host-eagl.c.inc
+new file mode 100644
+index 0000000000..6684b1a4f9
+--- /dev/null
++++ b/hw/arm/gles-host-eagl.c.inc
+@@ -0,0 +1,92 @@
++/* EAGL lifetime for the per-context executor on iOS, included by gles-host.c in place of
++ * ANGLE's EGL one. Each guest context has an EAGLContext of its own: ES 3.0 for a guest
++ * ES 2.0 context (what ANGLE gives too, and it runs the guest's ES 2.0 shaders as they
++ * are), ES 1.1 for the rest, since EAGL runs no fixed function in a programmable context
++ * nor shaders in an ES1 one. A group's contexts share the root's EAGLSharegroup. The
++ * Objective-C is in gles-host-eagl.c; past this, the ES adapters are ANGLE's
++ * (gles-host-angle.c.inc), which read the current context through angle_current. */
++#define CGLContextObj GLESEaglContextRef
++#define CGLSetCurrentContext gles_eagl_set_current_ctx
++#define CGLRetainContext gles_eagl_retain
++#define CGLReleaseContext gles_eagl_release_ctx
++typedef struct GLESEaglContext {
++    void *context;          /* the EAGLContext, retained */
++    unsigned refs;
++    bool es2;
++    GLint row_length;       /* GL_UNPACK_ROW_LENGTH in an ES1 context (gles-host-angle.c.inc) */
++    GLuint rect[8];
++    bool rect_on[8];
++    GHashTable *rect_size;
++    GHashTable *fences;     /* APPLE_fence: the context's fence names, to whether one is set */
++    GLuint next_fence;
++} *CGLContextObj;
++static __thread CGLContextObj angle_current;
++
++void *gles_eagl_context_new(unsigned api, void *share);
++bool gles_eagl_context_set_current(void *context);
++void gles_eagl_context_release(void *context);
++
++static bool gles_eagl_create(CGLContextObj share, bool es2, CGLContextObj *out)
++{
++    void *context = gles_eagl_context_new(es2 ? 3 : 1, share ? share->context : NULL);
++    if (!context) return false;
++    CGLContextObj c = g_new0(struct GLESEaglContext, 1);
++    c->context = context;
++    c->refs = 1;
++    c->es2 = es2;
++    c->rect_size = share ? g_hash_table_ref(share->rect_size) : g_hash_table_new(g_direct_hash, g_direct_equal);
++    c->fences = g_hash_table_new(g_direct_hash, g_direct_equal);
++    *out = c;
++    return true;
++}
++static int CGLSetCurrentContext(CGLContextObj c)
++{
++    if (angle_current == c) return 0;
++    if (!gles_eagl_context_set_current(c ? c->context : NULL)) return -1;
++    angle_current = c;
++    return 0;
++}
++static CGLContextObj CGLRetainContext(CGLContextObj c) { c->refs++; return c; }
++static void CGLReleaseContext(CGLContextObj c)
++{
++    if (--c->refs) return;
++    if (angle_current == c) CGLSetCurrentContext(NULL);
++    gles_eagl_context_release(c->context);
++    g_hash_table_unref(c->rect_size);
++    g_hash_table_destroy(c->fences);
++    g_free(c);
++}
++
++/* APPLE_fence, which iOS has no NV_fence to stand in for: the answers ANGLE's give
++ * (gles-host-angle.c.inc), every fence complete once set, kept per context as GL keeps
++ * fence names. */
++static void glGenFencesAPPLE(GLsizei n, GLuint *fences)
++{
++    for (GLsizei i = 0; angle_current && i < n; i++) {
++        do fences[i] = ++angle_current->next_fence;
++        while (!fences[i] || g_hash_table_contains(angle_current->fences, GUINT_TO_POINTER(fences[i])));
++        g_hash_table_insert(angle_current->fences, GUINT_TO_POINTER(fences[i]), GINT_TO_POINTER(0));
++    }
++}
++static void glDeleteFencesAPPLE(GLsizei n, const GLuint *fences)
++{
++    for (GLsizei i = 0; angle_current && i < n; i++) {
++        g_hash_table_remove(angle_current->fences, GUINT_TO_POINTER(fences[i]));
++    }
++}
++static void glSetFenceAPPLE(GLuint fence)
++{
++    if (angle_current && fence) {
++        g_hash_table_insert(angle_current->fences, GUINT_TO_POINTER(fence), GINT_TO_POINTER(1));
++    }
++}
++static GLboolean glIsFenceAPPLE(GLuint fence)
++{
++    return angle_current && g_hash_table_lookup(angle_current->fences, GUINT_TO_POINTER(fence));
++}
++static GLboolean glTestFenceAPPLE(GLuint fence) { return GL_TRUE; }
++static void glFinishFenceAPPLE(GLuint fence) { }
++static GLboolean glTestObjectAPPLE(GLenum object, GLuint name) { return GL_TRUE; }
++static void glFinishObjectAPPLE(GLenum object, GLint name) { }
++
++#include "gles-host-angle.c.inc"

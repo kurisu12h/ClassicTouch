@@ -1,0 +1,19 @@
+/* 样稿公共样式：一页就是一屏 iPhone 18 Pro（402 × 874 pt），截图时按 3 倍出 1206 × 2622 */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { width: 402px; height: 874px; overflow: hidden; }
+body {
+  position: relative;
+  font-family: -apple-system, "SF Pro Text", "PingFang SC", "Helvetica Neue", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+.abs { position: absolute; }
+
+/* 宿主手机的状态栏、灵动岛、Home 指示条（不是 App 画的，只为看着像真截图） */
+.sb { position: absolute; top: 0; left: 0; right: 0; height: 54px; z-index: 50;
+      display: flex; align-items: center; justify-content: space-between; padding: 4px 30px 0 52px; }
+.sb .time { font: 600 17px -apple-system, "SF Pro Text"; letter-spacing: -0.2px; }
+.sb .right { display: flex; gap: 6px; align-items: center; }
+.island { position: absolute; top: 11px; left: 50%; width: 124px; height: 36px; margin-left: -62px;
+          background: #000; border-radius: 20px; z-index: 60; }
+.homeind { position: absolute; bottom: 8px; left: 50%; width: 138px; height: 5px; margin-left: -69px;
+           border-radius: 3px; z-index: 60; }

@@ -1,0 +1,114 @@
+ios-txm-jit-protocol.patch：iOS 26 以上（TXM）的 JIT 代码区改走 StikDebug 的通用协议（brk #0xf00d）。
+
+原因：上游 tcg/region.c 的 TXM 路径用旧协议 brk #0x69，自己映射代码区，再请调试器把整块读出写回。
+M1 第一阶段在 iPhone 18 Pro（iOS 27.2）上实测，Mac 上的 LLDB 经 Wi-Fi 约 0.8 MB/s，256 MiB 要 322 秒，
+只好把代码区缩到 32 MiB，JIT 因此频繁清空重翻译，提速打了折扣。新协议（universal.js、StikJIT
+INTEGRATION.md）让调试器自己分配已可执行的内存（debugserver 的 _M 包），每页只写 1 个字节，准备时间
+基本不随代码区变大；准备完就让调试器脱离（x16=0），App 之后不再带着调试器跑。也是将来用 StikDebug
+脱离电脑拿 JIT 的前提（它的 universal.js 对 brk #0x69 只回错误码）。
+写法参考 vytska69/Ios-emul 的 qemu/patches/inferno/0016-ios-txm-jit-via-stikdebug.patch。
+环境变量 QEMU_IOS_JIT_PROTOCOL=legacy 保留旧协议做对照。只影响 iOS 真机的 JIT 构建（模拟器、解释器不变）。
+基于 samhenrigold/qemu-ios b225694505，叠在 ios-host-gles-option.patch 之后。
+
+diff --git a/tcg/region.c b/tcg/region.c
+index f4249712af..4625687e79 100644
+--- a/tcg/region.c
++++ b/tcg/region.c
+@@ -686,6 +686,87 @@ static void break_prepare_jit_region(mach_vm_address_t addr, size_t len)
+          "mov x1, %1\n"
+          "brk #0x69" :: "r" (addr), "r" (len) : "x0", "x1");
+ }
++
++/*
++ * The universal protocol (StikDebug's universal.js, StikJIT INTEGRATION.md):
++ * brk #0xf00d with the command in x16. x16 = 1 asks the debugger to prepare a
++ * region, x0 = its address or 0 to have the debugger allocate one (debugserver
++ * hands out memory that is already executable), x1 = its length; the address
++ * comes back in x0. x16 = 0 lets the debugger detach. The debugger still has
++ * to write each page for TXM to accept it, but one byte per page will do, so
++ * unlike the brk #0x69 read-back above the cost hardly grows with the buffer:
++ * over Wi-Fi that read-back took 322 s for 256 MiB.
++ */
++__attribute__((noinline, optnone, naked))
++static mach_vm_address_t jit26_prepare_region(mach_vm_address_t addr,
++                                              size_t len)
++{
++    asm("mov x16, #1\n"
++        "brk #0xf00d\n"
++        "ret\n");
++}
++
++__attribute__((noinline, optnone, naked))
++static void jit26_detach(void)
++{
++    asm("mov x16, #0\n"
++        "brk #0xf00d\n"
++        "ret\n");
++}
++
++/* QEMU_IOS_JIT_PROTOCOL=legacy keeps the brk #0x69 read-back, for comparison. */
++static bool jit_protocol_legacy(void)
++{
++    const char *p = getenv("QEMU_IOS_JIT_PROTOCOL");
++
++    return p && !strcmp(p, "legacy");
++}
++
++static int alloc_code_gen_buffer_splitwx_universal(size_t size, Error **errp)
++{
++    kern_return_t ret;
++    mach_vm_address_t buf_rw = 0, buf_rx;
++    vm_prot_t cur_prot, max_prot;
++    int64_t t0 = g_get_monotonic_time();
++
++    buf_rx = jit26_prepare_region(0, size);
++    /* How long the debugger took; the whole app is stopped meanwhile. */
++    fprintf(stderr, "[jit] universal: %zu MiB at %#llx prepared in %.2f s\n",
++            size >> 20, (unsigned long long)buf_rx,
++            (g_get_monotonic_time() - t0) / 1e6);
++    /*
++     * A debugger that does not service the command leaves x0 as we set it
++     * (0); a real mapping is page aligned and above the 4 GiB __PAGEZERO.
++     */
++    if (buf_rx < 0x100000000ULL ||
++        (buf_rx & (qemu_real_host_page_size() - 1))) {
++        error_setg(errp, "the debugger did not prepare a jit region "
++                   "(brk #0xf00d returned %#llx)", (unsigned long long)buf_rx);
++        return -1;
++    }
++
++    /* The alias TCG writes through: the same pages, made RW. */
++    ret = mach_vm_remap(mach_task_self(), &buf_rw, size, 0, VM_FLAGS_ANYWHERE,
++                        mach_task_self(), buf_rx, false,
++                        &cur_prot, &max_prot, VM_INHERIT_NONE);
++    if (ret != KERN_SUCCESS) {
++        error_setg(errp, "vm_remap of the debugger's jit region failed");
++        return -1;
++    }
++    if (mprotect((void *)buf_rw, size, PROT_READ | PROT_WRITE) != 0) {
++        error_setg_errno(errp, errno, "mprotect for jit splitwx (rw)");
++        munmap((void *)buf_rw, size);
++        return -1;
++    }
++
++    /* QEMU maps its code buffer once: the debugger is no longer needed. */
++    jit26_detach();
++
++    region.start_aligned = (void *)buf_rw;
++    region.total_size = size;
++    tcg_splitwx_diff = buf_rx - buf_rw;
++    return PROT_READ | PROT_WRITE;
++}
+ #endif
+ 
+ static int alloc_code_gen_buffer_splitwx_vmremap(size_t size, Error **errp)
+@@ -711,6 +792,9 @@ static int alloc_code_gen_buffer_splitwx_vmremap(size_t size, Error **errp)
+                              "(TXM only honors debugger-blessed code pages)");
+             return -1;
+         }
++        if (!jit_protocol_legacy()) {
++            return alloc_code_gen_buffer_splitwx_universal(size, errp);
++        }
+ 
+         /*
+          * The pages have to START executable: under TXM a plain RW mapping
