@@ -11,7 +11,7 @@ Addresses are hex (thread_block_reason, say); Thumb bit is ignored. The iOS ABI
 keeps the frame pointer in r7: [r7] is the caller's r7, [r7 + 4] its lr.
 Symbols come from `nm` on the kernelcache (exported ones only).
 """
-import bisect, socket, struct, subprocess, sys, time
+import bisect, os, socket, struct, subprocess, sys, time
 
 STACK_BITS = 14                      # group hits by sp >> 14 (xnu arm kernel stacks are 16 KiB)
 
@@ -185,7 +185,8 @@ def run_samples(st, sym, n):
         bt = tuple(backtrace(st, r, 12))
         seen[bt] = seen.get(bt, 0) + 1
         st.cont()
-    st.interrupt()
+    if not os.environ.get("GDBTRACE_CONTINUE"):    # GDBTRACE_CONTINUE=1: leave the guest running
+        st.interrupt()
     for bt, c in sorted(seen.items(), key=lambda kv: -kv[1]):
         print("%d samples" % c)
         print(show(sym, bt))

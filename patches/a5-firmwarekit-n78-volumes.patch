@@ -1,0 +1,28 @@
+diff --git a/Packages/FirmwareKit/Sources/FirmwareKit/K48/K48Recipe.swift b/Packages/FirmwareKit/Sources/FirmwareKit/K48/K48Recipe.swift
+index 6d1ec538..9201143f 100644
+--- a/Packages/FirmwareKit/Sources/FirmwareKit/K48/K48Recipe.swift
++++ b/Packages/FirmwareKit/Sources/FirmwareKit/K48/K48Recipe.swift
+@@ -155,7 +155,8 @@ final class K48Board: Board {
+         self.helper = helper
+         patcher = K48IBoot.patcher(helper: helper)
+         Machines.helper = helper
+-        guard let hardware = HostRuntime.Board(rawValue: board)?.hardware else {
++        // ClassicTouch A5: n78ap borrows n90ap's hardware facts; only its volumes are made (--stop-after volumes).
++        guard let hardware = HostRuntime.Board(rawValue: board == "n78ap" ? "n90ap" : board)?.hardware else {
+             throw FirmwareError(.internal, "\(helper.lastPathComponent)'s emulator library has no machine for \(board)")
+         }
+         self.hardware = hardware
+diff --git a/Packages/FirmwareKit/Sources/FirmwareKit/Recipe/Preparer.swift b/Packages/FirmwareKit/Sources/FirmwareKit/Recipe/Preparer.swift
+index 6fa67cb7..f5b20d8f 100644
+--- a/Packages/FirmwareKit/Sources/FirmwareKit/Recipe/Preparer.swift
++++ b/Packages/FirmwareKit/Sources/FirmwareKit/Recipe/Preparer.swift
+@@ -104,7 +104,8 @@ public enum Preparer {
+         let e = o.entry
+         let board: Board =
+             switch (e.board, e.recipe?.name) {
+-            case ("k48ap", "k48"), ("n81ap", "n81"), ("n90ap", "n90"), ("n88ap", "n88"), ("n18ap", "n18"):
++            case ("k48ap", "k48"), ("n81ap", "n81"), ("n90ap", "n90"), ("n88ap", "n88"), ("n18ap", "n18"),
++                ("n78ap", "n90"):  // ClassicTouch A5: the iOS 7 volumes only (create --stop-after volumes)
+                 try K48Board(o)
+             case ("n72ap", "n72"): try N72Board(o)
+             case ("n45ap", "n45"), ("m68ap", "m68"): try N45Board(o)

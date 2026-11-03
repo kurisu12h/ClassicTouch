@@ -2,14 +2,22 @@
 
 - 日期：2026-11-03
 - 做的事：在 Mac 上给 qemu-ios 加 A5 机型 `iPod-Touch-5G` 和 AIC 中断控制器模型，用 KBoot 包直接进内核，目标是内核在 uart1 打印、停在 Waiting for root device。没碰真机，没 commit、没 push。
-- 产物：`patches/a5-n78-skeleton.patch`（对 qemu-ios b225694505，到 3.11 节为止 8 个文件 +1564/-61 行，含对上游 `s5l8930_cdma.c`、`s5l8930_display.c` 的改动），`tools/a5/` 下的脚本和 `README.md`（复现步骤）。大文件都在 `work/a5/`，不进仓库。
+- 产物：`patches/a5-n78-skeleton.patch`（对 qemu-ios b225694505，到 3.16 节为止 9 个文件 +2547/-61 行，含对上游 `s5l8930_cdma.c`、`s5l8930_display.c` 的改动），`tools/a5/` 下的脚本和 `README.md`（复现步骤）。大文件都在 `work/a5/`，不进仓库。
 - 标注：【已核实】在这次的运行日志或二进制里直接看到；【推测】我的推断。
 
 ---
 
 ## 0. 结论摘要
 
-> **最新（3.11 节）：** USB 主机和设备端都通了：两版都能从 USB 盘（IPSW 的系统分区）挂根并起 launchd，停在缺数据分区 /dev/disk0s2；恢复内存盘里 restored 不再退出，停在恢复模式等主机。显示见 3.10 节，launchd 见 3.9 节。下面 1 到 4 条是第 1 轮的情况。
+> **最新（3.16 节）：** 接上触摸（spi1 上的 Zephyr2 传感器）和 GPIO 按键，用脚本经 QMP 注入输入，7.1.2 从锁屏滑动解锁进了主屏，点开了「设置」，按 Home 回到主屏。
+>
+> **3.15 节：** 7.1.2 开机直接进了锁屏。做了四件事：给 lockdownd 打本地激活补丁；补上 iPod touch 5 设置助理比 iPhone 4 多出的步骤标记（Siri 等）；把常让 backboardd 崩溃的两个罗盘 HID 插件移走；n78 接上 guest 包服务，GL 协议告警随之消失。
+>
+> **3.14 节：** 接上 GL 桥后，7.1.2 画出了界面：第 120 秒是 UI 画的苹果标志，第 180 秒到设置助理的「Hello / slide to set up」。原先反复崩溃的是 backboardd（第一次是 GL 陷入没接住的 SIGILL，其余在 CompassPlugIn 里，后者接上 GL 后仍间歇出现）。
+>
+> **3.13 节：** 做出了 NAND 这一层（IOP 高层模拟加 PPN 页存储），一次格式化开机后，正常开机时可擦除存储和 NVRAM 都起来了，越过了钥匙包。
+>
+> **3.12 节：** 7.1.2 的完整系统从 USB 盘（系统加数据两个分区）开起来了，launchd 拉起五十多个守护进程，然后 keybagd 报 `FATAL KEYBAG ERROR: kb_load` 要求进恢复模式。卡点是钥匙包要的可擦除存储（A5 上在 NAND 里）。USB 见 3.11 节，显示见 3.10 节，launchd 见 3.9 节。下面 1 到 4 条是第 1 轮的情况。
 
 1. **两个内核都在模拟器里开口说话了。** 7.1.2（xnu-2423.10.71）和 9.3.5（xnu-3248.61.1，RELEASE_ARM_S5L8942X）都在 uart1 打出完整的开机日志：corecrypto 自检通过，AMFI 认了放宽签名的启动参数，`AppleS5L8940XIO`、背光、AppleKeyStore、GPIO 中断控制器、性能控制器依次启动。【已核实】
 2. **内核认出了我们写的 AIC。** 日志里 `AppleInterruptController::start: _aicVersion = 0 ... _aicNumExtInts = 0x000000c0 _aicNumIPIs = 0x00000002`。【已核实】
@@ -282,6 +290,245 @@ n78 上照 `ipad1.c` 的做法接了四样：
 2. **PMU 的充电器和 ADC：** 现在靠 `no-pmu` 绕过线缆检测。
 3. **HSIC 上的 Wi-Fi：** 内核在 EHCI 的 HSIC 口（端口 3）等 BCM Wi-Fi（`Bus enumeration failure`）。暂时无害，以后要么藏掉 DT 的 wlan 节点，要么接一个设备。
 4. **NVRAM：** 7.1.2 和 9.3.5 的 restored 退出后都在等 `IONVRAM`。现在 restored 不退出，这条暂时碰不到，正式开系统时可能还会遇到。
+
+## 3.12 冲主屏（7.1.2）：完整系统起到钥匙包，卡在可擦除存储
+
+**结论：** 还没到锁屏或主屏。进展是 7.1.2 的完整系统从两分区的 USB 盘开了起来：
+1. 系统分区挂成只读根，数据分区挂到 /private/var。
+2. launchd 依次拉起 syslogd、sandboxd、powerd、keybagd、wifid、ptpd、timed、sharingd、passd 等五十多个任务（pid 排到 60 以上）。
+3. 钥匙包守护进程 keybagd（pid 25）调 AppleKeyStore 全部失败（`AppleKeyStore: operation failed (pid: 25 sel: 24 ret: e00002f0)`），然后报 `FATAL KEYBAG ERROR: kb_load`、`REBOOTING INTO RECOVERY MODE.`。
+4. launchd 走关机流程（`Userspace shutdown begun`），最后内核在重启路径上 panic。我们的机型还没有复位支持。
+
+SpringBoard 没来得及起来，屏幕从苹果标志变黑。【已核实】
+
+**卡点：** AppleKeyStore 在 start 里调 `IOService::waitForService` 等 `AppleEffaceableStorage`（可擦除存储，钥匙包的密钥放在这里），不设超时，一直等不到。A5 内核里的可擦除存储驱动只有 `AppleEffaceableNANDNOR`，它挂在 IOFlashStorage（NAND）上，NVRAM（`IOFlashNVRAM`）也是。A4 那种给 SPI NOR 嫁接可擦除分区的办法在这里用不上：A5 内核没有 NOR 版的驱动，`ipad1_kboot.graft_nor` 也因为 n78 没有 spi0 而跳过了。【已核实】
+
+### 3.12.1 两个分区的 USB 盘：借 FirmwareKit 只做卷
+
+FirmwareKit 的 `SystemEdits.buildK48` 正好做我们要的事：
+- 系统卷：IPSW 的 rootfs 扩到分区大小，fstab 改成两分区，SpringBoard 任务加 GL 环境变量并把 stdout/stderr 接到 /dev/console，装 GL 前端（OpenGLES）、AppSync、guest 工具，lockdownd 激活，`--skip-setup` 写好「设置已完成」。
+- 数据卷：新建一个日志式 HFSX，放进 /private/var 骨架，属主离线写进目录记录。
+
+做法如下：
+
+1. **重建 guest 工具。** 照 M0 报告第 4 节，`tools/m0/make-substitute-sdk.py` 加上游的 `contrib/export-guest-artifacts.sh`，得到 `work/guest-artifacts/ipad-guest-tools/`，29 个文件。
+2. **FirmwareKit 改两处（补丁 `patches/a5-firmwarekit-n78-volumes.patch`，对 LightTouchMac b06012fa4c）。** 它的配方只认 A4 的几块板子：一处让 `n78ap` 走 n90 的 iOS 7 配方（`Preparer.swift`），一处让 n78ap 借 n90ap 的硬件描述（`K48Recipe.swift`），只用于 `--stop-after volumes`。改的是 `work/a5/LightTouchMac` 副本，编到 `work/a5/fk/build`，依赖取自本机 SwiftPM 缓存，没有联网。
+3. **`tools/a5/n78_fkprep.py`。** 照 n90ap-11D257 的条目拼出 n78 的条目（iPod5,1 的密钥取自之前的 ipsw.me 密钥表），再放一份 M0 的 helper 替身（`tools/m0/helper-shim`），路径改成现在的项目目录，机型表加一行 n78ap。FirmwareKit 开工前会检查这两样东西，虽然 `--stop-after volumes` 走不到开机那一步。
+4. **`firmwarekit create ... --stop-after volumes --skip-setup` 只要 10 秒，** 产出 `system.img`（1792 MiB）和 `data.img`（14 GB 稀疏）。
+5. **`tools/a5/n78_usbroot.py` 打包。** 现在也接受「system.img + data.img」，打成 GPT 两分区，稀疏拷贝，得到 `work/a5/disks/11D257-full.img`（15 GB，实占约 2 GB）。
+
+### 3.12.2 两次开机
+
+1. **数据卷带内容保护（FirmwareKit 对 5.0 以后总是打开）：** 挂完 /private/var（`journaled, noatime, protect`）后，用户态再没有任何输出。从开机起在 thread_block 下断点，看到两条调用链：
+   - AppleKeyStore +0x2856 在 `waitForService` 里等可擦除存储；
+   - 内核文件系统代码（0x80238f4a）经 AppleKeyStore +0x1bb0 卡在它的锁上，即建受保护文件时要找钥匙包。
+   
+   整个系统就此停住，屏幕停在苹果标志。
+2. **把数据卷卷头的内容保护位清掉**（HFS+ attributes 第 30 位，0x40000000；在盘镜像的 APFS 克隆 `11D257-full-noprot.img` 上改）：文件系统不再找钥匙包，用户态跑到上面的 keybagd 致命错误。
+   - 第一次误清了第 13 位（那是「日志式」），已更正。
+
+另外为了看用户态日志，在系统卷里改了 `/etc/asl.conf`（加 `? [<= Level info] file /dev/console`），并新建 `/etc/syslog.conf`（`*.* /dev/console`）。这是用 hdiutil 加 diskutil 挂上盘镜像手工改的，没写成脚本。串口上看到的 launchd 和 keybagd 消息可能本来就会打到控制台，这个改动起没起作用没有核实。
+
+### 3.12.3 交接要点（给接手的会话）
+
+- **复现：** `python3 -I tools/a5/n78_fkprep.py 11D257 work/a5/fk`，打 FirmwareKit 补丁、编好后照脚本开头的说明跑 `firmwarekit create` 和 `n78_usbroot.py`；清内容保护位的 Python 片段见本节。开机用不带内存盘的 `n78-11D257.bin`，加 `-drive ...,snapshot=on -device usb-storage,bus=ehci.0,drive=root`。
+- **关键现场：** `work/a5/runs/s39/7h/block.txt`（带内容保护时的阻塞调用链），`work/a5/runs/s39/7i3/serial.log`（去掉内容保护后的完整串口，含 keybag 错误和关机）。
+- **下一步首选：做 A5 的 NAND（PPN）和 IOFlashStorage。** 第 0 步报告第 1 节有 PPN 的分析。这一步同时给出 `AppleEffaceableNANDNOR`（钥匙包）和 `IOFlashNVRAM`（NVRAM，7.1.2 的 restored 和以后的系统都在等 `IONVRAM`）。做好之后：
+  - 第一次开机由 keybagd 或 FirmwareKit 的 it_keybag 格式化可擦除区、建系统钥匙包。A4 上 FirmwareKit 用「keybag 开机」做这件事，见 `Preparer.keybagDone`。
+  - 数据卷的内容保护可以恢复。
+- **备选（快但更脏）：** 给 AppleKeyStore 打内核补丁，让它不等可擦除存储、用内存里的钥匙包；或者在用户态让 keybagd 跳过 kb_load 失败。都没试，可行性未知。
+- **SpringBoard 之前还会遇到的：**
+  1. GL 桥：系统卷里已经装了 GL 前端，但 n78 机型还没有 `QEMU_CALL`/`gles-host`，iOS 7 的 SpringBoard 没有宿主 GL 会崩（M1 第 4 步）。要照 `ipad1.c` 接上。
+  2. 复位：keybagd 之类要求重启时，内核走到 panic。要给 n78 接上看门狗复位或 `PE_halt_restart` 的路径。
+  3. 触摸（multi-touch 在 spi1）、按键、电池和实时时钟（D1881 的 ADC 现在报 `ADC read bad state`）。
+- **9.3.5：** 还没动。第 0 步报告的两个新问题（dyld-390 不许覆盖共享缓存、launchd 从 `xpcd_cache.dylib` 读守护进程清单）在 7.1.2 走通以后再看。
+
+## 3.13 NAND：IOP 高层模拟，可擦除存储和 NVRAM 起来了，越过钥匙包
+
+**结论：** 7.1.2 越过了钥匙包。NAND 这一层由新写的 IOP 高层模型提供：一次「格式化开机」（恢复内存盘加帮手程序）把空白 NAND 分好区、做好 FTL、格式化可擦除存储、建好系统钥匙包；之后正常从 USB 盘开机，AppleEffaceableNAND 找到当前代（`found current generation, 2, in group 1`），`IOFlashNVRAM::start: nand nvram started successfully`，keybagd 不再报 FATAL。屏幕停在转圈图案，显示客户端大约每 10 秒断开重连一次。【已核实】
+
+> **更正（3.14 节）：** 原先这里写「launchd 拉起了 SpringBoard（pid 76）」「SpringBoard 每 10 秒崩溃重启」，证据不够。pid 76 那行只出现在第一次正常开机（boot1），是 it_seal 停机时 launchd 打出的 `Stopping job`；第二次开机（boot2）的串口里没有 SpringBoard 字样。崩溃重启是从显示客户端重连 18 次推出来的。3.14 节读了数据卷里的崩溃日志：反复崩溃的是 **backboardd**，不是 SpringBoard。
+
+![A5 NAND 之后：转圈](img/a5-nand-spinner.png)
+
+（正常开机第 180 秒。）
+
+**做法：** 选了「高层模拟 IOP」：IOP 固件不跑，QEMU 里一个新设备 `s5l8940.iop`（`hw/arm/s5l8940_iop.c`）直接回答内核通过 IOP 发来的 FMI 命令，背后是一个按 PPN 几何组织的页存储。理由：AP 和 IOP 之间的协议（控制块、门铃、EmbeddedIOP 消息环、AppleIOPFMI 的 512 字节命令）都能从内核和 IOP 固件里读出来，内核的断言字符串很多，回答错了会直接说；而跑真固件要再模拟 ARMv7 的 IOP 核、它的内存映射和中断、H2FMI 加 PPN 的寄存器级协议，都没有资料。【判断】
+
+### 3.13.1 读出来的协议（7.1.2，都已核实）
+
+反编译用的是 REA（Ghidra 后端）：把 kernelcache 里相关 kext 连同内核导出符号包成 ELF（`tools/a5/kextelf.py`），IOP 固件和 iBoot 按裸镜像包成 ELF（`rawelf.py`），再把伪代码里的字符串引用解开（`pcfix.py`、`fwfix.py`）。
+
+1. **AppleA5IOP-14（IOP 控制块，arm-io +0xf300000）。** startCPU（0x80e2d93c）：+0x0 写 0，+0x4 写固件的物理地址，+0x34 写 0x3ff01ff（iop-version 1），+0x0 写 1；stopCPU 写 +0x0 = 0。门铃和 NMI 是设备树 `function-doorbell`/`function-nmi`，即 AIC 的 IPID 平台函数：把 IPID 向量（设备树 `ipid-mask` = 0xf，向量 0 到 3）的软件中断位置 1，门铃是向量 3。IOP 回 AP 用向量 2（设备树 iop `interrupts`），AIC 驱动分发这类向量前自己写 SW_CLR（0x80ba1a32）。
+2. **IOP 看到的内存：** DRAM 在 0xc0000000，等于 AP 物理地址加 0x40000000（和 A4 的固件内存表一样）。
+3. **EmbeddedIOP-50 的消息环。** 固件里的 `cnfg` 块（7.1.2 固件 +0x13000）由 AP 填：+0x4 标志、+0x8 消息缓冲、+0xc 调试标志，端点 h（< 10）的环地址在 +0x10 + 8h、槽数在 +0x14 + 8h（registerEndpoint 0x80cce9f8）。每槽 64 字节，第 0 字是「条目 | 归属位」（sendMessage 0x80ccf470、receiveMessage 0x80ccf39c）。命令型端点由 AP 放 `条目|0`，IOP 做完写回 `条目|1`。端点 0 是控制（`nop ` 等，缓冲 +4 写 0 表示完成），1 是 IOP 发给 AP 的消息，AppleIOPFMI 的总线 0 用端点 5（3 槽）。
+4. **FMI 命令（AppleIOPFMI-93，512 字节）：** +0 操作码，+8 状态（1 成功，2 空白，0x8xxxxxxx 错误；`_fmiTranslateResult` 0x80b1af84），+0x10 总线，+0x18 CE。IOP 固件 `fmi_message_process`（0x1088）在 PPN 设备上的分派：
+
+| 操作码 | 含义（固件函数） | 字段 |
+|---|---|---|
+| 0x01 | set_config | +0x88 是否 PPN，+0x8c PPN 规范版本 |
+| 0x16 | 取控制器信息（0x861c） | +0x1c 固件版本、+0x5c 厂商 ID、+0x70 起是参数页（CAU 数、块数、页数、页大小、时序、队列深度） |
+| 0x17 | 取晶粒信息（0x8798） | +0x20 晶粒唯一 ID，+0x30 晶粒芯片 ID |
+| 0x19 | 取温度 | +0x18 有符号 16 位 |
+| 0x0a / 0x0b | 写 / 读引导页（0x8468 / 0x83b4） | +0x1c 页，+0x20 缓冲，每页 0x600 字节 |
+| 0x03 | 擦单块（0x7de0） | +0x1c 块 |
+| 0x10 / 0x12 / 0x11 | 读 / 写 / 擦多页（0x7fbc / 0x822c / 0x7d5c） | +0x1c 数据段表 {地址, 长度}、+0x20 段表字节数、+0x24 元数据段表、+0x28、+0x2c ppnCommand、+0x30 其长度、+0x34 AES IV 表 |
+| 0x0d | 读 CAU 出厂坏块表（0x84d8） | +0x1c 段表，结果是每块一位 |
+
+5. **ppnCommand（IOFlashStorage 和 IOP 共用的结构）：** +0 操作（1 读、2 写、3 擦），+8 页数（u16），+0xe + 6k 是 CE 序号 k 的物理 CE；从 +0x1c 起每页一个 12 字节条目 {长度, 行地址, CE 序号, ?, 状态, ?}（`h2fmi_ppn_process_error_list` 0x6524）。状态是 PPN 的操作状态：0x40 就绪，0x08 空白，0x10 通用错误，0x01 失败（读引导页 0x6220，SwissPPN 的 `_ppnvflProgramMultiple` 0x80d12674）。SwissPPN 的行地址是 {页, 块 << 页位数, CAU << (页位数 + 块位数)}，再往上一位表示 SLC 模式（PPNMISC 0x80d110ac）。
+6. **iBoot 写进设备树的 NAND 属性**（n78 iBoot-1940 `nandid.c`，0x9ff22338）：`#ce`、`ce-bitmap`、`device-readid`、`#databus`、`#ce-blocks`、`#block-pages`、`#page-bytes`、`#spare-bytes` 等，PPN 设备再加 `ppn-device`、`ppn-spec-version`、`blocks-cau`、`caus-ce`、`slc-pages`、`mlc-pages`、`cau-bits`、`page-bits`、`block-bits`、`ppn-features`。IPSW 里的设备树这些都是空的。
+
+### 3.13.2 我们给的 PPN 设备
+
+没有真机可读，几何是自己定的，取值都在 IOP 固件 `_validate_device_parameters`（0x7374）检查的范围内：1 条总线 1 个 CE，2 个 CAU，每 CAU 0x420 块，每块 128 页（SLC 64 页），页 8 KiB 加 32 字节元数据，共约 2.2 GB。设备树由 `tools/a5/n78_kboot.py` 的 `fill_nand` 填，控制器信息由 IOP 模型回答，两边一致。页存储放在 `-global driver=s5l8940.iop,property=nand,value=目录` 指定的目录里（`ce0.pages`、`ce0.boot` 两个稀疏文件，按位取反存放，空洞读出来就是擦除态；擦除在 macOS 上用 `F_PUNCHHOLE` 打洞）。不给目录时存在内存里。
+
+### 3.13.3 空白 NAND 要像恢复那样先格式化
+
+空白 NAND 上分区方案报 `no partition table found`，只发布一个 `Unformatted` 分区，可擦除存储和 NVRAM 都没有。格式化入口是 IOFlashPartitionScheme 的 user client，选择子 `copy`（0x636f7079，`kIOFlashPartitionSchemeFormatCmd`，0x806f730c），不带参数；内核要求 `/chosen/system-trusted` 非零且调用者是 root（0x806f71e0），格式化本身总是允许（0x806f6540）。可擦除存储的格式化（AppleEffaceableStorage 选择子 4）又只允许在受信任的根下做，即恢复内存盘当 md0（和 A4 的 `it_keybag` 一样）。
+
+所以照 FirmwareKit 的「钥匙包开机」做了一个 A5 版：`tools/a5/it_nandfmt.c`（armv7，dlsym 调 IOKit，用 qemu-ios 的 armv6-toolchain 编、ldid 签名），放进恢复内存盘副本当 `/usr/local/bin/restored_external`（imgtools `ipad1_keybag.ramdisk_with_helper` 的做法：扩 1 MiB、删掉原文件再放入、离线把属主改成 root）。它依次：格式化 NAND 分区，格式化可擦除存储，在 USB 盘的数据卷上 `MKBKeyBagCreateSystem`，然后停机。开机包加 `nand-enable-reformat=1`，让 SwissPPN FTL 在空白的文件系统分区上自己格式化。
+
+### 3.13.4 格式化开机里修掉的五个坑（按出现顺序）
+
+1. **`-global s5l8940.iop.nand=...` 不生效：** 驱动名里有点号，要写 `-global driver=s5l8940.iop,property=nand,value=目录`。
+2. **SLC 模式的行地址：** SwissPPN 测特殊块时在 SLC 模式下读写，行地址多一位 SLC 标志（cau、block、page 位之上），模型原来把它当越界拒绝，读回的是旧缓冲，2109 个特殊块全部「failed verifying」。现在去掉这一位再寻址（同一块的前 64 页）。
+3. **擦除写零太慢：** 模型擦块时往稀疏文件写 1 MB 零，FTL 格式化擦遍全部 2112 块，等于写 2 GB。改用 `F_PUNCHHOLE`。
+4. **`max-transaction-size` 不能是 0：** 我在设备树里填了 0，SwissPPN 往 PPN 命令里加页时要求「每个 CE 的页数 < 这个上限」（0x80d11640），一页都加不进去，`_ppnvflProgramMultiple`（0x80d12674）原地死循环，CPU 全忙但 IOP 收不到命令。改成 32。
+5. **读状态的编码：** ppnCommand +0xc 是整体状态（所有页状态的按位或），等于 0x40 时内核不再逐页看；逐页时只认 0x40、0x42 到 0x45、0x49、0x51、0xc1（`_analyzeSpansReadStatuses` 0x80d14e7c），空白页要报 0x49，不是 0x48，否则 panic「Read operation contained an unidentified status」。另外读可以只读半页：每页条目带 {长度, 列偏移}，一个 8 KiB 物理页是两个「4 KiB 数据 + 16 字节元数据」的逻辑页，页存储按这个列布局存放。
+
+修完以后格式化开机的日志（`work/a5/runs/s313/fmt14/serial.log`）：VFL、FPart、FTL 依次格式化，`Writing final signature`，`VFL_Open [OK]`，`FTL_Open [OK]`，`AppleNANDFactoryBBT::start: ready`，分区方案发布 8 个分区，`it_nandfmt: NAND partition format -> 0`，`[effaceable:INIT] format succeeded`，`MKBKeyBagCreateSystem -> 0, /mnt2/keybags/systembag.kb 1495 bytes`，然后停机。整个过程 IOP 收到约 1.7 万个命令。停机最后内核 panic 是因为机型还没有复位支持，不影响结果（NAND 存储已落盘）。
+
+### 3.13.5 正常开机
+
+- **USB 盘编号变了：** NAND 上的 FTL 也出一块盘，成了 disk0，USB 盘变成 disk1。所以系统卷的 `/etc/fstab` 要改成 `/dev/disk1s1`、`/dev/disk1s2`（手工改在盘克隆上；LwVM 认不了 NAND 盘，`media block size too small`，所以 root-matching 照样落在 USB 盘的第 1 分区）。
+- **FirmwareKit 的 `it_seal`：** 系统卷里装着 A4 流程的 `it_seal`，首次开机 40 秒后主动停机「封存 NAND 存储」。第一次正常开机就是被它关掉的。在数据卷上放 `/private/var/.it_sealed` 标记它就直接退出。
+- 之后的开机：可擦除存储、NVRAM、钥匙包都正常，显示客户端 200 秒里重连 18 次，屏幕是转圈（反复崩溃的是 backboardd，见 3.14 节）。
+
+### 3.13.6 还没弄清或没做的
+
+1. **`unable to efface group 0/1 after 3 attempts`：** 可擦除存储在「抹掉」旧组时失败，但仍找到了当前代、钥匙包能用。大概是它擦除用的命令或行地址我还没对上（擦单块 0x03 或擦多块的 SLC 地址），没查。【推测】
+2. **引导页存储浪费空间：** 分区表写在引导页上，页号带了 SLC 位，`ce0.boot` 稀疏文件有 1.3 GB 实际占用。应该把引导页的 SLC 位也去掉，要重新格式化，没做。
+3. **CAU 出厂坏块表**全报好块（每块一位都置 1），位的含义没核实，只是格式化和 FBBT 都接受了。
+4. **9.3.5** 没试（AppleIOPFMI、IOP 固件版本不同，协议要再核对）。
+5. **格式化开机要手工步骤：** 内存盘副本、改 fstab、放 `.it_sealed` 标记都是手工做的，还没写成脚本；复现见 `tools/a5/README.md`。
+
+### 3.13.7 下一步
+
+1. **GL 桥：** 照 `ipad1.c` 给 n78 接 `QEMU_CALL` 和 `gles-host`，系统卷里已经装了 GL 前端（已做，见 3.14 节）。
+2. **复位：** 停机和重启都会 panic，格式化开机和以后的重启都需要。
+3. 触摸、电池、实时时钟。
+4. 把格式化开机写成脚本（相当于 A5 版的 FirmwareKit keybag 步骤），顺带修 3.13.6 的 1、2。
+
+## 3.14 GL 桥：backboardd 画出来了，到设置助理的「Hello」
+
+**结论：** 给 n78 接上 GL 桥（`QEMU_CALL` 陷入加 `gles-host`）后，7.1.2 从 USB 盘加格式化好的 NAND 开机，第 120 秒屏幕上是 UI 栈画的苹果标志，第 180 秒是设置助理的「Hello / slide to set up」，状态栏有「iPod」和电池图标。这是模拟的 A5 第一次画出 iOS 的界面。【已核实：截图 `work/a5/runs/s314/gl1/shot-120.png`、`shot-180.png`，即下面两张】
+
+![A5 第 120 秒：UI 画的苹果标志](img/a5-gl-logo.png) ![A5 第 180 秒：Hello](img/a5-gl-hello.png)
+
+### 3.14.1 先查清是谁在崩
+
+上一轮（3.13 节）的正常开机都用 `snapshot=on`，崩溃日志随快照丢了。这次用盘的 APFS 克隆可写开机（`work/a5/nandfmt/disk-c1.img`，NAND 用格式化好的存储的克隆），150 秒后在 Mac 上挂数据卷读 `/private/var/mobile/Library/Logs/CrashReporter`：
+
+1. **崩的是 backboardd，不是 SpringBoard。** 150 秒里 11 份 `backboardd_*.ips`，大约每 10 秒一份，没有 SpringBoard 的。【已核实】
+2. **第一份（开机后约 17 秒）是 GL：** `EXC_BAD_INSTRUCTION (SIGILL)`，异常码 `0xee6f6f1f`，崩在 OpenGLES（QuartzCore 经 IOMobileFramebuffer 调进来）。0xee6f6f1f 就是 `mcr p15,3,r6,c15,c15,0`，GL 前端发给宿主的 `QEMU_CALL` 陷入，n78 没有这个协处理器寄存器，于是未定义指令。【已核实：`work/a5/nandfmt/disk-c1.img` 数据卷里的 `backboardd_1969-12-31-160017_localhost.ips`】
+3. **其余十份在 CompassPlugIn：** `EXC_BAD_ACCESS`，地址 0xc，主线程，调用链 backboardd → IOKit → `/System/Library/HIDPlugins/CompassPlugIn.plugin`（HID 事件系统的会话过滤插件，没有匹配字典，所有服务都过它）。【已核实】见 3.14.3。
+
+### 3.14.2 接上的东西（`hw/arm/ipod_touch_5g.c`）
+
+照 `hw/arm/ipad1.c`：CPU 实例化后 `define_arm_cp_regs` 注册 `QEMU_CALL`（cp15，opc1 3，c15，c15，0，用户态可用），写入时调 `qc_handle_gles`（`QC_GLES`）和回 ping（`QC_GLES_PING`）；复位时 `gles_host_reset()`；机型类上 `gles_host_class_init()`（加 `gl-renderer` 属性）。剪贴板、guest 包、guest agent 这些 guest 服务没接，它们的调用不回答。设备树里的 SGX 仍然隐藏（compatible 为 none），和 A4 机型一样：GL 前端不经过内核的 SGX 驱动。
+
+开机时 QEMU 打出（`work/a5/runs/s314/gl1/qemu.out`）：`host GL up: 2.1 Metal ... Apple M4 Max, present by readback`、`OpenGLES front end (contrib/gles-public): 508 gl exports`、`dispatch layout ...: 1035 slots`、`CoreAnimation composites through the host`。【已核实】
+
+### 3.14.3 还没弄清或没做的
+
+1. **CompassPlugIn 里的崩溃仍在，但是间歇性的：** 接上 GL 桥后，开机头 75 秒左右 backboardd 仍在 CompassPlugIn 里崩了 7 次（`work/a5/nandfmt/disk-c2.img` 的数据卷），之后不再崩，界面出来。崩溃报告给的 PC（插件 +0x1408、+0x1f88）在文件里分别是一条 `mov.w` 和 `__stub_helper` 与 `__symbolstub1` 之间的位置，都不访问内存；寄存器 r0 = 0xc，lr 指向系统库。所以报告里的 PC 不可信，或者运行时这段代码页的内容和文件不同。原因没查清，可能和加速度计、陀螺仪探测失败（`AppleEmbeddedI2CNewAccelerometer::free`、`AppleAP3GDL::probe ... ID=0x0`）、懒绑定，或者模拟器本身有关。【推测】它拖慢了开机（launchd 每次重启 backboardd 要等约 10 秒）。
+2. **GL 线协议告警：** QEMU 打出 `the host speaks another wire protocol: GL calls may go astray` 和 `REFUSED shim:hello:protocol`。界面画得出来，但要核对系统卷里 GL 前端（FirmwareKit 装的 guest 工具）和这份 QEMU 的协议版本是否一致。【推测：前端和宿主不是同一次构建】
+3. **为什么是「Hello」而不是锁屏：** 数据卷里 `com.apple.purplebuddy.plist` 的 `SetupDone`、`SetupFinishedAllSteps` 都是 true，lockdown 的 `data_ark.plist` 是 `FactoryActivated`，设置助理还是出来了。可能和设备身份（kboot 的序列号、ECID 与 FirmwareKit 做激活记录时用的不一致）有关。【推测】没有触摸也滑不过去。
+4. 9.3.5 没试。
+
+### 3.14.4 下一步
+
+1. 查 CompassPlugIn 的间歇崩溃（gdb 在 backboardd 崩溃时看真实的 PC 和指令字节）。
+2. 让设置助理不再出现，进锁屏：核对设备身份和激活记录。
+3. 触摸（spi1 上的 multi-touch）、复位、电池和时钟。
+
+## 3.15 锁屏：越过设置助理
+
+**结论：** 7.1.2 在模拟的 iPod touch 5 上开机直接进了锁屏，不需要触摸：第 100 秒左右出现「slide to unlock」、时间、日期和相机图标，约 20 秒后自动熄屏。用 `tools/a5/n78_diskfix.sh` 从格式化后的盘一步改出两块克隆，同时开机，两次都进了锁屏，数据卷里都没有崩溃报告。【已核实：`work/a5/runs/s315/fix3a/shot-100.png`、`fix3b/shot-120.png`；崩溃日志目录在 `work/a5/nandfmt/disk-fix-a.img`、`disk-fix-b.img` 的数据卷】
+
+![A5 锁屏](img/a5-lockscreen.png)
+
+屏幕上那条「Cannot Use Device: QEMU USB HARDDRIVE」是 MobileStorageMounter 对我们挂根用的 USB 盘发的通知（FirmwareKit 的 `it_msmquiet` 在这个固件上不适用，fit.json 里已注明），不影响开机。时间是 1969-12-31 那个时间，因为还没有实时时钟。
+
+一共做了四件事，前三件改的是盘，第四件改的是 QEMU。
+
+### 3.15.1 激活：lockdownd 的本地激活补丁
+
+- **FirmwareKit 对 n78 没打激活补丁。** 系统卷里的 lockdownd 和 IPSW 原版的哈希一样（`261017f5…`）。FirmwareKit 的 CActivation 在这份 lockdownd 上报 `no supported activation path`，于是退回到「只在 data_ark 里写 FactoryActivated」（这本来是 iOS 6 的路线）。【已核实：用 FirmwareKit 自带的 `activation.c` 编出命令行，对原版 lockdownd 跑 `--probe`】
+- **补丁位置：** lockdownd 的 `dealwith_activation`（VA 0xfecc）里，`bl 0x22180; cmp r0,#1; bne 0xfffc` 决定要不要把激活状态短路成 Activated（日志 `Short circuiting activation state to Activated.`）。0x22180 返回的是「是否 hactivate」，由 MobileGestalt 的 ShouldHactivate 或 `hw.model` 以 DEV 结尾决定，iPod touch 5 上为假。把 0xff1a 的 `bne`（文件偏移 0xef1a）改成 `nop`，这条分支就总会走。A4 机型上 FirmwareKit 做的是同一件事，只是它的匹配器认不出这份代码的形状。【已核实：反编译 `work/a5/dis/pc-lockdownd-n78/functions/0xfecc.c`、`0x221b4.c`】
+- **工具：** `tools/a5/n78_activate.py` 先核对原版哈希和 0xef18 处的 4 个字节，再原地改，属主不变。代码签名没有重签，靠开机参数 `amfi_allow_any_signature=1`、`cs_enforcement_disable=1` 放行。全程不连苹果服务器。
+- **结果：** 开机后 data_ark 里的 `com.apple.mobile.lockdown_cache-ActivationState` 从 FactoryActivated 变成 Activated。但只改这一项，设置助理照样出来（`work/a5/runs/s315/act3/shot-110.png`，日文的「こんにちは」）。所以激活不是决定因素。【已核实】
+
+### 3.15.2 设置助理：补上 iPhone 4 没有的步骤
+
+FirmwareKit 的 `FinishedSetup` 是在 iPhone 4（n90）11D257 上对比「走完设置助理前后的数据卷」得出的键。iPod touch 5 的设置助理比 iPhone 4 多几步：Setup.app 里的完成标记有 `AssistantPresented`（Siri）、`ActivationLockPresented`、`KeychainSyncPresented`、`PBEmailUpdatesPresented`，前一个就是 iPhone 4 不支持的 Siri。把这四项置为 true，写进 `mobile/Library/Preferences/com.apple.purplebuddy.plist`，开机就直接进锁屏（`work/a5/runs/s315/act4/shot-100.png`）。【已核实：设置助理出现与否只差这四个键。至于真正起作用的是 Siri 这一项还是其中几项，没有逐个试】
+
+### 3.15.3 backboardd 在罗盘插件里间歇崩溃：先移走插件
+
+- **现象：** backboardd 在 CompassPlugIn 里崩，偶尔也在 CompassBacklightCompensation 里崩：`EXC_BAD_ACCESS` 访问地址 0xc，r0 = 0xc。两个都是 `/System/Library/HIDPlugins` 下罗盘相关的 HID 会话过滤插件。大约一半的开机会一直崩下去，屏幕停在转圈：act1 崩 20 次，fix2 跑 300 秒崩 11 次。另一半在几次崩溃后活下来，或者根本不崩。【已核实】
+- **排除了 HFS 压缩：** 两个崩溃点都落在插件 __TEXT 的第二页，又都不是访存指令，我先猜是客体解压 HFS 压缩文件出了错。把插件改成不压缩存放后，act2、act4、act6 三次都没崩，但 fix1、fix2 两次照崩，崩溃点不变（+0x1408）。所以和压缩无关，前面那几次只是碰巧。【已核实】
+- **现在的做法：** iPod touch 5 没有罗盘，就把这两个插件移到 `/System/Library/HIDPlugins.disabled/`（`n78_diskfix.sh`）。之后两次验证开机都没有崩溃。【已核实】
+- **根因没查到。** 大概是插件读到我们模拟得不完整的传感器服务，加速度计和陀螺仪探测都失败了，然后解引用空指针；崩溃报告给的 PC 也不可信。要查得用 gdb 在崩溃那一刻看真实的 PC 和指令字节。【推测】
+
+### 3.15.4 GL 协议告警：n78 没接 guest 包服务
+
+3.14 节里的 `the host speaks another wire protocol` / `REFUSED shim:hello:protocol`，原因不是前端和 QEMU 的构建版本不同：GL 前端的 hello 走的是 guest 包服务（`contrib/it-gles/gles_dispatch.c` 的 `GLES_HELLO_PROTO`），而 n78 的 QEMU_CALL 只接了 GL 调用本身。照 `ipad1.c` 接上 `guest_pkg_init`、`guest_pkg_reset`、`guest_pkg_call` 以后，QEMU 打出 `shim hello: protocol 1, name table ad3b3412 (host: 1, ad3b3412)`，告警消失。系统卷里的 it_boot 也开始有回答（`it_boot: package 38 (read-only root)`）。【已核实：`work/a5/runs/s315/act6/qemu.out`、`act6/serial.log`】
+
+### 3.15.5 复现
+
+格式化开机按 3.13 节做；然后对格式化后的盘克隆跑 `tools/a5/n78_diskfix.sh`。它会改 fstab 为 disk1、放 `.it_sealed`、打 lockdownd 补丁、移走罗盘插件、补设置助理的四个键。最后正常开机（`tools/a5/README.md`）。
+
+### 3.15.6 下一步
+
+1. 罗盘插件崩溃的根因（gdb）。加速度计和陀螺仪也该有模型（i2c2 上的 ap3dsh、ap3gdl）。
+2. 触摸（spi1 的 multi-touch），才能解锁进主屏。
+3. 复位、电池、实时时钟。屏幕熄了以后要靠按键唤醒，也就是要有按键。
+4. 9.3.5。
+
+## 3.16 触摸和按键：解锁进了主屏，点开了「设置」
+
+**结论：** 给 n78 接上 spi1 上的触摸传感器和 GPIO 按键后，用脚本经 QMP 注入输入，7.1.2 从锁屏滑动解锁进了主屏，点按打开了「设置」，按 Home 又回到主屏。全程不用人点。【已核实：`work/a5/runs/s316/t3/in-156.png`（主屏）、`t5/in-190.png`（设置）、`t5/in-205.png`（按 Home 回主屏），即下面几张】
+
+![A5 主屏](img/a5-homescreen.png) ![A5 设置](img/a5-settings.png)
+
+### 3.16.1 触摸链路（7.1.2 n78）
+
+- **设备树：** `arm-io/spi1/multi-touch`，compatible `multi-touch,n78`，中断接 GPIO 控制器的 0x15（和 A4 的 Zephyr2 ATN 一样，是引脚 0x205）。电源走 PMU 的 LDO，复位、片选走 GPIO，时钟走 PWM。spi1 在 arm-io +0x2100000，AIC 中断 0x1d。【已核实：`work/a5/dec/11D257/DeviceTree.txt`】
+- **驱动：** AppleMultitouchN1SPI，personality「C1,N78」，`mt-merge-personality` 是 `C1F58,1`，和 A4 的 n81、n90 是同一个驱动类。固件不在内核里：由用户态的 mtmergeprops 从系统卷的 `/usr/share/firmware/multitouch/N78.mtprops` 读出 `C1F58,1` 条目（`Constructed Firmware` 61520 字节、版本 0x0264、Z2 引导包），合并进驱动后一次下发。【已核实】
+- **按键：** 设备树 `buttons` 节点，Home（menu）、电源（hold）、音量加、音量减分别是 GPIO 引脚 0、1、2、3，低电平有效；唤醒另走 PMU（`function-wake_button_*`）。【已核实】
+
+### 3.16.2 接上的东西（`hw/arm/ipod_touch_5g.c`）
+
+全部复用 A4 机型现成的模型（`hw/arm/ipad1.c` 的接法）：
+
+- spi1 用 iPod 的 SPI 模型，外设是 multitouch。发送 FIFO 设为 0x10000，一次装得下 61520 字节的固件；固件经 CDMA 写进来。
+- 触摸是 iPod 的 Zephyr2 协议模型。ATN 接 GPIO 引脚 0x205。n78 用新的 profile：族号 0x58，版本 0x264，行列数照 A4 iPod；面积按 4 英寸屏算（5000 × 8860），坐标框按 n81 的值放大到 1136 行。
+- QEMU 的绝对坐标指针（QMP `input-send-event` 的 abs 加左键）转成一根手指。
+- 键盘 H、L、=、- 分别对应 Home、电源、音量加、音量减，四个引脚静止时拉高。
+
+PMU 唤醒没有做：D1881 还只是一组寄存器。不过熄屏后按 Home 能把屏幕点亮回到锁屏，因为 AP 没有真正睡下去。【已核实：`work/a5/runs/s316/t2/in-128.png`】
+
+### 3.16.3 脚本化输入（`tools/a5/qinput.py`）
+
+按时间表经 QMP 执行动作：`T:shot` 截图，`T:key:h` 按键，`T:tap:X,Y[,MS]` 点按（默认按住 300 毫秒，期间每 50 毫秒补一次同位置移动），`T:swipe:X0,Y0,X1,Y1[,MS]` 滑动。坐标是屏幕像素（640×1136）。复现：开机后约 148 秒按 Home 唤醒，152 秒从 (140,975) 滑到 (620,975) 解锁，160 秒点 (92,920) 打开「设置」，见 `tools/a5/README.md`。
+
+### 3.16.4 还没弄清或没做的
+
+1. **纵向校准不准：** 点 (92,800)（「设置」图标）打开的是上一行的「报刊杂志」（`work/a5/runs/s316/t4/in-172.png`）；点 (92,920) 才打开「设置」。也就是 y 在 800 到 900 一带，实际落点比瞄准点偏上约 100 像素。原因是坐标框和面积参数是按比例推的，没实测。要像 A4 那样用网页记点位，按轴拟合。【推测】
+2. **点按要按住一会：** 120 毫秒的点按没打开应用（`t3`），按住 300 毫秒才行。可能是传感器帧的节奏，没细查。【已核实现象，原因为推测】
+3. **开机时间不稳：** 同一块盘，锁屏有时 100 秒出现，有时要等按 Home 才看到（`t2`）。脚本里先按 Home 再解锁，就不受影响。
+4. 自动锁定没有改；锁屏约 20 秒后熄屏，按 Home 能唤醒。
+5. 多指、旋转、音量键没有测；PMU 唤醒、复位、实时时钟、罗盘插件崩溃的根因、9.3.5 仍待做。
 
 ## 4. 测试机
 

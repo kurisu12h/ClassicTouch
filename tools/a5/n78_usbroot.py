@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """Make a USB disk image the n78 kernel can root from: GPT, partition 1 = the IPSW's system volume.
 
-    n78_usbroot.py ROOTFS.dmg OUT.img [EXTRA_MiB]
+    n78_usbroot.py ROOTFS.dmg|SYSTEM.img OUT.img [DATA.img|EXTRA_MiB]
+
+The second form takes volumes FirmwareKit already made (firmwarekit create --stop-after volumes:
+volumes/system.img, volumes/data.img), and DATA.img becomes partition 2, /dev/disk0s2, the /private/var the
+fstab mounts. Both are copied sparsely (zero 1 MiB runs are skipped), so a 14 GB sparse data volume stays sparse.
 
 ROOTFS.dmg is the IPSW's rootfs after vfdecrypt (imgtools/vfdecrypt.py with ipsw.me's RootFS key): a UDIF
 image holding an Apple partition map with one Apple_HFS(X) partition. hdiutil turns it into a raw image,
@@ -31,11 +35,11 @@ def apm_hfs_slice(raw):
     raise ValueError("no Apple_HFS(X) partition")
 
 
-def gpt(total_lbas, part_first, part_last, disk_guid, part_guid):
-    """(protective MBR + primary header + entries, backup entries + backup header) for one partition."""
-    entry = HFS_TYPE.bytes_le + part_guid.bytes_le + struct.pack("<QQQ", part_first, part_last, 0)
-    entry += "System".encode("utf-16-le").ljust(72, b"\0")
-    entries = entry.ljust(ENTRIES * ENTRY_SIZE, b"\0")
+def gpt(total_lbas, parts, disk_guid):
+    """(protective MBR + primary header + entries, backup entries + backup header) for [(first, last, name)]."""
+    entries = b"".join(HFS_TYPE.bytes_le + uuid.uuid4().bytes_le + struct.pack("<QQQ", first, last, 0) +
+                       name.encode("utf-16-le").ljust(72, b"\0") for first, last, name in parts)
+    entries = entries.ljust(ENTRIES * ENTRY_SIZE, b"\0")
     ecrc = zlib.crc32(entries)
     n_entry_lbas = ENTRIES * ENTRY_SIZE // SECTOR
 
@@ -55,31 +59,51 @@ def gpt(total_lbas, part_first, part_last, disk_guid, part_guid):
     return head, tail
 
 
-def main(dmg, out, extra_mib="0"):
+def copy_sparse(src, off, ln, o, at):
+    """ln bytes of src from off to o at byte `at`, skipping all-zero 1 MiB runs (the output stays sparse)."""
+    src.seek(off)
+    done = 0
+    while done < ln:
+        chunk = src.read(min(ln - done, 1 << 20))
+        if chunk.count(0) != len(chunk):
+            o.seek(at + done)
+            o.write(chunk)
+        done += len(chunk)
+
+
+def main(system, out, third="0"):
     work = tempfile.mkdtemp(prefix="n78_usbroot.")
     try:
-        subprocess.run(["hdiutil", "convert", dmg, "-format", "UDTO", "-o", os.path.join(work, "raw")],
-                       check=True, stdout=subprocess.DEVNULL)
-        raw = os.path.join(work, "raw.cdr")
-        with open(raw, "rb") as f:
-            off, ln = apm_hfs_slice(f.read(64 * SECTOR))
-        part_lbas = ln // SECTOR
-        extra = int(extra_mib) * 1024 * 1024 // SECTOR
-        total = FIRST_LBA + part_lbas + extra + 2048        # room for the backup GPT
-        head, tail = gpt(total, FIRST_LBA, FIRST_LBA + part_lbas - 1, uuid.uuid4(), uuid.uuid4())
-        with open(raw, "rb") as f, open(out, "wb") as o:
+        if system.endswith(".dmg"):
+            subprocess.run(["hdiutil", "convert", system, "-format", "UDTO", "-o", os.path.join(work, "raw")],
+                           check=True, stdout=subprocess.DEVNULL)
+            raw = os.path.join(work, "raw.cdr")
+            with open(raw, "rb") as f:
+                off, ln = apm_hfs_slice(f.read(64 * SECTOR))
+        else:
+            raw, off, ln = system, 0, os.path.getsize(system)
+        data = third if not third.isdigit() else None
+        extra = 0 if data else int(third) * 1024 * 1024 // SECTOR
+        parts = [(FIRST_LBA, FIRST_LBA + ln // SECTOR - 1, "System")]
+        if data:
+            first = (parts[0][1] + 1 + 2047) // 2048 * 2048
+            parts.append((first, first + os.path.getsize(data) // SECTOR - 1, "Data"))
+        total = parts[-1][1] + 1 + extra + 2048        # room for the backup GPT
+        head, tail = gpt(total, parts, uuid.uuid4())
+        with open(out, "wb") as o:
+            o.truncate(total * SECTOR)
+            o.seek(0)
             o.write(head)
-            o.seek(FIRST_LBA * SECTOR)
-            f.seek(off)
-            left = ln
-            while left:
-                chunk = f.read(min(left, 1 << 24))
-                o.write(chunk)
-                left -= len(chunk)
+            with open(raw, "rb") as f:
+                copy_sparse(f, off, ln, o, FIRST_LBA * SECTOR)
+            if data:
+                with open(data, "rb") as f:
+                    copy_sparse(f, 0, os.path.getsize(data), o, parts[1][0] * SECTOR)
             o.seek((total - len(tail) // SECTOR) * SECTOR)
             o.write(tail)
-        print("%s: GPT, partition 1 HFS at LBA %d, %d MiB; disk %d MiB" %
-              (out, FIRST_LBA, ln >> 20, total * SECTOR >> 20))
+        for i, (first, last, name) in enumerate(parts, 1):
+            print("%s: partition %d %s at LBA %d, %d MiB" % (out, i, name, first, (last - first + 1) * SECTOR >> 20))
+        print("disk %d MiB" % (total * SECTOR >> 20))
     finally:
         shutil.rmtree(work, ignore_errors=True)
 

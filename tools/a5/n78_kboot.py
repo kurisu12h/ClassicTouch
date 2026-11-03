@@ -27,6 +27,8 @@ HIDDEN = ["cpus/cpu1", "arm-io/iop", "arm-io/flash-controller0", "arm-io/ae2", "
           "arm-io/isp", "arm-io/vxd"]
 # N78_HIDE=arm-io/a,arm-io/b: hide more nodes for one build, while bring-up finds which ones block boot.
 HIDDEN += [p for p in os.environ.get("N78_HIDE", "").split(",") if p]
+# N78_SHOW=arm-io/iop,...: give hidden nodes back to their drivers for one build.
+HIDDEN = [p for p in HIDDEN if p not in os.environ.get("N78_SHOW", "").split(",")]
 BOOT_ARGS = kb.DEFAULT_BOOT_ARGS + " cpus=1"
 
 _fill_dt = kb.fill_dt
@@ -55,6 +57,30 @@ def fill_cpu_perf(dt):
         dt.set("cpus/cpu0", key, hz)
 
 
+# The PPN NAND iBoot would have probed (its nandid.c fill, 0x9ff22338 in n78's iBoot-1940): the props it
+# writes into flash-controller0/disk, the PPN ones from the device's parameter page. No unit has been read;
+# this is a small device of our own that keeps inside the IOP firmware's _validate_device_parameters ranges
+# (H2fmi_ppn.c, 0x7374 in 11D257's IOP image): one bus, one CE of 2 CAUs x 0x420 blocks x 128 pages x 8 KiB
+# (2.2 GB), 32 bytes of metadata a page. hw/arm/s5l8940_iop.c serves the same geometry.
+N78_NAND = {"#ce": 1, "ce-bitmap": 1, "#databus": 1, "#ce-blocks": 2 * 0x420, "#block-pages": 128,
+            "#page-bytes": 0x2000, "#spare-bytes": 0x20, "#die-ce": 1, "bbt-format": 0, "vendor-type": 0,
+            "ecc-threshold": 0, "ecc-correctable": 0, "read-setup-clks": 1, "read-hold-clks": 1,
+            "read-dccycle-clks": 0, "write-setup-clks": 1, "write-hold-clks": 1,
+            "meta-per-logical-page": 0x10, "valid-meta-per-logical-page": 0x10, "logical-page-size": 0x1000,
+            "toggle-device": 0, "ppn-device": 1, "ppn-spec-version": 0x10500, "blocks-cau": 0x420, "caus-ce": 2,
+            "slc-pages": 64, "mlc-pages": 128, "match-oddeven-caus": 0, "cau-bits": 1, "page-bits": 7,
+            "block-bits": 11, "max-transaction-size": 32, "retire-on-invalid-refresh": 0}
+N78_NAND_READID = bytes([0x98, 0xde, 0x84, 0x93, 0x72, 0x57, 0x00, 0x00])   # placeholder, Toshiba's maker byte
+
+
+def fill_nand(dt):
+    node = "arm-io/flash-controller0/disk"
+    for key, value in N78_NAND.items():
+        dt.set(node, key, value)
+    dt.set(node, "device-readid", N78_NAND_READID)
+    dt.set(node, "ppn-features", struct.pack("<I", 0))     # {length, features[length]}: none
+
+
 def fill_dt(dt, memory_map, ident, iboot=kb.IBOOT_VERSION, root_matching=kb.ROOT_MATCHING):
     _fill_dt(dt, memory_map, ident, iboot, root_matching)
     dt.set("", "platform-name", "s5l8942x")
@@ -64,6 +90,7 @@ def fill_dt(dt, memory_map, ident, iboot=kb.IBOOT_VERSION, root_matching=kb.ROOT
             dt.set(path, "compatible", "none")
     dt.set("arm-io/aic", "#main-cpus", 1)
     fill_cpu_perf(dt)
+    fill_nand(dt)
     # The dock port powered as a built-in one (port-type 0), not left off until a host cable (2): what the
     # A4 machine does to 6.x/7.x DTs (hw/arm/ipad1.c, docs/ipad1/usb-keyboard.md), so the EHCI sees a
     # device on port 1 (-device usb-storage,bus=ehci.0).

@@ -1,9 +1,9 @@
 diff --git a/hw/arm/ipod_touch_5g.c b/hw/arm/ipod_touch_5g.c
 new file mode 100644
-index 0000000000..8fc8009824
+index 0000000000..e3fc32aed6
 --- /dev/null
 +++ b/hw/arm/ipod_touch_5g.c
-@@ -0,0 +1,354 @@
+@@ -0,0 +1,514 @@
 +/*
 + * iPod touch 5G (N78AP, S5L8942X "A5", -M iPod-Touch-5G): bring-up skeleton.
 + *
@@ -43,6 +43,14 @@ index 0000000000..8fc8009824
 +#include "system/reset.h"
 +#include "system/system.h"
 +#include "target/arm/cpu.h"
++#include "target/arm/cpregs.h"
++#include "hw/arm/guest-services/general.h"
++#include "hw/arm/guest-services/gles.h"
++#include "hw/arm/guest-package.h"
++#include "hw/arm/ipod_touch_spi.h"
++#include "hw/arm/ipod_touch_multitouch.h"
++#include "ui/console.h"
++#include "ui/input.h"
 +
 +#define N78_DRAM_SIZE       (512 * MiB)
 +#define N78_CONSOLE_UART    1               /* the DT has no uart0 */
@@ -70,6 +78,76 @@ index 0000000000..8fc8009824
 +    DeviceState *gpio;
 +    DeviceState *i2c[2];                    /* i2c0, i2c2 */
 +    char *kboot_path;
++    GuestPackage pkg;                       /* hw/arm/guest-package.c: the GL front's hello, guest packages */
++    IPodTouchMultitouchState *mt;           /* spi1's sensor */
++};
++
++/*
++ * The buttons (DT buttons: function-button_menu/hold/volup/voldown) are GPIO pins 0 to 3 as on the A4,
++ * active low. QMP send-key (or a keyboard): H is Home, L is the hold (power) button, -/= the volume.
++ */
++#define N78_GPIO_BTN_MENU   0x000
++#define N78_GPIO_BTN_HOLD   0x001
++#define N78_GPIO_BTN_VOLUP  0x002
++#define N78_GPIO_BTN_VOLDN  0x003
++/* The sensor's ATN: DT multi-touch interrupts 0x15 on the GPIO controller, pin 0x205 as on the A4. */
++#define N78_GPIO_MT_ATN     0x205
++
++/*
++ * The iPod touch 5's sensor: an N1-class part the kernel drives as AppleMultitouchN1SPI
++ * (multi-touch,n78), whose firmware mtmergeprops loads from N78.mtprops' "C1F58,1" entry: family 0x58,
++ * "Constructed Firmware Version" 0x0264, 61520 bytes in one SPI burst. Rows and columns are the A4 iPod's;
++ * the surface is the 4-inch panel's (640x1136 at 326 ppi, 49.9 x 88.6 mm), and the frame the N81's
++ * scaled to 1136 lines, not measured.
++ */
++static const MTSensorProfile mt_profile_n78 = {
++    .family_id = 0x58,
++    .rows = MT_SENSOR_ROWS, .cols = MT_SENSOR_COLUMNS,
++    .bcd_version = 0x264,
++    .surface_width = MT_SENSOR_SURFACE_WIDTH,
++    .surface_height = 8860,
++    .region_desc = { MT_SENSOR_REGION_DESC }, .region_desc_len = 1,
++    .region_param = { MT_SENSOR_REGION_PARAM }, .region_param_len = 1,
++    .frame_x0 = -69, .frame_width = 4748,
++    .frame_y0 = -254, .frame_height = 8709,
++};
++
++/* Absolute pointer (QMP input-send-event abs + btn, or a tablet) -> one finger; y runs bottom-up. */
++static void n78_mouse_event(void *opaque, int x, int y, int z, int buttons)
++{
++    IPodTouchMultitouchState *mt = opaque;
++
++    mt->touch_x = x / 32768.0f;
++    mt->touch_y = 1.0f - y / 32768.0f;
++    if (buttons && !mt->touch_down) {
++        ipod_touch_multitouch_on_touch(mt);
++    } else if (!buttons && mt->touch_down) {
++        ipod_touch_multitouch_on_release(mt);
++    } else if (buttons) {
++        ipod_touch_multitouch_on_motion(mt);
++    }
++}
++
++static void n78_kbd_event(DeviceState *dev, QemuConsole *src, InputEvent *evt)
++{
++    InputKeyEvent *key = evt->u.key.data;
++    int pin;
++
++    switch (qemu_input_key_value_to_qcode(key->key)) {
++    case Q_KEY_CODE_H:     pin = N78_GPIO_BTN_MENU; break;
++    case Q_KEY_CODE_L:     pin = N78_GPIO_BTN_HOLD; break;
++    case Q_KEY_CODE_EQUAL: pin = N78_GPIO_BTN_VOLUP; break;
++    case Q_KEY_CODE_MINUS: pin = N78_GPIO_BTN_VOLDN; break;
++    default:
++        return;
++    }
++    qemu_set_irq(qdev_get_gpio_in(dev, S5L8930_GPIO_PIN(pin)), !key->down);
++}
++
++static const QemuInputHandler n78_kbd_handler = {
++    .name  = "iPod touch 5G buttons",
++    .mask  = INPUT_EVENT_MASK_KEY,
++    .event = n78_kbd_event,
 +};
 +
 +/* The OTG's GHWCFG1-4, as the A4 machine has them (hw/arm/ipad1.c). */
@@ -77,6 +155,47 @@ index 0000000000..8fc8009824
 +
 +/* i2c0's and i2c2's function-iic_sda/scl GPIOs, as the 7.1.2 and 9.3.5 DTs give them. */
 +static const uint32_t n78_i2c_pins[] = { 0x0604, 0x0605, 0x1800, 0x1801 };
++
++/*
++ * The guest-services trap (mcr p15,3,Rn,c15,c15,0, "QEMU_CALL") the GLES front in the system volume
++ * uses, as on the A4 machine (hw/arm/ipad1.c): without it iOS 7's backboardd dies on its first GL
++ * call with SIGILL (0xee6f6f1f). The GL bridge and the guest-package service answer here (the GL
++ * front's hello, which agrees the name-keyed wire, goes through the latter: without it the front
++ * logs "the host speaks another wire protocol"); the agent and the pasteboard are not wired yet.
++ */
++static void n78_qemu_call(CPUARMState *env, const ARMCPRegInfo *ri, uint64_t value)
++{
++    CPUState *cs = env_cpu(env);
++    N78MachineState *s = N78_MACHINE(qdev_get_machine());
++    qemu_call_t q;
++    int32_t err = 0;
++
++    if (qemu_call_rw(cs, value, &q, false)) {
++        return;
++    }
++    switch (q.call_number) {
++    case QC_GLES:
++        q.retval = qc_handle_gles(cs, &q.args.gles);
++        break;
++    case QC_GLES_PING:
++        q.retval = QC_GLES_PING_MAGIC;
++        break;
++    default:
++        if (!guest_pkg_call(&s->pkg, cs, &q, &err)) {
++            return;
++        }
++    }
++    q.error = err;
++    qemu_call_rw(cs, value, &q, true);
++}
++
++static const ARMCPRegInfo n78_cp_reginfo[] = {
++    { .name = "QEMU_CALL", .cp = 15, .opc1 = 3, .crn = 15, .crm = 15,
++      .opc2 = 0, .access = PL0_RW, .state = ARM_CP_STATE_AA32,
++      .type = ARM_CP_IO | ARM_CP_NO_RAW | ARM_CP_RAISES_EXC,
++      .readfn = qemu_call_status,
++      .writefn = n78_qemu_call },
++};
 +
 +static void n78_cpu_reset(void *opaque)
 +{
@@ -89,6 +208,8 @@ index 0000000000..8fc8009824
 +    uint32_t load_pa, entry_pa, bootargs_pa, image_len;
 +
 +    cpu_reset(cs);
++    gles_host_reset();
++    guest_pkg_reset(&s->pkg);
 +
 +    if (!g_file_get_contents(s->kboot_path, &data, &size, &gerr)) {
 +        error_report("n78: cannot read kboot bundle '%s': %s",
@@ -161,6 +282,7 @@ index 0000000000..8fc8009824
 +    object_property_set_bool(cpuobj, "has_el2", false, NULL);
 +    object_property_set_bool(cpuobj, "realized", true, &error_fatal);
 +    object_unref(cpuobj);
++    define_arm_cp_regs(s->cpu, n78_cp_reginfo);
 +
 +    memory_region_init_ram(&s->dram, NULL, "n78.dram", N78_DRAM_SIZE, &error_fatal);
 +    memory_region_add_subregion(sysmem, S5L8940_DRAM_BASE, &s->dram);
@@ -212,6 +334,30 @@ index 0000000000..8fc8009824
 +    sysbus_connect_irq(sbd, 0, qdev_get_gpio_in(s->aic, S5L8940_IRQ_GPIO));
 +    for (int i = 0; i < ARRAY_SIZE(n78_i2c_pins); i++) {
 +        s5l8930_gpio_set_rest_level(dev, S5L8930_GPIO_PIN(n78_i2c_pins[i]), true);
++    }
++    for (int pin = N78_GPIO_BTN_MENU; pin <= N78_GPIO_BTN_VOLDN; pin++) {
++        s5l8930_gpio_set_rest_level(dev, S5L8930_GPIO_PIN(pin), true);     /* released */
++    }
++    qemu_input_handler_register(dev, &n78_kbd_handler);
++
++    /*
++     * spi1 and its multi-touch sensor, as the A4 machine has them (hw/arm/ipad1.c): the iPod's SPI and
++     * Zephyr2-protocol models, a TX FIFO deep enough for the firmware's one CDMA burst.
++     */
++    {
++        DeviceState *spi = qdev_new(TYPE_IPOD_TOUCH_SPI);
++
++        qdev_prop_set_uint8(spi, "index", 1);
++        qdev_prop_set_string(spi, "peripheral", "multitouch");
++        qdev_prop_set_uint32(spi, "tx-fifo-depth", 0x10000);
++        sysbus_realize_and_unref(SYS_BUS_DEVICE(spi), &error_fatal);
++        sysbus_mmio_map(SYS_BUS_DEVICE(spi), 0, S5L8940_SPI_BASE(1));
++        sysbus_connect_irq(SYS_BUS_DEVICE(spi), 0, qdev_get_gpio_in(s->aic, S5L8940_IRQ_SPI(1)));
++        s->mt = IPOD_TOUCH_SPI(spi)->mt;
++        s->mt->profile = &mt_profile_n78;
++        qdev_connect_gpio_out_named(DEVICE(s->mt), "atn", 0,
++                                    qdev_get_gpio_in(dev, S5L8930_GPIO_PIN(N78_GPIO_MT_ATN)));
++        qemu_add_mouse_event_handler(n78_mouse_event, s->mt, 1, "iPod touch 5G touchscreen");
 +    }
 +
 +    /* i2c0 (the D1881 PMU) and i2c2 (accelerometer, gyro: nothing yet). */
@@ -310,6 +456,13 @@ index 0000000000..8fc8009824
 +    sysbus_mmio_map(sbd, 0, S5L8940_USB_OHCI0_BASE);
 +    sysbus_connect_irq(sbd, 0, qdev_get_gpio_in(s->aic, S5L8940_IRQ_USB_OHCI0));
 +
++    /* IOP: the AP's side of it, for AppleIOPFMI's NAND (hw/arm/s5l8940_iop.c). */
++    dev = qdev_new(TYPE_S5L8940_IOP);
++    object_property_set_link(OBJECT(dev), "aic", OBJECT(s->aic), &error_fatal);
++    sbd = SYS_BUS_DEVICE(dev);
++    sysbus_realize_and_unref(sbd, &error_fatal);
++    sysbus_mmio_map(sbd, 0, S5L8940_IOP_BASE);
++
 +    /* Console: serial0 on uart1. Its AIC line is wired once the DT gives it. */
 +    exynos4210_uart_create(S5L8940_UART_BASE(N78_CONSOLE_UART), 256, N78_CONSOLE_UART,
 +                           serial_hd(0), NULL, false);
@@ -340,13 +493,20 @@ index 0000000000..8fc8009824
 +    mc->default_cpu_type = ARM_CPU_TYPE_NAME("cortex-a9");
 +    mc->default_ram_size = N78_DRAM_SIZE;
 +    object_class_property_add_str(klass, "kboot", n78_get_kboot, n78_set_kboot);
++    gles_host_class_init(klass);
 +    object_class_property_set_description(klass, "kboot",
 +                                          "K48KBOOT bundle from firmwarekit (board n78)");
++}
++
++static void n78_instance_init(Object *obj)
++{
++    guest_pkg_init(&N78_MACHINE(obj)->pkg, obj);
 +}
 +
 +static const TypeInfo n78_machine_info = {
 +    .name = TYPE_N78_MACHINE,
 +    .parent = TYPE_MACHINE,
++    .instance_init = n78_instance_init,
 +    .interfaces = arm_machine_interfaces,
 +    .instance_size = sizeof(N78MachineState),
 +    .class_init = n78_class_init,
@@ -359,7 +519,7 @@ index 0000000000..8fc8009824
 +
 +type_init(n78_machine_types)
 diff --git a/hw/arm/meson.build b/hw/arm/meson.build
-index 98333ecbda..91aac18101 100644
+index 98333ecbda..43f2ebb5aa 100644
 --- a/hw/arm/meson.build
 +++ b/hw/arm/meson.build
 @@ -93,7 +93,7 @@ arm_common_ss.add(when: 'CONFIG_XEN', if_true: files(
@@ -367,7 +527,7 @@ index 98333ecbda..91aac18101 100644
  ))
  
 -arm_ss.add(when: 'CONFIG_IPAD1', if_true: files('ipad1.c', 's5l8930_dmc.c', 's5l8930_pmgr.c', 's5l8930_gpio.c', 's5l8930_iop.c', 's5l8930_iop_core.c', 's5l8930_sdio.c', 's5l8930_i2c.c', 's5l8930_display.c', 's5l8930_dart.c', 's5l8930_cdma.c', 's5l8930_bbspi.c', 's5l8930_h2fmi.c', 's5l8930_sha1.c', 's5l8930_ltc4099.c', 's5l8930_hdq.c', 's5l8930_i2s.c', 's5l8930_isp.c'))
-+arm_ss.add(when: 'CONFIG_IPAD1', if_true: files('ipad1.c', 's5l8930_dmc.c', 's5l8930_pmgr.c', 's5l8930_gpio.c', 's5l8930_iop.c', 's5l8930_iop_core.c', 's5l8930_sdio.c', 's5l8930_i2c.c', 's5l8930_display.c', 's5l8930_dart.c', 's5l8930_cdma.c', 's5l8930_bbspi.c', 's5l8930_h2fmi.c', 's5l8930_sha1.c', 's5l8930_ltc4099.c', 's5l8930_hdq.c', 's5l8930_i2s.c', 's5l8930_isp.c', 'ipod_touch_5g.c', 's5l8940_aic.c', 's5l8940_i2c.c', 's5l8940_pmgr.c'))
++arm_ss.add(when: 'CONFIG_IPAD1', if_true: files('ipad1.c', 's5l8930_dmc.c', 's5l8930_pmgr.c', 's5l8930_gpio.c', 's5l8930_iop.c', 's5l8930_iop_core.c', 's5l8930_sdio.c', 's5l8930_i2c.c', 's5l8930_display.c', 's5l8930_dart.c', 's5l8930_cdma.c', 's5l8930_bbspi.c', 's5l8930_h2fmi.c', 's5l8930_sha1.c', 's5l8930_ltc4099.c', 's5l8930_hdq.c', 's5l8930_i2s.c', 's5l8930_isp.c', 'ipod_touch_5g.c', 's5l8940_aic.c', 's5l8940_i2c.c', 's5l8940_pmgr.c', 's5l8940_iop.c'))
  arm_ss.add(when: 'CONFIG_IPAD1', if_true: files('s5l8920.c', 's5l8920_pmgr.c', 's5l8920_dart.c', 's5l8920_pwm.c', 's5l8920_vxd.c', 's5l8920_vxd_h264.c', 's5l8920_jpeg.c'))
  # Synopsys DWC OTG device core, PHY register file and host TCP bridge: shared by the S5L8720 and S5L8930 machines.
  arm_ss.add(when: 'CONFIG_IPOD_TOUCH_1G', if_true: files('ipod_touch_1g.c', 's5l8900_fmc.c', 's5l8900_nand_ecc.c', 's5l8900_adm.c', 's5l8900_lcd_panel.c', 's5l8900_multitouch_z1.c', 'ipod_touch_wm8758.c', 'ipod_touch_piezo.c'))
@@ -818,10 +978,10 @@ index 61a5628e46..0ddd714412 100644
  static void s5l8930_display_class_init(ObjectClass *klass, const void *data)
 diff --git a/hw/arm/s5l8940_aic.c b/hw/arm/s5l8940_aic.c
 new file mode 100644
-index 0000000000..41dc153fcb
+index 0000000000..11f76654be
 --- /dev/null
 +++ b/hw/arm/s5l8940_aic.c
-@@ -0,0 +1,537 @@
+@@ -0,0 +1,570 @@
 +/*
 + * Apple Interrupt Controller as the 32-bit A5 has it (DT "aic,1",
 + * AppleInterruptController), replacing the A4's four PL192s.
@@ -927,6 +1087,8 @@ index 0000000000..41dc153fcb
 +    uint32_t hw[AIC_WORDS], sw[AIC_WORDS], mask[AIC_WORDS];
 +    uint32_t target[S5L8940_AIC_NR_IRQS];
 +    AICCore core[S5L8940_AIC_MAX_CPUS];
++    void (*ipid_fn)(void *opaque, int vector);  /* s5l8940_aic_set_ipid_handler */
++    void *ipid_opaque;
 +};
 +
 +static uint64_t aic_ticks(S5L8940AICState *s, int64_t ns)
@@ -1231,7 +1393,16 @@ index 0000000000..41dc153fcb
 +        return;
 +    }
 +    if (addr >= AIC_SW_SET(0) && addr < AIC_SW_SET(AIC_WORDS)) {
-+        s->sw[(addr - AIC_SW_SET(0)) / 4] |= val;
++        w = (addr - AIC_SW_SET(0)) / 4;
++        s->sw[w] |= val;
++        /* An IPID vector set by the AP may be a coprocessor's doorbell: its handler decides. */
++        if (w == 0 && s->ipid_fn) {
++            for (int n = 0; n < S5L8940_AIC_IPID_VECTORS; n++) {
++                if (val & (1u << n)) {
++                    s->ipid_fn(s->ipid_opaque, n);
++                }
++            }
++        }
 +    } else if (addr >= AIC_SW_CLR(0) && addr < AIC_SW_CLR(AIC_WORDS)) {
 +        s->sw[(addr - AIC_SW_CLR(0)) / 4] &= ~val;
 +    } else if (addr >= AIC_MASK_SET(0) && addr < AIC_MASK_SET(AIC_WORDS)) {
@@ -1271,6 +1442,28 @@ index 0000000000..41dc153fcb
 +    .valid.min_access_size = 4,
 +    .valid.max_access_size = 4,
 +};
++
++void s5l8940_aic_set_ipid_handler(DeviceState *dev, void (*fn)(void *opaque, int vector),
++                                  void *opaque)
++{
++    S5L8940AICState *s = S5L8940_AIC(dev);
++
++    s->ipid_fn = fn;
++    s->ipid_opaque = opaque;
++}
++
++/* A coprocessor raising (or taking back) an IPID vector, as its kAICSWGenSet/Clr writes would. */
++void s5l8940_aic_sw_set(DeviceState *dev, int vector, bool on)
++{
++    S5L8940AICState *s = S5L8940_AIC(dev);
++
++    if (on) {
++        s->sw[vector / 32] |= 1u << (vector % 32);
++    } else {
++        s->sw[vector / 32] &= ~(1u << (vector % 32));
++    }
++    aic_update(s);
++}
 +
 +/* Input lines, level-triggered, as the SoC's blocks raise them. */
 +static void aic_set_irq(void *opaque, int n, int level)
@@ -1709,6 +1902,784 @@ index 0000000000..77dd14195f
 +};
 +
 +DEFINE_TYPES(s5l8940_i2c_types)
+diff --git a/hw/arm/s5l8940_iop.c b/hw/arm/s5l8940_iop.c
+new file mode 100644
+index 0000000000..e6db98c318
+--- /dev/null
++++ b/hw/arm/s5l8940_iop.c
+@@ -0,0 +1,772 @@
++/*
++ * S5L8940X ("A5") IOP: high-level emulation of what the AP sees of it.
++ *
++ * The A5's IOP is an ARMv7 core running "EmbeddedIOP for s5l8942xiop"
++ * (iBoot-1940 in 7.1.2), which drives the PPN NAND for AppleIOPFMI. Its
++ * firmware never runs here; this device answers the AP's side of it:
++ *
++ * - The control block (DT iop reg, arm-io +0xf300000). AppleA5IOP-14's
++ *   startCPU (11D257 0x80e2d93c) writes +0x0 = 0, +0x4 = the firmware's
++ *   physical base, +0x34 = 0x1ff01ff, then +0x0 = 1; stopCPU writes +0x0 = 0.
++ * - The doorbell: AppleA5IOP's function-doorbell is the AIC's IPID function,
++ *   which sets an IPID vector (kAICSWGenSet); the IOP answers on vector 2
++ *   (DT iop interrupts), and the AIC driver clears it as it dispatches.
++ * - EmbeddedIOP-50's rings. The firmware's 'cnfg' block (0x13000 into the
++ *   7.1.2 image) gets, from the AP: +0x4 flags, +0x8 the message buffer,
++ *   +0xc debug flags, and per endpoint handle h < 10 the ring's address at
++ *   +0x10 + 8h and its slot count at +0x14 + 8h (registerEndpoint,
++ *   0x80cce9f8). A slot is 64 bytes; word 0 is the item with bit 0 for its
++ *   owner (IOPEndpoint::sendMessage/receiveMessage, 0x80ccf470/0x80ccf39c).
++ *   On a command endpoint the AP posts item | 0 and the IOP hands the slot
++ *   back as item | 1 once the command is done.
++ *
++ * Endpoints (EmbeddedIOP::start, table 0x80cd0f78): 0 control (2 slots),
++ * 1 messages from the IOP, then 2 to 8 for the IOP's services; AppleIOPFMI's
++ * two buses use 3-slot rings.
++ */
++#include "qemu/osdep.h"
++#include "qemu/log.h"
++#include "qemu/timer.h"
++#include "qemu/module.h"
++#include "qapi/error.h"
++#include "hw/core/sysbus.h"
++#include "hw/core/qdev-properties.h"
++#include "hw/arm/s5l8940.h"
++#include "system/address-spaces.h"
++#include "migration/vmstate.h"
++#include "qemu/error-report.h"
++
++OBJECT_DECLARE_SIMPLE_TYPE(S5L8940IOPState, S5L8940_IOP)
++
++#define IOP_REG_SIZE        0x1000
++#define IOP_CTRL            0x00
++#define IOP_FW_BASE         0x04
++#define IOP_CTRL_RUN        1u
++
++#define IOP_DOORBELL_VECTOR 3       /* DT iop function-doorbell: IPID 3 */
++#define IOP_NMI_VECTOR      2       /* function-nmi: IPID 2 (with 1) */
++#define IOP_AP_VECTOR       2       /* DT iop interrupts */
++
++#define CFG_MAGIC           0x636e6667  /* 'cnfg' */
++#define CFG_SCAN_MAX        0x100000
++#define CFG_RING(h)         (0x10 + 8 * (h))
++#define CFG_COUNT(h)        (0x14 + 8 * (h))
++#define IOP_ENDPOINTS       10
++#define RING_SLOT           0x40
++#define RING_MAX            64
++
++#define EP_CONTROL          0
++#define EP_MESSAGE          1
++
++/*
++ * AppleIOPFMI-93 commands: 512 bytes each, opcode at +0, status at +8 (1 done, 2 blank,
++ * 0x8xxxxxxx errors: _fmiTranslateResult 0x80b1af84), bus at +0x10, flags at +0x14.
++ * Opcodes as the firmware's fmi_message_process (0x1088) dispatches them.
++ */
++#define FMI_CMD_SIZE        0x200
++#define FMI_STATUS          0x08
++#define FMI_BUS             0x10
++#define FMI_CE              0x18        /* u16 */
++#define FMI_OP_SET_CONFIG   0x01
++#define FMI_OP_ERASE_SINGLE 0x03        /* h2fmi_ppn_iop erase (0x7de0): +0x1c block */
++#define FMI_OP_WRITE_BOOTPAGE 0x0a      /* h2fmi_ppn_iop_write_bootpage (0x8468) */
++#define FMI_OP_READ_BOOTPAGE 0x0b       /* h2fmi_ppn_iop_read_bootpage (0x83b4) */
++#define FMI_OP_READ_CAU_BBT 0x0d        /* h2fmi_ppn_iop_read_cau_bbt (0x84d8) */
++#define FMI_OP_READ_MULTIPLE 0x10       /* h2fmi_ppn_iop_read_multiple (0x7fbc) */
++#define FMI_OP_ERASE_MULTIPLE 0x11      /* h2fmi_ppn_iop_erase_multiple (0x7d5c) */
++#define FMI_OP_WRITE_MULTIPLE 0x12      /* h2fmi_ppn_iop_write_multiple (0x822c) */
++#define FMI_OP_CONTROLLER_INFO 0x16     /* h2fmi_ppn_iop_get_controller_info (0x861c) */
++#define FMI_OP_DIE_INFO     0x17        /* 0x8798: die unique id at +0x20, die chip id at +0x30 */
++#define FMI_OP_TEMPERATURE  0x19        /* AppleIOPFMI::_fmiGetTemperatureGated: s16 at +0x18 */
++/* The multi-page commands: {segments, bytes} of the data and meta scatter lists ({IOP address,
++ * length} pairs) and of the PPN command itself. */
++#define FMI_DATA_SGL        0x1c
++#define FMI_DATA_SGL_LEN    0x20
++#define FMI_META_SGL        0x24
++#define FMI_META_SGL_LEN    0x28
++#define FMI_PPN_CMD         0x2c
++#define FMI_PPN_CMD_LEN     0x30
++/*
++ * The PPN command (fmiss_ppn_read_multi 0x8a28, h2fmi_ppn_process_error_list 0x6524): u16 page count
++ * at +8, the physical CE of CE index k at +0xe + 6k (k < 3), and from +0x20 one 12-byte entry a page:
++ * {u32 row; u8 CE index; u8; u8 status, which the IOP ORs a failing page's PPN status into; ...}.
++ */
++#define PPN_CMD_STATUS      0x0c        /* u8: the OR of every page's status */
++#define PPN_CMD_COUNT       0x08
++#define PPN_CMD_CE(k)       (0x0e + 6 * (k))
++#define PPN_CMD_ENTRY(i)    (0x1c + 12 * (i))
++#define PPN_ENTRY_LEN       0           /* u16: bytes to read from the column on, 0 for the page */
++#define PPN_ENTRY_COL       2           /* u16 */
++#define PPN_ENTRY_ROW       4
++#define PPN_ENTRY_CE_IDX    8
++#define PPN_ENTRY_STATUS    10
++#define PPN_CMD_MAX_PAGES   256
++/* PPN operation status: ready, the page read erased, general error (H2fmi_ppn.c read_bootpage, 0x6220). */
++#define PPN_STATUS_READY    0x40
++#define PPN_STATUS_CLEAN    0x08
++#define PPN_STATUS_FAIL     0x01
++#define FMI_STATUS_OK       1
++#define FMI_STATUS_BLANK    2
++#define FMI_STATUS_UNIMPLEMENTED 0x80000005
++
++/*
++ * The PPN device: one CE of 2 CAUs x 0x420 blocks x 128 pages of 8 KiB and 32
++ * bytes of metadata, as tools/a5/n78_kboot.py's N78_NAND puts it in the DT.
++ * Rows are {cau, block, page} in cau-bits, block-bits, page-bits.
++ */
++#define PPN_CAUS            2
++#define PPN_CAU_BITS        1
++#define PPN_BLOCKS_PER_CAU  0x420
++#define PPN_BLOCK_BITS      11
++#define PPN_PAGES_PER_BLOCK 128
++#define PPN_SLC_PAGES       64
++#define PPN_PAGE_BITS       7
++#define PPN_PAGE_BYTES      0x2000
++#define PPN_META_BYTES      0x20
++#define PPN_BOOT_BYTES      0x600       /* AppleIOPFMI's #bootloader-bytes */
++#define PPN_LBA_BYTES       0x1000      /* DT logical-page-size */
++#define PPN_LBA_SPAN        0x1010      /* a logical page and its meta-per-logical-page */
++#define PPN_LBAS_PER_PAGE   2
++
++struct S5L8940IOPState {
++    SysBusDevice parent_obj;
++
++    MemoryRegion iomem;
++    DeviceState *aic;
++    uint32_t regs[IOP_REG_SIZE / 4];
++    bool running;
++    uint32_t cfg;               /* physical address of the 'cnfg' block, 0 until found */
++    uint32_t idx[IOP_ENDPOINTS];
++    uint64_t ops[0x20], pages;  /* IOP_TRACE statistics */
++    char *nand_path;            /* nand=: a directory for the page store, else it is in memory */
++    int fd[2];                  /* the store's files: STORE_PAGES, STORE_BOOT */
++    GHashTable *mem[2];         /* the in-memory store: index -> record */
++};
++
++/*
++ * The page store: per CE (one here), the main array by row, PPN_PAGE_BYTES + PPN_META_BYTES a
++ * record, and the boot pages by page, PPN_BOOT_BYTES. With nand=DIR they are the sparse files
++ * DIR/ce0.pages and DIR/ce0.boot, kept inverted (XOR 0xff) so a hole reads erased; otherwise
++ * records live in memory for this run only.
++ */
++enum { STORE_PAGES, STORE_BOOT };
++static const unsigned store_rec[2] = { PPN_PAGE_BYTES + PPN_META_BYTES, PPN_BOOT_BYTES };
++static const char *const store_name[2] = { "ce0.pages", "ce0.boot" };
++
++/* IOP_TRACE=1: log the IOP's commands, the multi-page I/O only when a page fails; 2: all of it. */
++static int iop_trace(void)
++{
++    static int level = -1;
++
++    if (level < 0) {
++        level = getenv("IOP_TRACE") ? atoi(getenv("IOP_TRACE")) : 0;
++    }
++    return level;
++}
++
++#define IOP_LOG(...) do { if (iop_trace()) { qemu_log("iop: " __VA_ARGS__); } } while (0)
++
++static uint32_t ld32(hwaddr pa)
++{
++    return address_space_ldl_le(&address_space_memory, pa, MEMTXATTRS_UNSPECIFIED, NULL);
++}
++
++static void st32(hwaddr pa, uint32_t v)
++{
++    address_space_stl_le(&address_space_memory, pa, v, MEMTXATTRS_UNSPECIFIED, NULL);
++}
++
++static uint32_t ld16(hwaddr pa)
++{
++    return address_space_lduw_le(&address_space_memory, pa, MEMTXATTRS_UNSPECIFIED, NULL);
++}
++
++static uint8_t ld8(hwaddr pa)
++{
++    return address_space_ldub(&address_space_memory, pa, MEMTXATTRS_UNSPECIFIED, NULL);
++}
++
++static void st8(hwaddr pa, uint8_t v)
++{
++    address_space_stb(&address_space_memory, pa, v, MEMTXATTRS_UNSPECIFIED, NULL);
++}
++
++/*
++ * IOP-visible addresses: the IOP sees DRAM at 0xc0000000, as the A4's did (its
++ * firmware's memory map), so the AP's 0x80000000 + n is 0xc0000000 + n there.
++ */
++#define IOP_DRAM_BASE       0xc0000000u
++
++static hwaddr iop_pa(S5L8940IOPState *s, uint32_t iop_addr)
++{
++    return iop_addr >= IOP_DRAM_BASE ? iop_addr - IOP_DRAM_BASE + S5L8940_DRAM_BASE : iop_addr;
++}
++
++static void iop_dump(const char *what, hwaddr pa, unsigned len)
++{
++    if (!iop_trace()) {
++        return;
++    }
++    for (unsigned off = 0; off < len; off += 32) {
++        qemu_log("iop:   %s +%03x:", what, off);
++        for (unsigned i = 0; i < 32 && off + i < len; i += 4) {
++            qemu_log(" %08x", ld32(pa + off + i));
++        }
++        qemu_log("\n");
++    }
++}
++
++static void iop_find_cfg(S5L8940IOPState *s)
++{
++    hwaddr fw = s->regs[IOP_FW_BASE / 4];
++
++    s->cfg = 0;
++    for (hwaddr off = 0; off < CFG_SCAN_MAX; off += 0x1000) {
++        if (ld32(fw + off) == CFG_MAGIC) {
++            s->cfg = fw + off;
++            break;
++        }
++    }
++    IOP_LOG("start: firmware at 0x%" HWADDR_PRIx ", cnfg at 0x%x\n", fw, s->cfg);
++    if (s->cfg) {
++        iop_dump("cnfg", s->cfg, 0x60);
++    }
++}
++
++static void iop_control(S5L8940IOPState *s, hwaddr buf)
++{
++    uint32_t op = ld32(buf);
++
++    IOP_LOG("control '%c%c%c%c' (0x%08x)\n", op >> 24, op >> 16, op >> 8, op, op);
++    iop_dump("ctl", buf, 0x40);
++    st32(buf + 4, 0);           /* status: done */
++}
++
++static void put_str(hwaddr pa, const char *str, unsigned len)
++{
++    char buf[32] = { 0 };
++
++    strncpy(buf, str, sizeof(buf));
++    address_space_write(&address_space_memory, pa, MEMTXATTRS_UNSPECIFIED, buf, len);
++}
++
++/* The device's parameter page as the firmware hands it to the kernel (layout: 0x861c). */
++static void fmi_controller_info(S5L8940IOPState *s, hwaddr cmd)
++{
++    static const uint8_t mfg_id[8] = { 0x98, 0xde, 0x84, 0x93, 0x72, 0x57, 0, 0 };
++    static const uint8_t timings[10] = { 25, 20, 10, 15, 100, 5, 12, 25, 10, 12 };
++
++    put_str(cmd + 0x1c, "CT-PPN-1.0", 16);              /* firmware version */
++    put_str(cmd + 0x2c, "", 16);                        /* package assembly code */
++    put_str(cmd + 0x3c, "classictouch-n78", 16);        /* controller unique id */
++    put_str(cmd + 0x4c, "", 16);                        /* controller hw id */
++    address_space_write(&address_space_memory, cmd + 0x5c, MEMTXATTRS_UNSPECIFIED, mfg_id, 8);
++    put_str(cmd + 0x64, "CTNAND", 10);                  /* marketing name (PPN 1.5) */
++    st32(cmd + 0x70, PPN_CAUS);
++    st32(cmd + 0x74, PPN_CAU_BITS);
++    st32(cmd + 0x78, PPN_BLOCKS_PER_CAU);
++    st32(cmd + 0x7c, PPN_BLOCK_BITS);
++    st32(cmd + 0x80, PPN_PAGES_PER_BLOCK);
++    st32(cmd + 0x84, PPN_SLC_PAGES);
++    st32(cmd + 0x88, PPN_PAGE_BITS);
++    st32(cmd + 0x8c, 1);                                /* address bits for bits-per-cell */
++    st32(cmd + 0x90, 2);                                /* default bits per cell (MLC) */
++    st32(cmd + 0x94, PPN_PAGE_BYTES + PPN_META_BYTES);
++    st32(cmd + 0x98, 1);                                /* dies */
++    for (int i = 0; i < 10; i++) {
++        st32(cmd + 0x9c + 4 * i, timings[i]);           /* tRC tREA tREH tRHOH tRHZ tRLOH tRP tWC tWH tWP */
++    }
++    st32(cmd + 0xc4, 8);                                /* read queue */
++    st32(cmd + 0xc8, 8);                                /* program queue */
++    st32(cmd + 0xcc, 8);                                /* erase queue */
++    st32(cmd + 0xd0, 64);                               /* prep function buffer */
++    st32(cmd + 0xd4, 1);                                /* tRST ms */
++    st32(cmd + 0xd8, 1);                                /* tPURST ms */
++    st32(cmd + 0xdc, 1);                                /* tSCE ms */
++    st32(cmd + 0xe0, 10);                               /* tCERDY us */
++    st32(cmd + FMI_STATUS, FMI_STATUS_OK);
++}
++
++/* A boot page: {ce u16 +0x18, page +0x1c, buffer +0x20, corrections +0x24}, 0x600 bytes (0x83b4). */
++/* Read record idx of a store; false when it is erased (all 0xff). */
++static bool store_read(S5L8940IOPState *s, int kind, uint32_t idx, uint8_t *buf)
++{
++    unsigned len = store_rec[kind];
++    bool erased = true;
++
++    if (s->fd[kind] >= 0) {
++        ssize_t n = pread(s->fd[kind], buf, len, (off_t)idx * len);
++
++        memset(buf + MAX(n, 0), 0, len - MAX(n, 0));
++        for (unsigned i = 0; i < len; i++) {
++            buf[i] ^= 0xff;
++        }
++    } else {
++        uint64_t key = idx;
++        uint8_t *rec = g_hash_table_lookup(s->mem[kind], &key);
++
++        if (rec) {
++            memcpy(buf, rec, len);
++        } else {
++            memset(buf, 0xff, len);
++        }
++    }
++    for (unsigned i = 0; i < len && erased; i++) {
++        erased = buf[i] == 0xff;
++    }
++    return !erased;
++}
++
++/* Program record idx (NULL: erase it). */
++static void store_write(S5L8940IOPState *s, int kind, uint32_t idx, const uint8_t *data)
++{
++    unsigned len = store_rec[kind];
++
++    if (s->fd[kind] >= 0) {
++        g_autofree uint8_t *inv = g_malloc0(len);
++
++        if (data) {
++            for (unsigned i = 0; i < len; i++) {
++                inv[i] = data[i] ^ 0xff;
++            }
++        }
++        if (pwrite(s->fd[kind], inv, len, (off_t)idx * len) != len) {
++            error_report("s5l8940.iop: cannot write %s: %s", store_name[kind], strerror(errno));
++        }
++    } else if (data) {
++        uint64_t *key = g_new(uint64_t, 1);
++
++        *key = idx;
++        g_hash_table_replace(s->mem[kind], key, g_memdup2(data, len));
++    } else {
++        uint64_t key = idx;
++
++        g_hash_table_remove(s->mem[kind], &key);
++    }
++}
++
++/*
++ * Erase a block. On a file store a block's 128 records are 257 x 4 KiB, so on macOS the range is
++ * punched out of the sparse file (reads as erased) rather than written with a megabyte of zeros:
++ * the FTL's format erases every block of the device.
++ */
++static void store_erase_block(S5L8940IOPState *s, uint32_t row)
++{
++    uint32_t first = row & ~(PPN_PAGES_PER_BLOCK - 1);
++
++#ifdef F_PUNCHHOLE
++    if (s->fd[STORE_PAGES] >= 0) {
++        struct fpunchhole hole = {
++            .fp_offset = (off_t)first * store_rec[STORE_PAGES],
++            .fp_length = (off_t)PPN_PAGES_PER_BLOCK * store_rec[STORE_PAGES],
++        };
++        struct stat st;
++
++        if (fstat(s->fd[STORE_PAGES], &st) == 0 && hole.fp_offset >= st.st_size) {
++            return;                                 /* past the file's end: never written */
++        }
++        if (fcntl(s->fd[STORE_PAGES], F_PUNCHHOLE, &hole) == 0) {
++            return;
++        }
++    }
++#endif
++    for (uint32_t p = 0; p < PPN_PAGES_PER_BLOCK; p++) {
++        store_write(s, STORE_PAGES, first + p, NULL);
++    }
++}
++
++/*
++ * SwissPPN's row (PPNMISC 0x80d110ac): {page, block << page bits, cau << (page + block bits)}, and
++ * above them a bit for SLC mode, which addresses the same block's first slc-pages pages; the store
++ * keeps one copy of a page either way.
++ */
++#define PPN_SLC_BIT         (1u << (PPN_PAGE_BITS + PPN_BLOCK_BITS + PPN_CAU_BITS))
++
++/* Rows outside the device (cau, block or page past the geometry) are refused. */
++static bool ppn_row_ok(uint32_t row)
++{
++    uint32_t page = row & ((1u << PPN_PAGE_BITS) - 1);
++    uint32_t block = (row >> PPN_PAGE_BITS) & ((1u << PPN_BLOCK_BITS) - 1);
++    uint32_t cau = row >> (PPN_PAGE_BITS + PPN_BLOCK_BITS);
++
++    return cau < PPN_CAUS && block < PPN_BLOCKS_PER_CAU && page < PPN_PAGES_PER_BLOCK;
++}
++
++/* A boot page: {ce u16 +0x18, page +0x1c, buffer +0x20, corrections +0x24}, 0x600 bytes (0x83b4). */
++static void fmi_read_bootpage(S5L8940IOPState *s, hwaddr cmd)
++{
++    uint8_t page[PPN_BOOT_BYTES];
++    bool programmed = store_read(s, STORE_BOOT, ld32(cmd + 0x1c), page);
++
++    address_space_write(&address_space_memory, iop_pa(s, ld32(cmd + 0x20)), MEMTXATTRS_UNSPECIFIED,
++                        page, PPN_BOOT_BYTES);
++    st32(cmd + FMI_STATUS, programmed ? FMI_STATUS_OK : FMI_STATUS_BLANK);
++}
++
++static void fmi_write_bootpage(S5L8940IOPState *s, hwaddr cmd)
++{
++    uint8_t page[PPN_BOOT_BYTES];
++
++    address_space_read(&address_space_memory, iop_pa(s, ld32(cmd + 0x20)), MEMTXATTRS_UNSPECIFIED,
++                       page, PPN_BOOT_BYTES);
++    store_write(s, STORE_BOOT, ld32(cmd + 0x1c), page);
++    st32(cmd + FMI_STATUS, FMI_STATUS_OK);
++}
++
++/* Erase one block, +0x1c its index in the CE's row space (0x7de0: row = block << page bits). */
++static void fmi_erase_single(S5L8940IOPState *s, hwaddr cmd)
++{
++    uint32_t row = (ld32(cmd + 0x1c) << PPN_PAGE_BITS) & ~PPN_SLC_BIT;
++
++    if (ppn_row_ok(row)) {
++        store_erase_block(s, row);
++    }
++    st32(cmd + FMI_STATUS, FMI_STATUS_OK);
++}
++
++/*
++ * A scatter list {IOP address, length}[] as a cursor: sgl_copy moves len bytes between it and buf,
++ * to the guest when to_guest.
++ */
++typedef struct {
++    S5L8940IOPState *s;
++    hwaddr list;
++    uint32_t count, seg;
++    uint32_t off;               /* into the current segment */
++} SGL;
++
++static void sgl_init(SGL *g, S5L8940IOPState *s, uint32_t list, uint32_t bytes)
++{
++    *g = (SGL){ .s = s, .list = iop_pa(s, list), .count = list ? bytes / 8 : 0 };
++}
++
++static bool sgl_copy(SGL *g, uint8_t *buf, uint32_t len, bool to_guest)
++{
++    while (len) {
++        uint32_t addr, seglen, n;
++
++        if (g->seg >= g->count) {
++            return false;
++        }
++        addr = ld32(g->list + 8 * g->seg);
++        seglen = ld32(g->list + 8 * g->seg + 4);
++        n = MIN(len, seglen - g->off);
++        address_space_rw(&address_space_memory, iop_pa(g->s, addr) + g->off, MEMTXATTRS_UNSPECIFIED,
++                         buf, n, to_guest);
++        buf += n;
++        len -= n;
++        g->off += n;
++        if (g->off >= seglen) {
++            g->seg++;
++            g->off = 0;
++        }
++    }
++    return true;
++}
++
++/*
++ * Read, program or erase the pages a PPN command lists (0x10, 0x12, 0x11). A page holds
++ * PPN_LBAS_PER_PAGE logical pages, each its 4 KiB of data then its metadata (PPN_LBA_SPAN bytes,
++ * the device's column layout), and an entry may read a span of them: {u16 length, u16 column} ahead
++ * of its row (SwissPPN's _analyzeSpansReadStatuses prints them), 0 meaning the whole page. Data and
++ * meta move in entry order through their scatter lists, a logical page's share of each list apiece.
++ * As the IOP firmware does (fmiss_ppn_read_multi 0x8a28, program 0x9584, erase 0x67e0), each entry
++ * gets its page's PPN status (READY; READY | CLEAN | FAIL, 0x49, for a page that reads erased;
++ * READY | FAIL) and the command's +0xc byte their OR; the kernel looks at the pages only when that is
++ * not just READY (SwissPPN 0x80cfbdc0), and then knows 0x40, 0x42 to 0x45, 0x49, 0x51 and 0xc1 alone
++ * (_analyzeSpansReadStatuses 0x80d14e7c: any other is "an unidentified status").
++ */
++static void fmi_ppn_multi(S5L8940IOPState *s, hwaddr cmd, uint32_t op)
++{
++    hwaddr pc = iop_pa(s, ld32(cmd + FMI_PPN_CMD));
++    uint32_t count = ld16(pc + PPN_CMD_COUNT);
++    uint32_t data_total = 0, meta_total = 0, lbas = 0, data_lba = 0, meta_lba = 0;
++    g_autofree uint8_t *rec = g_malloc(PPN_PAGE_BYTES + PPN_META_BYTES);
++    uint8_t all = 0;
++    SGL data, meta;
++
++    if (!count || count > PPN_CMD_MAX_PAGES) {
++        IOP_LOG("ppn op 0x%x: %u pages\n", op, count);
++        st32(cmd + FMI_STATUS, 0x80000004);         /* invalid parameter */
++        return;
++    }
++    for (uint32_t i = 0; i < count; i++) {
++        uint32_t len = ld16(pc + PPN_CMD_ENTRY(i) + PPN_ENTRY_LEN);
++
++        lbas += len ? MAX(len / PPN_LBA_SPAN, 1) : PPN_LBAS_PER_PAGE;
++    }
++    if (op != FMI_OP_ERASE_MULTIPLE) {
++        sgl_init(&data, s, ld32(cmd + FMI_DATA_SGL), ld32(cmd + FMI_DATA_SGL_LEN));
++        sgl_init(&meta, s, ld32(cmd + FMI_META_SGL), ld32(cmd + FMI_META_SGL_LEN));
++        for (uint32_t i = 0; i < data.count; i++) {
++            data_total += ld32(data.list + 8 * i + 4);
++        }
++        for (uint32_t i = 0; i < meta.count; i++) {
++            meta_total += ld32(meta.list + 8 * i + 4);
++        }
++        data_lba = data_total / lbas;
++        meta_lba = meta_total / lbas;
++        if (data_lba > PPN_LBA_BYTES || meta_lba > PPN_LBA_SPAN - PPN_LBA_BYTES) {
++            IOP_LOG("ppn op 0x%x: %u data, %u meta bytes a logical page\n", op, data_lba, meta_lba);
++            st32(cmd + FMI_STATUS, 0x80000004);
++            return;
++        }
++    }
++    s->pages += count;
++    for (uint32_t i = 0; i < count; i++) {
++        hwaddr e = pc + PPN_CMD_ENTRY(i);
++        uint32_t row = ld32(e + PPN_ENTRY_ROW) & ~PPN_SLC_BIT;
++        uint32_t len = ld16(e + PPN_ENTRY_LEN), col = ld16(e + PPN_ENTRY_COL);
++        uint32_t first = len ? MIN(col / PPN_LBA_SPAN, PPN_LBAS_PER_PAGE - 1) : 0;
++        uint32_t n = len ? MIN(MAX(len / PPN_LBA_SPAN, 1), PPN_LBAS_PER_PAGE - first) : PPN_LBAS_PER_PAGE;
++        uint8_t status = PPN_STATUS_READY;
++
++        if (!ppn_row_ok(row)) {
++            IOP_LOG("ppn op 0x%x: page %u row 0x%x outside the device\n", op, i, row);
++            status = PPN_STATUS_READY | PPN_STATUS_FAIL;
++        } else if (op == FMI_OP_ERASE_MULTIPLE) {
++            store_erase_block(s, row);
++        } else if (op == FMI_OP_READ_MULTIPLE) {
++            if (!store_read(s, STORE_PAGES, row, rec)) {
++                status = PPN_STATUS_READY | PPN_STATUS_CLEAN | PPN_STATUS_FAIL;
++            }
++            for (uint32_t k = first; k < first + n; k++) {
++                sgl_copy(&data, rec + k * PPN_LBA_SPAN, data_lba, true);
++                sgl_copy(&meta, rec + k * PPN_LBA_SPAN + PPN_LBA_BYTES, meta_lba, true);
++            }
++        } else {
++            memset(rec, 0xff, PPN_PAGE_BYTES + PPN_META_BYTES);
++            for (uint32_t k = first; k < first + n; k++) {
++                sgl_copy(&data, rec + k * PPN_LBA_SPAN, data_lba, false);
++                sgl_copy(&meta, rec + k * PPN_LBA_SPAN + PPN_LBA_BYTES, meta_lba, false);
++            }
++            store_write(s, STORE_PAGES, row, rec);
++        }
++        st8(e + PPN_ENTRY_STATUS, status);
++        all |= status;
++        if (iop_trace() > 1 || (iop_trace() && status != PPN_STATUS_READY && op != FMI_OP_READ_MULTIPLE)) {
++            IOP_LOG("  ppn op 0x%x [%u/%u] row 0x%x len 0x%x col 0x%x ce_idx %u status 0x%x\n", op, i, count,
++                    row, len, col, ld8(e + PPN_ENTRY_CE_IDX), status);
++        }
++    }
++    st8(pc + PPN_CMD_STATUS, all);
++    st32(cmd + FMI_STATUS, FMI_STATUS_OK);
++}
++
++/* The factory bad block table of one CAU, one bit a block, set for a good block (to be checked). */
++static void fmi_read_cau_bbt(S5L8940IOPState *s, hwaddr cmd)
++{
++    hwaddr buf = iop_pa(s, ld32(iop_pa(s, ld32(cmd + FMI_DATA_SGL))));
++
++    iop_dump("ppncmd", iop_pa(s, ld32(cmd + FMI_PPN_CMD)), 0x40);
++    address_space_set(&address_space_memory, buf, 0xff, PPN_BLOCKS_PER_CAU / 8,
++                      MEMTXATTRS_UNSPECIFIED);
++    st32(cmd + FMI_STATUS, FMI_STATUS_OK);
++}
++
++static void iop_fmi(S5L8940IOPState *s, int h, hwaddr cmd)
++{
++    uint32_t op = ld32(cmd);
++
++    if (op < ARRAY_SIZE(s->ops)) {
++        s->ops[op]++;
++    }
++    if (iop_trace() && !(++s->ops[0] % 200)) {
++        IOP_LOG("stats %.3fs: %" PRIu64 " commands, %" PRIu64 " pages; read %" PRIu64 " write %" PRIu64
++                " erase %" PRIu64 "\n", qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1e9, s->ops[0], s->pages,
++                s->ops[FMI_OP_READ_MULTIPLE], s->ops[FMI_OP_WRITE_MULTIPLE], s->ops[FMI_OP_ERASE_MULTIPLE]);
++    }
++
++    if (iop_trace() > 1 || (op != FMI_OP_READ_MULTIPLE && op != FMI_OP_WRITE_MULTIPLE &&
++                            op != FMI_OP_ERASE_MULTIPLE)) {
++        IOP_LOG("fmi ep %d opcode 0x%x\n", h, op);
++        iop_dump("fmi", cmd, 0xc0);
++    }
++    switch (op) {
++    case FMI_OP_SET_CONFIG:
++        st32(cmd + FMI_STATUS, FMI_STATUS_OK);
++        break;
++    case FMI_OP_CONTROLLER_INFO:
++        fmi_controller_info(s, cmd);
++        break;
++    case FMI_OP_DIE_INFO:
++        put_str(cmd + 0x20, "classictouch-d0", 16);
++        put_str(cmd + 0x30, "", 16);
++        st32(cmd + FMI_STATUS, FMI_STATUS_OK);
++        break;
++    case FMI_OP_TEMPERATURE:
++        st32(cmd + 0x18, 30);                       /* degrees C */
++        st32(cmd + FMI_STATUS, FMI_STATUS_OK);
++        break;
++    case FMI_OP_READ_BOOTPAGE:
++        fmi_read_bootpage(s, cmd);
++        break;
++    case FMI_OP_WRITE_BOOTPAGE:
++        fmi_write_bootpage(s, cmd);
++        break;
++    case FMI_OP_ERASE_SINGLE:
++        fmi_erase_single(s, cmd);
++        break;
++    case FMI_OP_READ_MULTIPLE:
++    case FMI_OP_WRITE_MULTIPLE:
++    case FMI_OP_ERASE_MULTIPLE:
++        if (iop_trace() > 1) {
++            iop_dump("ppncmd", iop_pa(s, ld32(cmd + FMI_PPN_CMD)), 0x40);
++        }
++        fmi_ppn_multi(s, cmd, op);
++        break;
++    case FMI_OP_READ_CAU_BBT:
++        fmi_read_cau_bbt(s, cmd);
++        break;
++    default:
++        st32(cmd + FMI_STATUS, FMI_STATUS_UNIMPLEMENTED);
++        break;
++    }
++}
++
++/* Run whatever the AP has posted on the command endpoints; true if a slot came back. */
++static bool iop_service(S5L8940IOPState *s)
++{
++    bool any = false;
++
++    for (int h = 0; h < IOP_ENDPOINTS; h++) {
++        uint32_t ring = ld32(s->cfg + CFG_RING(h));
++        uint32_t count = ld32(s->cfg + CFG_COUNT(h));
++
++        if (h == EP_MESSAGE || !ring || !count || count > RING_MAX) {
++            continue;
++        }
++        for (uint32_t n = 0; n < count; n++) {
++            hwaddr slot = iop_pa(s, ring) + s->idx[h] * RING_SLOT;
++            uint32_t w0 = ld32(slot);
++            hwaddr item;
++
++            if (!w0 || (w0 & 1)) {
++                break;
++            }
++            item = iop_pa(s, w0 & ~3u);
++            if (h == EP_CONTROL) {
++                iop_control(s, item);
++            } else {
++                iop_fmi(s, h, item);
++            }
++            st32(slot, w0 | 1);
++            s->idx[h] = (s->idx[h] + 1) % count;
++            any = true;
++        }
++    }
++    return any;
++}
++
++static void iop_ipid(void *opaque, int vector)
++{
++    S5L8940IOPState *s = opaque;
++
++    if (iop_trace() > 1) {
++        IOP_LOG("ipid %d (running %d)\n", vector, s->running);
++    }
++    if (vector != IOP_DOORBELL_VECTOR) {
++        return;
++    }
++    s5l8940_aic_sw_set(s->aic, vector, false);     /* the IOP takes its doorbell */
++    if (s->running && s->cfg && iop_service(s)) {
++        s5l8940_aic_sw_set(s->aic, IOP_AP_VECTOR, true);
++    }
++}
++
++static uint64_t iop_read(void *opaque, hwaddr addr, unsigned size)
++{
++    S5L8940IOPState *s = opaque;
++
++    return s->regs[addr / 4];
++}
++
++static void iop_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
++{
++    S5L8940IOPState *s = opaque;
++
++    IOP_LOG("reg +0x%03" HWADDR_PRIx " <- 0x%08" PRIx64 "\n", addr, val);
++    s->regs[addr / 4] = val;
++    if (addr == IOP_CTRL) {
++        bool run = val & IOP_CTRL_RUN;
++
++        if (run && !s->running) {
++            memset(s->idx, 0, sizeof(s->idx));
++            iop_find_cfg(s);
++        }
++        s->running = run;
++    }
++}
++
++static const MemoryRegionOps iop_ops = {
++    .read = iop_read,
++    .write = iop_write,
++    .endianness = DEVICE_LITTLE_ENDIAN,
++    .valid.min_access_size = 4,
++    .valid.max_access_size = 4,
++};
++
++static void iop_realize(DeviceState *dev, Error **errp)
++{
++    S5L8940IOPState *s = S5L8940_IOP(dev);
++
++    if (!s->aic) {
++        error_setg(errp, "s5l8940.iop: aic link not set");
++        return;
++    }
++    for (int k = 0; k < 2; k++) {
++        s->fd[k] = -1;
++        s->mem[k] = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, g_free);
++        if (s->nand_path) {
++            g_autofree char *path = g_build_filename(s->nand_path, store_name[k], NULL);
++
++            if (g_mkdir_with_parents(s->nand_path, 0755) < 0 ||
++                (s->fd[k] = qemu_open_old(path, O_RDWR | O_CREAT, 0644)) < 0) {
++                error_setg_errno(errp, errno, "s5l8940.iop: cannot open %s", path);
++                return;
++            }
++        }
++    }
++    memory_region_init_io(&s->iomem, OBJECT(dev), &iop_ops, s, "s5l8940.iop", IOP_REG_SIZE);
++    sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->iomem);
++    s5l8940_aic_set_ipid_handler(s->aic, iop_ipid, s);
++}
++
++static void iop_reset_hold(Object *obj, ResetType type)
++{
++    S5L8940IOPState *s = S5L8940_IOP(obj);
++
++    memset(s->regs, 0, sizeof(s->regs));
++    memset(s->idx, 0, sizeof(s->idx));
++    s->running = false;
++    s->cfg = 0;
++}
++
++static const Property iop_properties[] = {
++    DEFINE_PROP_LINK("aic", S5L8940IOPState, aic, TYPE_S5L8940_AIC, DeviceState *),
++    DEFINE_PROP_STRING("nand", S5L8940IOPState, nand_path),
++};
++
++static void iop_class_init(ObjectClass *klass, const void *data)
++{
++    DeviceClass *dc = DEVICE_CLASS(klass);
++    ResettableClass *rc = RESETTABLE_CLASS(klass);
++
++    dc->realize = iop_realize;
++    rc->phases.hold = iop_reset_hold;
++    device_class_set_props(dc, iop_properties);
++}
++
++static const TypeInfo iop_info = {
++    .name = TYPE_S5L8940_IOP,
++    .parent = TYPE_SYS_BUS_DEVICE,
++    .instance_size = sizeof(S5L8940IOPState),
++    .class_init = iop_class_init,
++};
++
++static void iop_register_types(void)
++{
++    type_register_static(&iop_info);
++}
++
++type_init(iop_register_types)
 diff --git a/hw/arm/s5l8940_pmgr.c b/hw/arm/s5l8940_pmgr.c
 new file mode 100644
 index 0000000000..1f78307009
@@ -1819,10 +2790,10 @@ index 0000000000..1f78307009
 +type_init(s5l8940_pmgr_register_types)
 diff --git a/include/hw/arm/s5l8940.h b/include/hw/arm/s5l8940.h
 new file mode 100644
-index 0000000000..d2a4a65580
+index 0000000000..15a2856c9b
 --- /dev/null
 +++ b/include/hw/arm/s5l8940.h
-@@ -0,0 +1,96 @@
+@@ -0,0 +1,114 @@
 +/*
 + * Apple S5L8940X/S5L8942X ("A5"): addresses and the models only A5 has.
 + *
@@ -1858,6 +2829,16 @@ index 0000000000..d2a4a65580
 +
 +#define TYPE_S5L8940_AIC "s5l8940.aic"
 +OBJECT_DECLARE_SIMPLE_TYPE(S5L8940AICState, S5L8940_AIC)
++
++/*
++ * IPID vectors (DT aic ipid-mask 0xf): software interrupts between the AP and
++ * its coprocessors. The AP rings the IOP's doorbell by setting one (kAICSWGenSet,
++ * AppleA5IOP's function-doorbell); the IOP answers on vector 2 (DT iop interrupts).
++ */
++#define S5L8940_AIC_IPID_VECTORS 4
++void s5l8940_aic_set_ipid_handler(DeviceState *aic, void (*fn)(void *opaque, int vector),
++                                  void *opaque);
++void s5l8940_aic_sw_set(DeviceState *aic, int vector, bool on);
 +
 +/* I2C (DT i2c0/i2c2), the GPIO block the A4 model serves, and their AIC lines. */
 +#define S5L8940_I2C_BASE(n)      A5_IO(0x3200000 + (n) * 0x100000)
@@ -1909,6 +2890,14 @@ index 0000000000..d2a4a65580
 +#define S5L8940_IRQ_USB_OTG      0x0b
 +#define S5L8940_IRQ_USB_EHCI     0x0c
 +#define S5L8940_IRQ_USB_OHCI0    0x0d
++
++/* IOP (DT iop, iop,s5l8940x): hw/arm/s5l8940_iop.c's high-level model. */
++#define S5L8940_IOP_BASE         A5_IO(0xF300000)
++#define TYPE_S5L8940_IOP "s5l8940.iop"
++
++/* SPI (DT spi1, spi2: spi-1,samsung, the A4's controller): spi1 carries the multi-touch sensor. */
++#define S5L8940_SPI_BASE(n)      A5_IO(0x2000000 + (n) * 0x100000)
++#define S5L8940_IRQ_SPI(n)       (0x1c + (n))
 +
 +#define TYPE_S5L8940_PMGR "s5l8940.pmgr"
 +OBJECT_DECLARE_SIMPLE_TYPE(S5L8940PMGRState, S5L8940_PMGR)
