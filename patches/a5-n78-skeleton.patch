@@ -1,0 +1,1921 @@
+diff --git a/hw/arm/ipod_touch_5g.c b/hw/arm/ipod_touch_5g.c
+new file mode 100644
+index 0000000000..8fc8009824
+--- /dev/null
++++ b/hw/arm/ipod_touch_5g.c
+@@ -0,0 +1,354 @@
++/*
++ * iPod touch 5G (N78AP, S5L8942X "A5", -M iPod-Touch-5G): bring-up skeleton.
++ *
++ * Step 1 of the A5 track (ClassicTouch docs/research/ios8-10-step0.md §7):
++ * enter the 7.1.2 (11D257) and 9.3.5 (13G36) kernels from a kboot bundle and
++ * get their console on uart1, up to "Waiting for root device". One Cortex-A9
++ * (the DT's cpu1 is hidden by kboot), 512 MiB of DRAM at 0x80000000, the AIC
++ * in place of the A4's PL192s. Everything else in the arm-io window logs as
++ * an unimplemented device (-d unimp) until bring-up shows what the kernel
++ * needs next.
++ *
++ * Boot input is the A4 machine's kboot bundle (hw/arm/ipad1.c): a flat image
++ * of physical memory, optional K48SEG segments, and the 24-byte K48KBOOT
++ * trailer {magic[8]; u32 load_pa, entry_pa, bootargs_pa, image_len}. The CPU
++ * starts at entry_pa in SVC mode with the MMU off and r0 = bootargs_pa.
++ */
++
++#include "qemu/osdep.h"
++#include "hw/arm/machines-qom.h"
++#include "qapi/error.h"
++#include "qemu/error-report.h"
++#include "qemu/units.h"
++#include "system/address-spaces.h"
++#include "hw/core/boards.h"
++#include "hw/core/sysbus.h"
++#include "hw/core/qdev-properties.h"
++#include "hw/misc/unimp.h"
++#include "hw/i2c/i2c.h"
++#include "hw/arm/exynos4210.h"
++#include "hw/arm/s5l8930.h"
++#include "hw/arm/s5l8940.h"
++#include "hw/arm/ipod_touch_mipi_dsi.h"
++#include "hw/arm/ipod_touch_usb_otg.h"
++#include "hw/arm/ipod_touch_usb_phys.h"
++#include "hw/usb/hcd-ehci.h"
++#include "hw/usb/hcd-ohci.h"
++#include "system/reset.h"
++#include "system/system.h"
++#include "target/arm/cpu.h"
++
++#define N78_DRAM_SIZE       (512 * MiB)
++#define N78_CONSOLE_UART    1               /* the DT has no uart0 */
++#define N78_ROM_LO_SIZE     0x10000         /* the SecureROM's 64 KiB */
++#define N78_FB_WIDTH        640
++#define N78_FB_HEIGHT       1136
++/* iBoot's vram, where it leaves the boot logo: DRAM's top less pram (0x4000) and vram (0x8fc000),
++ * as tools/a5/n78_kboot.py (ipad1_kboot.layout) puts it in the DT and boot_args. */
++#define N78_VRAM_BASE       (S5L8940_DRAM_BASE + N78_DRAM_SIZE - 0x4000 - 0x8fc000)
++
++#define KBOOT_MAGIC         "K48KBOOT"
++#define KBOOT_TRAILER_LEN   24
++#define KBOOT_SEGMENT_LEN   20
++
++#define TYPE_N78_MACHINE MACHINE_TYPE_NAME("iPod-Touch-5G")
++OBJECT_DECLARE_SIMPLE_TYPE(N78MachineState, N78_MACHINE)
++
++struct N78MachineState {
++    MachineState parent;
++
++    ARMCPU *cpu;
++    MemoryRegion dram;
++    MemoryRegion rom_lo;
++    DeviceState *aic;
++    DeviceState *gpio;
++    DeviceState *i2c[2];                    /* i2c0, i2c2 */
++    char *kboot_path;
++};
++
++/* The OTG's GHWCFG1-4, as the A4 machine has them (hw/arm/ipad1.c). */
++static uint32_t n78_usb_hwcfg[] = { 0, 0x7a8f60d0, 0x082000e8, 0x01f08024 };
++
++/* i2c0's and i2c2's function-iic_sda/scl GPIOs, as the 7.1.2 and 9.3.5 DTs give them. */
++static const uint32_t n78_i2c_pins[] = { 0x0604, 0x0605, 0x1800, 0x1801 };
++
++static void n78_cpu_reset(void *opaque)
++{
++    N78MachineState *s = N78_MACHINE(opaque);
++    CPUState *cs = CPU(s->cpu);
++    g_autofree char *data = NULL;
++    g_autoptr(GError) gerr = NULL;
++    gsize size;
++    const uint8_t *trailer;
++    uint32_t load_pa, entry_pa, bootargs_pa, image_len;
++
++    cpu_reset(cs);
++
++    if (!g_file_get_contents(s->kboot_path, &data, &size, &gerr)) {
++        error_report("n78: cannot read kboot bundle '%s': %s",
++                     s->kboot_path, gerr->message);
++        exit(1);
++    }
++    if (size < KBOOT_TRAILER_LEN ||
++        memcmp(data + size - KBOOT_TRAILER_LEN, KBOOT_MAGIC, 8) != 0) {
++        error_report("n78: '%s' is not a K48KBOOT bundle", s->kboot_path);
++        exit(1);
++    }
++    trailer = (const uint8_t *)data + size - KBOOT_TRAILER_LEN;
++    load_pa = ldl_le_p(trailer + 8);
++    entry_pa = ldl_le_p(trailer + 12);
++    bootargs_pa = ldl_le_p(trailer + 16);
++    image_len = ldl_le_p(trailer + 20);
++
++    if (image_len > size - KBOOT_TRAILER_LEN ||
++        load_pa < S5L8940_DRAM_BASE ||
++        (uint64_t)load_pa + image_len > (uint64_t)S5L8940_DRAM_BASE + N78_DRAM_SIZE) {
++        error_report("n78: kboot bundle does not fit in DRAM "
++                     "(load 0x%x len 0x%x)", load_pa, image_len);
++        exit(1);
++    }
++    if (address_space_write(&address_space_memory, load_pa,
++                            MEMTXATTRS_UNSPECIFIED, data, image_len) != MEMTX_OK) {
++        error_report("n78: cannot stage kboot bundle at 0x%x", load_pa);
++        exit(1);
++    }
++    for (gsize off = image_len; off + KBOOT_SEGMENT_LEN <= size - KBOOT_TRAILER_LEN;) {
++        const uint8_t *seg = (const uint8_t *)data + off;
++        uint32_t pa = ldl_le_p(seg + 8), len = ldl_le_p(seg + 12);
++        bool zero = ldl_le_p(seg + 16) & 1;
++
++        off += KBOOT_SEGMENT_LEN + (zero ? 0 : len);
++        if (memcmp(seg, "K48SEG\0\0", 8) != 0 || off > size - KBOOT_TRAILER_LEN) {
++            error_report("n78: malformed segment in kboot bundle");
++            exit(1);
++        }
++        if (zero) {
++            address_space_set(&address_space_memory, pa, 0, len, MEMTXATTRS_UNSPECIFIED);
++        } else {
++            address_space_write(&address_space_memory, pa, MEMTXATTRS_UNSPECIFIED,
++                                seg + KBOOT_SEGMENT_LEN, len);
++        }
++    }
++
++    /* cpu_reset leaves us in SVC mode, IRQ/FIQ masked, MMU and caches off. */
++    s->cpu->env.regs[0] = bootargs_pa;
++    cpu_set_pc(cs, entry_pa);
++}
++
++static void n78_init(MachineState *machine)
++{
++    N78MachineState *s = N78_MACHINE(machine);
++    MemoryRegion *sysmem = get_system_memory();
++    Object *cpuobj;
++    DeviceState *dev;
++    SysBusDevice *sbd;
++
++    if (!s->kboot_path) {
++        error_report("n78: specify kboot=");
++        exit(1);
++    }
++
++    cpuobj = object_new(machine->cpu_type);
++    s->cpu = ARM_CPU(cpuobj);
++    object_property_set_link(cpuobj, "memory", OBJECT(sysmem), &error_abort);
++    object_property_set_bool(cpuobj, "has_el3", false, NULL);
++    object_property_set_bool(cpuobj, "has_el2", false, NULL);
++    object_property_set_bool(cpuobj, "realized", true, &error_fatal);
++    object_unref(cpuobj);
++
++    memory_region_init_ram(&s->dram, NULL, "n78.dram", N78_DRAM_SIZE, &error_fatal);
++    memory_region_add_subregion(sysmem, S5L8940_DRAM_BASE, &s->dram);
++    /*
++     * PA 0: the SecureROM's window on the device. Early kernel init ml_io_maps PA 0 and copies the
++     * exception vectors there, which a ROM ignores. This was an alias of DRAM's first page (as kboot= on
++     * the A4, ipad1.c), and the copied vectors broke 9.3.5's USB: its EHCI periodic schedule has
++     * placeholder QHs whose next qTD pointer is 0 (T clear), so the controller reads a qTD at PA 0; the
++     * vectors there read as an active transfer and QEMU's EHCI reset itself on the error, dropping the
++     * port it had just enabled. A ROM-like page (a reset vector table, then zeros) reads as inactive.
++     */
++    memory_region_init_rom(&s->rom_lo, NULL, "n78.rom-lo", N78_ROM_LO_SIZE, &error_fatal);
++    {
++        uint32_t *rom = memory_region_get_ram_ptr(&s->rom_lo);
++
++        for (int i = 0; i < 8; i++) {
++            rom[i] = cpu_to_le32(0xe59ff018);       /* ldr pc, [pc, #0x18] */
++        }
++    }
++    memory_region_add_subregion(sysmem, 0, &s->rom_lo);
++
++    create_unimplemented_device("s5l8942.periph", S5L8940_IO_BASE, S5L8940_IO_SIZE);
++
++    dev = qdev_new(TYPE_S5L8940_AIC);
++    s->aic = dev;
++    sbd = SYS_BUS_DEVICE(dev);
++    qdev_prop_set_uint32(dev, "num-cpus", 1);
++    sysbus_realize_and_unref(sbd, &error_fatal);
++    sysbus_mmio_map(sbd, 0, S5L8940_AIC_BASE);
++    sysbus_connect_irq(sbd, 0, qdev_get_gpio_in(DEVICE(s->cpu), ARM_CPU_IRQ));
++    sysbus_connect_irq(sbd, 1, qdev_get_gpio_in(DEVICE(s->cpu), ARM_CPU_FIQ));
++
++    sysbus_create_simple(TYPE_S5L8940_PMGR, S5L8940_PMGR_BASE, NULL);
++
++    /*
++     * GPIO: the A5 kernel still matches AppleS5L8930XGPIOIC (DT
++     * "gpio,s5l8940x\0gpio,s5l8930x"), so the A4 model serves, sized to the
++     * DT's 28 ports and 8 interrupt groups. The I2C drivers read SDA and SCL
++     * off these pins (function-iic_sda/scl) before every transfer and call a
++     * low SDA a stuck bus, so both buses' pins rest high, as pulled up.
++     */
++    dev = qdev_new(TYPE_S5L8930_GPIO);
++    s->gpio = dev;
++    qdev_prop_set_uint32(dev, "ports", S5L8940_GPIO_PORTS);
++    qdev_prop_set_uint32(dev, "int-groups", S5L8940_GPIO_INT_GROUPS);
++    sbd = SYS_BUS_DEVICE(dev);
++    sysbus_realize_and_unref(sbd, &error_fatal);
++    sysbus_mmio_map(sbd, 0, S5L8940_GPIO_BASE);
++    sysbus_connect_irq(sbd, 0, qdev_get_gpio_in(s->aic, S5L8940_IRQ_GPIO));
++    for (int i = 0; i < ARRAY_SIZE(n78_i2c_pins); i++) {
++        s5l8930_gpio_set_rest_level(dev, S5L8930_GPIO_PIN(n78_i2c_pins[i]), true);
++    }
++
++    /* i2c0 (the D1881 PMU) and i2c2 (accelerometer, gyro: nothing yet). */
++    for (int n = 0; n <= 2; n += 2) {
++        dev = qdev_new(TYPE_S5L8940_I2C);
++        s->i2c[n / 2] = dev;
++        sbd = SYS_BUS_DEVICE(dev);
++        object_property_add_child(OBJECT(machine), n ? "i2c2" : "i2c0", OBJECT(dev));
++        sysbus_realize_and_unref(sbd, &error_fatal);
++        sysbus_mmio_map(sbd, 0, S5L8940_I2C_BASE(n));
++        sysbus_connect_irq(sbd, 0, qdev_get_gpio_in(s->aic,
++                           n ? S5L8940_IRQ_I2C2 : S5L8940_IRQ_I2C0));
++    }
++    i2c_slave_create_simple(I2C_BUS(qdev_get_child_bus(s->i2c[0], "i2c")),
++                            TYPE_S5L8940_D1881, S5L8940_D1881_ADDR);
++
++    /*
++     * CDMA + AES: the A4 model. bsd_init cannot go on without it: IOSecureBSDRoot
++     * waits in AppleARMPE until IOAESAccelerator (AppleCDMA) has answered
++     * "SecureRootCallBack", which runs an AES job through channels 1 and 2.
++     * No I2S pacing yet (paced-ports 0): the A4's FIFO window is not the A5's.
++     */
++    dev = qdev_new(TYPE_S5L8930_CDMA);
++    qdev_prop_set_uint64(dev, "dram-base", S5L8940_DRAM_BASE);
++    qdev_prop_set_uint64(dev, "dram-size", N78_DRAM_SIZE);
++    qdev_prop_set_uint32(dev, "channels", S5L8940_CDMA_CHANNELS);
++    qdev_prop_set_uint8(dev, "version", 3);
++    qdev_prop_set_uint32(dev, "paced-ports", 0);
++    sbd = SYS_BUS_DEVICE(dev);
++    sysbus_realize_and_unref(sbd, &error_fatal);
++    sysbus_mmio_map(sbd, 0, S5L8940_CDMA_BASE);
++    sysbus_mmio_map(sbd, 1, S5L8940_AES_BASE);
++    for (int ch = 1; ch < S5L8940_CDMA_CHANNELS; ch++) {
++        sysbus_connect_irq(sbd, ch, qdev_get_gpio_in(s->aic, S5L8940_IRQ_CDMA(ch)));
++    }
++
++    /*
++     * Display: the A4's pipe/CLCD model, seeded as iBoot leaves a lit panel (CLCD +0x60 the panel size,
++     * ENVID on, UI0 on vram). Both kernels read only CLCD +0x60 before this and, finding 0, logged
++     * "CLCD not initied by iBoot, driver will not load". No DART in front of the pipe on the A5 (the DT's
++     * clcd has no mapper), so the model's dart2 stays unmapped and layer bases are physical.
++     */
++    dev = qdev_new(TYPE_S5L8930_DISPLAY);
++    qdev_prop_set_uint64(dev, "fb-base", N78_VRAM_BASE);
++    qdev_prop_set_uint16(dev, "width", N78_FB_WIDTH);
++    qdev_prop_set_uint16(dev, "height", N78_FB_HEIGHT);
++    qdev_prop_set_bit(dev, "h4p", true);
++    sbd = SYS_BUS_DEVICE(dev);
++    sysbus_realize_and_unref(sbd, &error_fatal);
++    sysbus_mmio_map(sbd, 0, S5L8940_DISP_PIPE0_BASE);
++    sysbus_mmio_map(sbd, 1, S5L8940_CLCD_BASE);
++    sysbus_mmio_map(sbd, 3, S5L8940_RGBOUT_BASE);
++    sysbus_mmio_map(sbd, 4, S5L8940_TVOUT_BASE);
++    sysbus_mmio_map(sbd, 5, S5L8940_RGBOUT_CTRL_BASE);
++    sysbus_connect_irq(sbd, 0, qdev_get_gpio_in(s->aic, S5L8940_IRQ_DISP_PIPE0));
++    sysbus_connect_irq(sbd, 1, qdev_get_gpio_in(s->aic, S5L8940_IRQ_CLCD));
++    sysbus_connect_irq(sbd, 2, qdev_get_gpio_in(s->aic, S5L8940_IRQ_RGBOUT_PIPE));
++
++    /* MIPI-DSIM, the iPod's model; the link up as iBoot's pinot_init leaves it. */
++    dev = qdev_new(TYPE_IPOD_TOUCH_MIPI_DSI);
++    IPOD_TOUCH_MIPI_DSI(dev)->hs_clock_at_reset = true;
++    qdev_prop_set_uint32(dev, "lanes", 4);                   /* DT #lanes */
++    memory_region_add_subregion(get_system_memory(), S5L8940_DSIM_BASE,
++                                &IPOD_TOUCH_MIPI_DSI(dev)->iomem);
++    sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
++
++    /*
++     * USB, as the A4 machine has it (hw/arm/ipad1.c): the iPod's PHY and Synopsys OTG models for
++     * device mode, with the OTG's built-in host when no usbmux bridge is dialed (usb-tcp, IT_USB_TCP);
++     * QEMU's EHCI (capabilities at +0) and OHCI for the host nubs, which kboot's usb-complex
++     * hsic-enabled has the arbitrator publish at start. Without the EHCI both kernels panic on the
++     * way to reboot: StopUSBBus waits 100 ms for USBSTS.HCHalted. Attach with -device usb-storage,bus=ehci.0.
++     */
++    dev = qdev_new(TYPE_IPOD_TOUCH_USB_PHYS);
++    sbd = SYS_BUS_DEVICE(dev);
++    sysbus_realize_and_unref(sbd, &error_fatal);
++    sysbus_mmio_map(sbd, 0, S5L8940_USB_PHY_BASE);
++
++    dev = ipod_touch_init_usb_otg(qdev_get_gpio_in(s->aic, S5L8940_IRQ_USB_OTG), n78_usb_hwcfg);
++    S5L8900USBOTG(dev)->builtin_host = !getenv("IT_USB_TCP");
++    sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
++    memory_region_add_subregion(get_system_memory(), S5L8940_USB_OTG_BASE, &S5L8900USBOTG(dev)->iomem);
++
++    dev = qdev_new(TYPE_EXYNOS4210_EHCI);
++    dev->id = g_strdup("ehci");                     /* its bus: ehci.0 */
++    sbd = SYS_BUS_DEVICE(dev);
++    sysbus_realize_and_unref(sbd, &error_fatal);
++    sysbus_mmio_map(sbd, 0, S5L8940_USB_EHCI_BASE);
++    sysbus_connect_irq(sbd, 0, qdev_get_gpio_in(s->aic, S5L8940_IRQ_USB_EHCI));
++
++    dev = qdev_new(TYPE_SYSBUS_OHCI);
++    dev->id = g_strdup("ohci");                     /* its bus: ohci.0 */
++    qdev_prop_set_uint32(dev, "num-ports", 1);      /* DT port-count */
++    sbd = SYS_BUS_DEVICE(dev);
++    sysbus_realize_and_unref(sbd, &error_fatal);
++    sysbus_mmio_map(sbd, 0, S5L8940_USB_OHCI0_BASE);
++    sysbus_connect_irq(sbd, 0, qdev_get_gpio_in(s->aic, S5L8940_IRQ_USB_OHCI0));
++
++    /* Console: serial0 on uart1. Its AIC line is wired once the DT gives it. */
++    exynos4210_uart_create(S5L8940_UART_BASE(N78_CONSOLE_UART), 256, N78_CONSOLE_UART,
++                           serial_hd(0), NULL, false);
++
++    qemu_register_reset(n78_cpu_reset, s);
++}
++
++static char *n78_get_kboot(Object *obj, Error **errp)
++{
++    return g_strdup(N78_MACHINE(obj)->kboot_path);
++}
++
++static void n78_set_kboot(Object *obj, const char *value, Error **errp)
++{
++    N78MachineState *s = N78_MACHINE(obj);
++
++    g_free(s->kboot_path);
++    s->kboot_path = g_strdup(value);
++}
++
++static void n78_class_init(ObjectClass *klass, const void *data)
++{
++    MachineClass *mc = MACHINE_CLASS(klass);
++
++    mc->desc = "iPod touch 5G (N78AP, S5L8942X)";
++    mc->init = n78_init;
++    mc->max_cpus = 1;
++    mc->default_cpu_type = ARM_CPU_TYPE_NAME("cortex-a9");
++    mc->default_ram_size = N78_DRAM_SIZE;
++    object_class_property_add_str(klass, "kboot", n78_get_kboot, n78_set_kboot);
++    object_class_property_set_description(klass, "kboot",
++                                          "K48KBOOT bundle from firmwarekit (board n78)");
++}
++
++static const TypeInfo n78_machine_info = {
++    .name = TYPE_N78_MACHINE,
++    .parent = TYPE_MACHINE,
++    .interfaces = arm_machine_interfaces,
++    .instance_size = sizeof(N78MachineState),
++    .class_init = n78_class_init,
++};
++
++static void n78_machine_types(void)
++{
++    type_register_static(&n78_machine_info);
++}
++
++type_init(n78_machine_types)
+diff --git a/hw/arm/meson.build b/hw/arm/meson.build
+index 98333ecbda..91aac18101 100644
+--- a/hw/arm/meson.build
++++ b/hw/arm/meson.build
+@@ -93,7 +93,7 @@ arm_common_ss.add(when: 'CONFIG_XEN', if_true: files(
+   'xen-pvh.c',
+ ))
+ 
+-arm_ss.add(when: 'CONFIG_IPAD1', if_true: files('ipad1.c', 's5l8930_dmc.c', 's5l8930_pmgr.c', 's5l8930_gpio.c', 's5l8930_iop.c', 's5l8930_iop_core.c', 's5l8930_sdio.c', 's5l8930_i2c.c', 's5l8930_display.c', 's5l8930_dart.c', 's5l8930_cdma.c', 's5l8930_bbspi.c', 's5l8930_h2fmi.c', 's5l8930_sha1.c', 's5l8930_ltc4099.c', 's5l8930_hdq.c', 's5l8930_i2s.c', 's5l8930_isp.c'))
++arm_ss.add(when: 'CONFIG_IPAD1', if_true: files('ipad1.c', 's5l8930_dmc.c', 's5l8930_pmgr.c', 's5l8930_gpio.c', 's5l8930_iop.c', 's5l8930_iop_core.c', 's5l8930_sdio.c', 's5l8930_i2c.c', 's5l8930_display.c', 's5l8930_dart.c', 's5l8930_cdma.c', 's5l8930_bbspi.c', 's5l8930_h2fmi.c', 's5l8930_sha1.c', 's5l8930_ltc4099.c', 's5l8930_hdq.c', 's5l8930_i2s.c', 's5l8930_isp.c', 'ipod_touch_5g.c', 's5l8940_aic.c', 's5l8940_i2c.c', 's5l8940_pmgr.c'))
+ arm_ss.add(when: 'CONFIG_IPAD1', if_true: files('s5l8920.c', 's5l8920_pmgr.c', 's5l8920_dart.c', 's5l8920_pwm.c', 's5l8920_vxd.c', 's5l8920_vxd_h264.c', 's5l8920_jpeg.c'))
+ # Synopsys DWC OTG device core, PHY register file and host TCP bridge: shared by the S5L8720 and S5L8930 machines.
+ arm_ss.add(when: 'CONFIG_IPOD_TOUCH_1G', if_true: files('ipod_touch_1g.c', 's5l8900_fmc.c', 's5l8900_nand_ecc.c', 's5l8900_adm.c', 's5l8900_lcd_panel.c', 's5l8900_multitouch_z1.c', 'ipod_touch_wm8758.c', 'ipod_touch_piezo.c'))
+diff --git a/hw/arm/s5l8930_cdma.c b/hw/arm/s5l8930_cdma.c
+index 45ed7fe972..c28b046368 100644
+--- a/hw/arm/s5l8930_cdma.c
++++ b/hw/arm/s5l8930_cdma.c
+@@ -62,7 +62,8 @@
+ 
+ OBJECT_DECLARE_SIMPLE_TYPE(S5L8930CDMAState, S5L8930_CDMA)
+ 
+-#define CDMA_CHANNELS       S5L8930_CDMA_CHANNELS
++#define CDMA_CHANNELS       S5L8930_CDMA_CHANNELS   /* the A4's; what a snapshot holds */
++#define CDMA_MAX_CHANNELS   0x30                    /* "channels": the A5 has 0x2b */
+ #define CDMA_CHAN_SHIFT     12
+ #define AES_CONTEXTS        9
+ #define CDMA_FIFO_MAX       CDMA_MAX_SEGMENT    /* engine output not yet drained; a snapshot holds no more */
+@@ -146,15 +147,16 @@ typedef struct CDMASource {
+ 
+ struct S5L8930CDMAState {
+     SysBusDevice parent_obj;
+-    uint64_t dram_size;         /* property: device FIFO vs memory is by address */
++    uint64_t dram_base, dram_size;  /* properties: device FIFO vs memory is by address */
++    uint32_t channels;          /* property: channel slots, the global block's included */
+     MemoryRegion cdma_mem;
+     MemoryRegion aes_mem;
+-    qemu_irq irq[CDMA_CHANNELS];
++    qemu_irq irq[CDMA_MAX_CHANNELS];
+ 
+     uint32_t enabled[2];
+     uint8_t version;        /* DT cdma-version: 1 (S5L8920) has no channel-enable registers */
+     uint32_t paced_base, paced_ports;
+-    CDMAChannel ch[CDMA_CHANNELS];
++    CDMAChannel ch[CDMA_MAX_CHANNELS];
+     AESContext aes[AES_CONTEXTS];
+     /* engine output queue: filled by the feeding channel, drained by ch2 */
+     uint8_t *fifo;
+@@ -169,16 +171,16 @@ struct S5L8930CDMAState {
+     CDMASource src[4];
+     /* Audio channels (I2S FIFOs) play out in real time, not inside the go
+      * write; paced[] marks a chain in flight. */
+-    bool paced[CDMA_CHANNELS];
+-    bool sink_pending[CDMA_CHANNELS];       /* to-device chain in a device FIFO, done when it drains */
++    bool paced[CDMA_MAX_CHANNELS];
++    bool sink_pending[CDMA_MAX_CHANNELS];       /* to-device chain in a device FIFO, done when it drains */
+     /* transient, inside cdma_run: the device drained the FIFO after this run's last push */
+-    bool in_run[CDMA_CHANNELS], sink_early[CDMA_CHANNELS];
+-    bool in_seg_mig[CDMA_CHANNELS];         /* ch[].in_seg on the wire (vmstate 4) */
+-    int64_t paced_start[CDMA_CHANNELS];
+-    int64_t paced_end[CDMA_CHANNELS];       /* when the last chain's final byte played */
+-    uint32_t paced_desc[CDMA_CHANNELS];     /* chain head the go named */
+-    uint64_t paced_sent[CDMA_CHANNELS];     /* bytes already in the FIFO */
+-    uint32_t paced_bps[CDMA_CHANNELS];      /* bytes/s: 4 * port frame rate */
++    bool in_run[CDMA_MAX_CHANNELS], sink_early[CDMA_MAX_CHANNELS];
++    bool in_seg_mig[CDMA_MAX_CHANNELS];         /* ch[].in_seg on the wire (vmstate 4) */
++    int64_t paced_start[CDMA_MAX_CHANNELS];
++    int64_t paced_end[CDMA_MAX_CHANNELS];       /* when the last chain's final byte played */
++    uint32_t paced_desc[CDMA_MAX_CHANNELS];     /* chain head the go named */
++    uint64_t paced_sent[CDMA_MAX_CHANNELS];     /* bytes already in the FIFO */
++    uint32_t paced_bps[CDMA_MAX_CHANNELS];      /* bytes/s: 4 * port frame rate */
+     QEMUTimer *pace_timer;
+ };
+ 
+@@ -446,8 +448,8 @@ static bool cdma_waits_for_uart(const CDMAChannel *c)
+ 
+ static bool cdma_is_memory(S5L8930CDMAState *s, uint32_t addr)
+ {
+-    return addr >= S5L8930_DRAM_BASE &&
+-           addr < S5L8930_DRAM_BASE + s->dram_size;
++    return addr >= s->dram_base &&
++           addr < s->dram_base + s->dram_size;
+ }
+ 
+ static void cdma_fifo_xfer(uint32_t fifo, uint32_t width, uint8_t *buf,
+@@ -632,7 +634,7 @@ void s5l8930_cdma_sink_done(DeviceState *dev, uint32_t fifo_base, uint32_t size)
+ {
+     S5L8930CDMAState *s = S5L8930_CDMA(dev);
+ 
+-    for (int ch = 1; ch < CDMA_CHANNELS; ch++) {
++    for (int ch = 1; ch < s->channels; ch++) {
+         CDMAChannel *c = &s->ch[ch];
+ 
+         if (s->in_run[ch] && c->fifo >= fifo_base && c->fifo < fifo_base + size) {
+@@ -744,7 +746,7 @@ static uint64_t cdma_paced_pos(S5L8930CDMAState *s, int ch)
+ 
+ static void cdma_pace_arm(S5L8930CDMAState *s)
+ {
+-    for (int i = 0; i < CDMA_CHANNELS; i++) {
++    for (int i = 0; i < s->channels; i++) {
+         if (cdma_is_paced(s, i)) {
+             timer_mod(s->pace_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                                      CDMA_PACED_STEP_NS);
+@@ -758,7 +760,7 @@ static void cdma_pace_tick(void *opaque)
+ {
+     S5L8930CDMAState *s = opaque;
+ 
+-    for (int i = 0; i < CDMA_CHANNELS; i++) {
++    for (int i = 0; i < s->channels; i++) {
+         if (cdma_is_paced(s, i) && cdma_paced_advance(s, i, cdma_paced_pos(s, i))) {
+             s->paced[i] = false;
+             s->paced_end[i] = s->paced_start[i] +
+@@ -832,7 +834,7 @@ static uint64_t cdma_read(void *opaque, hwaddr offset, unsigned size)
+         default:
+             break;
+         }
+-    } else if (ch < CDMA_CHANNELS) {
++    } else if (ch < s->channels) {
+         CDMAChannel *c = &s->ch[ch];
+         if (cdma_is_paced(s, ch)) {
+             cdma_paced_advance(s, ch, cdma_paced_pos(s, ch));
+@@ -866,13 +868,13 @@ static void cdma_write(void *opaque, hwaddr offset, uint64_t value,
+         switch (reg) {
+         case 0x00: case 0x04:
+             s->enabled[reg >> 2] |= v;
+-            for (int i = 1; i < CDMA_CHANNELS; i++) {
++            for (int i = 1; i < s->channels; i++) {
+                 cdma_update_irq(s, i);      /* the lines are levels: a completion that came first shows now */
+             }
+             break;
+         case 0x08: case 0x0C:
+             s->enabled[(reg - 8) >> 2] &= ~v;
+-            for (int i = 1; i < CDMA_CHANNELS; i++) {
++            for (int i = 1; i < s->channels; i++) {
+                 cdma_update_irq(s, i);
+             }
+             break;
+@@ -881,12 +883,12 @@ static void cdma_write(void *opaque, hwaddr offset, uint64_t value,
+                           HWADDR_PRIx " = 0x%x\n", offset, v);
+             return;
+         }
+-        for (int i = 1; i < CDMA_CHANNELS; i++) {
++        for (int i = 1; i < s->channels; i++) {
+             cdma_update_irq(s, i);
+         }
+         return;
+     }
+-    if (ch >= CDMA_CHANNELS) {
++    if (ch >= s->channels) {
+         qemu_log_mask(LOG_UNIMP, "s5l8930.cdma: unimplemented write 0x%"
+                       HWADDR_PRIx " = 0x%x\n", offset, v);
+         return;
+@@ -992,7 +994,7 @@ void s5l8930_cdma_kick(DeviceState *dev)
+ {
+     S5L8930CDMAState *s = S5L8930_CDMA(dev);
+ 
+-    for (int ch = 1; ch < CDMA_CHANNELS; ch++) {
++    for (int ch = 1; ch < s->channels; ch++) {
+         if ((s->ch[ch].ctrl & ST_RUNNING) && s->ch[ch].in_seg) {
+             cdma_run(s, ch);
+         }
+@@ -1076,7 +1078,7 @@ static void s5l8930_cdma_reset(DeviceState *dev)
+     memset(s->paced, 0, sizeof(s->paced));
+     memset(s->paced_end, 0, sizeof(s->paced_end));
+     timer_del(s->pace_timer);
+-    for (int i = 0; i < CDMA_CHANNELS; i++) {
++    for (int i = 0; i < s->channels; i++) {
+         qemu_set_irq(s->irq[i], 0);
+     }
+ }
+@@ -1086,13 +1088,10 @@ static void s5l8930_cdma_init(Object *obj)
+     S5L8930CDMAState *s = S5L8930_CDMA(obj);
+     SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
+ 
+-    memory_region_init_io(&s->cdma_mem, obj, &cdma_ops, s, "s5l8930.cdma",
+-                          S5L8930_CDMA_SIZE);
+-    sysbus_init_mmio(sbd, &s->cdma_mem);
++    /* MMIO 0, the channel block, is sized by "channels" in realize. */
+     memory_region_init_io(&s->aes_mem, obj, &aes_ops, s, "s5l8930.aes",
+                           S5L8930_AES_SIZE);
+-    sysbus_init_mmio(sbd, &s->aes_mem);
+-    for (int i = 0; i < CDMA_CHANNELS; i++) {
++    for (int i = 0; i < CDMA_MAX_CHANNELS; i++) {
+         sysbus_init_irq(sbd, &s->irq[i]);
+     }
+     s->pace_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, cdma_pace_tick, s);
+@@ -1138,7 +1137,7 @@ static int cdma_pre_save(void *opaque)
+ {
+     S5L8930CDMAState *s = opaque;
+ 
+-    for (int ch = 0; ch < CDMA_CHANNELS; ch++) {
++    for (int ch = 0; ch < s->channels; ch++) {
+         s->in_seg_mig[ch] = s->ch[ch].in_seg;
+     }
+     return cdma_fifo_len_ok(s, 0) ? 0 : -E2BIG;  /* what a load would refuse (and VALIDATE asserts on) */
+@@ -1157,7 +1156,7 @@ static int cdma_post_load(void *opaque, int version_id)
+ {
+     S5L8930CDMAState *s = opaque;
+ 
+-    for (int ch = 0; ch < CDMA_CHANNELS; ch++) {
++    for (int ch = 0; ch < s->channels; ch++) {
+         /* A stalled segment resumes with remain as its length (cdma_run's
+          * bound); a paced chain divides by its rate. */
+         if ((s->in_seg_mig[ch] && s->ch[ch].remain > CDMA_MAX_SEGMENT) ||
+@@ -1181,25 +1180,26 @@ static const VMStateDescription vmstate_s5l8930_cdma = {
+         VMSTATE_UINT32(fifo_len, S5L8930CDMAState),
+         VMSTATE_VALIDATE("fifo_len", cdma_fifo_len_ok),
+         VMSTATE_VBUFFER_ALLOC_UINT32(fifo, S5L8930CDMAState, 0, NULL, fifo_len),
+-        VMSTATE_STRUCT_ARRAY(ch, S5L8930CDMAState, CDMA_CHANNELS, 1,
+-                             vmstate_cdma_channel, CDMAChannel),
++        /* The first CDMA_CHANNELS slots, the A4's stream as it was (the A5 machine takes no snapshots). */
++        VMSTATE_STRUCT_SUB_ARRAY(ch, S5L8930CDMAState, 0, CDMA_CHANNELS, 1,
++                                 vmstate_cdma_channel, CDMAChannel),
+         VMSTATE_STRUCT_ARRAY(aes, S5L8930CDMAState, AES_CONTEXTS, 1,
+                              vmstate_aes_context, AESContext),
+-        VMSTATE_BOOL_ARRAY_V(paced, S5L8930CDMAState, CDMA_CHANNELS, 2),
+-        VMSTATE_INT64_ARRAY_V(paced_start, S5L8930CDMAState,
+-                              CDMA_CHANNELS, 2),
+-        VMSTATE_INT64_ARRAY_V(paced_end, S5L8930CDMAState,
+-                              CDMA_CHANNELS, 3),
+-        VMSTATE_UINT32_ARRAY_V(paced_desc, S5L8930CDMAState,
+-                               CDMA_CHANNELS, 2),
+-        VMSTATE_UINT64_ARRAY_V(paced_sent, S5L8930CDMAState,
+-                               CDMA_CHANNELS, 2),
+-        VMSTATE_UINT32_ARRAY_V(paced_bps, S5L8930CDMAState,
+-                               CDMA_CHANNELS, 2),
++        VMSTATE_SUB_ARRAY(paced, S5L8930CDMAState, 0, CDMA_CHANNELS, 2, vmstate_info_bool, bool),
++        VMSTATE_SUB_ARRAY(paced_start, S5L8930CDMAState, 0, CDMA_CHANNELS, 2,
++                          vmstate_info_int64, int64_t),
++        VMSTATE_SUB_ARRAY(paced_end, S5L8930CDMAState, 0, CDMA_CHANNELS, 3,
++                          vmstate_info_int64, int64_t),
++        VMSTATE_SUB_ARRAY(paced_desc, S5L8930CDMAState, 0, CDMA_CHANNELS, 2,
++                          vmstate_info_uint32, uint32_t),
++        VMSTATE_SUB_ARRAY(paced_sent, S5L8930CDMAState, 0, CDMA_CHANNELS, 2,
++                          vmstate_info_uint64, uint64_t),
++        VMSTATE_SUB_ARRAY(paced_bps, S5L8930CDMAState, 0, CDMA_CHANNELS, 2,
++                          vmstate_info_uint32, uint32_t),
+         VMSTATE_TIMER_PTR_V(pace_timer, S5L8930CDMAState, 2),
+         /* 4: the IOP core's chains, mid-transfer between its instructions */
+-        VMSTATE_BOOL_ARRAY_V(sink_pending, S5L8930CDMAState, CDMA_CHANNELS, 4),
+-        VMSTATE_BOOL_ARRAY_V(in_seg_mig, S5L8930CDMAState, CDMA_CHANNELS, 4),
++        VMSTATE_SUB_ARRAY(sink_pending, S5L8930CDMAState, 0, CDMA_CHANNELS, 4, vmstate_info_bool, bool),
++        VMSTATE_SUB_ARRAY(in_seg_mig, S5L8930CDMAState, 0, CDMA_CHANNELS, 4, vmstate_info_bool, bool),
+         VMSTATE_END_OF_LIST()
+     }
+ };
+@@ -1207,8 +1207,17 @@ static const VMStateDescription vmstate_s5l8930_cdma = {
+ static void s5l8930_cdma_realize(DeviceState *dev, Error **errp)
+ {
+     S5L8930CDMAState *s = S5L8930_CDMA(dev);
++    SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
+     g_autoptr(GError) error = NULL;
+ 
++    if (s->channels < 2 || s->channels > CDMA_MAX_CHANNELS) {
++        error_setg(errp, "channels must be 2 to %d", CDMA_MAX_CHANNELS);
++        return;
++    }
++    memory_region_init_io(&s->cdma_mem, OBJECT(dev), &cdma_ops, s, "s5l8930.cdma",
++                          (hwaddr)s->channels << CDMA_CHAN_SHIFT);
++    sysbus_init_mmio(sbd, &s->cdma_mem);
++    sysbus_init_mmio(sbd, &s->aes_mem);
+     if (!s->gid_path) {
+         return;
+     }
+@@ -1233,7 +1242,9 @@ static void s5l8930_cdma_finalize(Object *obj)
+ 
+ static const Property s5l8930_cdma_properties[] = {
+     DEFINE_PROP_STRING("gid-blobs", S5L8930CDMAState, gid_path),
+-    DEFINE_PROP_UINT64("dram-size", S5L8930CDMAState, dram_size, S5L8930_DRAM_SIZE),   /* the board's */
++    DEFINE_PROP_UINT64("dram-base", S5L8930CDMAState, dram_base, S5L8930_DRAM_BASE),   /* the board's */
++    DEFINE_PROP_UINT64("dram-size", S5L8930CDMAState, dram_size, S5L8930_DRAM_SIZE),
++    DEFINE_PROP_UINT32("channels", S5L8930CDMAState, channels, CDMA_CHANNELS),
+     DEFINE_PROP_UINT8("version", S5L8930CDMAState, version, 2),
+     DEFINE_PROP_UINT32("paced-base", S5L8930CDMAState, paced_base, S5L8930_I2S_BASE(0)),
+     DEFINE_PROP_UINT32("paced-ports", S5L8930CDMAState, paced_ports, 3),
+diff --git a/hw/arm/s5l8930_display.c b/hw/arm/s5l8930_display.c
+index 61a5628e46..0ddd714412 100644
+--- a/hw/arm/s5l8930_display.c
++++ b/hw/arm/s5l8930_display.c
+@@ -51,6 +51,22 @@
+ #define DP_UI_DST_ORIGIN    0x54      /* x << 16 | y on the panel */
+ #define DP_UI_SRC_END       0x60      /* x1 << 16 | y1, the source rectangle's far corner */
+ #define DP_UI_DST_END       0x64      /* x1 << 16 | y1, the destination's far corner */
++/*
++ * The A5's H4P pipe ("h4p"): AppleH4PDisplayPipe (11D257) adopts iBoot's layer as source 0x60 to 0x70
++ * (x << 16 | y, 13 bits each; 0x80a2fc4a) and swaps the destination in as origin 0x54 and size 0x58
++ * (11 bits each; 0x80a337ee, 0x80a3381a). Its 0x4c is not the A4's UNSCALED flag.
++ */
++#define H4P_UI_DST_ORIGIN   0x54
++#define H4P_UI_DST_SIZE     0x58
++#define H4P_UI_SRC_ORIGIN   0x60
++#define H4P_UI_SRC_END      0x70
++/*
++ * And the layer's own page table: 0x98 holds its PA, one word a 4 KiB page, PA | 1 when valid (11D257
++ * 0x80a32ace builds it; restored_external's buffer is scattered pages). The layer's address (0x44) is then
++ * an offset into it, 0 for a whole buffer.
++ */
++#define H4P_UI_TABLE        0x98
++#define H4P_PTE_VALID       1u
+ 
+ #define DP_IRQ_VBL          0x001
+ #define DP_IRQ_SWAP_DONE    0x100
+@@ -90,6 +106,7 @@ typedef struct {
+ /* A UI layer's scanout: its buffer and where it lands on the panel. */
+ typedef struct UILayer {
+     uint32_t fmt, base, stride;      /* stride: bytes from one source row to the next */
++    uint32_t table;                  /* H4P: the layer's page table (H4P_UI_TABLE), 0 = base is an IOVA */
+     unsigned sx, sy, sw, sh;         /* source rectangle */
+     unsigned x0, y0, x1, y1;         /* destination rectangle, clipped to the panel */
+ } UILayer;
+@@ -106,6 +123,7 @@ struct S5L8930DisplayState {
+     uint16_t width, height;  /* properties: the board's panel, as iBoot programs it */
+     uint32_t pw, ph;         /* "panel-width"/"panel-height": panel= override (issue #21), 0 = the board's */
+     uint32_t refresh_hz;     /* "refresh-hz": the VBL's rate, 60 as on the devices */
++    bool h4p;                /* "h4p": the A5's layer registers (H4P_UI_*) */
+ 
+     DisplayPipe pipe[2];     /* 0 = DisplayPipe0 (scanned out), 1 = RGBOUT */
+     uint32_t clcd[2][CLCD_WORDS];
+@@ -576,6 +594,30 @@ static void fb_read(S5L8930DisplayState *s, uint32_t va, uint8_t *dst, unsigned
+     }
+ }
+ 
++/* A layer's bytes at its address `va`: through its H4P page table if it has one, else fb_read. */
++static void layer_read(S5L8930DisplayState *s, const UILayer *u, uint32_t va, uint8_t *dst, unsigned len)
++{
++    if (!u->table) {
++        fb_read(s, va, dst, len);
++        return;
++    }
++    while (len) {
++        unsigned n = MIN(len, 0x1000 - (va & 0xfff));
++        uint32_t pte = address_space_ldl_le(&address_space_memory, u->table + (va >> 12) * 4,
++                                            MEMTXATTRS_UNSPECIFIED, NULL);
++
++        if (!(pte & H4P_PTE_VALID)) {
++            memset(dst, 0, n);
++        } else {
++            address_space_read(&address_space_memory, (pte & ~0xfffu) | (va & 0xfff),
++                               MEMTXATTRS_UNSPECIFIED, dst, n);
++        }
++        va += n;
++        dst += n;
++        len -= n;
++    }
++}
++
+ /* ---- scanout ------------------------------------------------------------- */
+ 
+ static void display_invalidate(void *opaque)
+@@ -604,6 +646,15 @@ static bool scanout_layer(S5L8930DisplayState *s, int layer, unsigned w, unsigne
+     uint32_t org = ui[DP_UI_DST_ORIGIN / 4], end = ui[DP_UI_DST_END / 4];
+     uint32_t sorg = ui[DP_UI_SRC_ORIGIN / 4], send = ui[DP_UI_SRC_END / 4];
+ 
++    if (s->h4p) {
++        uint32_t dsz = ui[H4P_UI_DST_SIZE / 4];
++
++        sorg = ui[H4P_UI_SRC_ORIGIN / 4] & 0x1fff1fff;
++        send = ui[H4P_UI_SRC_END / 4] & 0x1fff1fff;
++        org = ui[H4P_UI_DST_ORIGIN / 4] & 0x07ff07ff;
++        end = dsz ? org + (dsz & 0x07ff07ff) : 0;
++    }
++
+     /*
+      * 3.2's AppleDisplayPipe (7B500 0xc058d4de) programs DST_ORIGIN and DST_END only for a layer placed off 0,0 and
+      * otherwise sets UNSCALED and leaves them as they were: after an iPhone app's compatibility window (its
+@@ -611,7 +662,7 @@ static bool scanout_layer(S5L8930DisplayState *s, int layer, unsigned w, unsigne
+      * them, and honoring those drew the whole Home screen into the window (LightTouchMac issue 87). 4.x writes 0 to
+      * UNSCALED and both corners on every swap (8C148 0x806cf468).
+      */
+-    if (ui[DP_UI_UNSCALED / 4] & 1) {
++    if (!s->h4p && (ui[DP_UI_UNSCALED / 4] & 1)) {
+         org = end = 0;
+     }
+ 
+@@ -619,6 +670,7 @@ static bool scanout_layer(S5L8930DisplayState *s, int layer, unsigned w, unsigne
+         return false;
+     }
+     u->base = ui[DP_UI_ADDR / 4];
++    u->table = s->h4p ? ui[H4P_UI_TABLE / 4] & ~0xfffu : 0;
+     u->fmt = (ui[DP_UI_FORMAT / 4] >> 8) & 7;
+     /*
+      * The source rectangle: SRC_ORIGIN to SRC_END, 11 bits a coordinate (5.1.1's program_hardware, 9B206
+@@ -627,13 +679,15 @@ static bool scanout_layer(S5L8930DisplayState *s, int layer, unsigned w, unsigne
+      * full-panel layer (and the boot surface, which leaves them 0) covers the panel at 0,0; 4.x CA also places
+      * partial layers, e.g. an EAGL surface as an overlay under its UI.
+      */
+-    u->sx = sorg >> 16 & 0x7ff;
+-    u->sy = sorg & 0x7ff;
+-    if (send && ((send >> 16 & 0x7ff) <= u->sx || (send & 0x7ff) <= u->sy)) {
++    unsigned cm = s->h4p ? 0x1fff : 0x7ff;    /* a coordinate's bits */
++
++    u->sx = sorg >> 16 & cm;
++    u->sy = sorg & cm;
++    if (send && ((send >> 16 & cm) <= u->sx || (send & cm) <= u->sy)) {
+         return false;
+     }
+-    u->sw = send ? (send >> 16 & 0x7ff) - u->sx : w;
+-    u->sh = send ? (send & 0x7ff) - u->sy : h;
++    u->sw = send ? (send >> 16 & cm) - u->sx : w;
++    u->sh = send ? (send & cm) - u->sy : h;
+     u->x0 = org >> 16;
+     u->y0 = org & 0xffff;
+     u->x1 = MIN(end ? end >> 16 : u->x0 + u->sw, w);
+@@ -654,7 +708,7 @@ static bool scanout_layer(S5L8930DisplayState *s, int layer, unsigned w, unsigne
+     if (!(ui[DP_UI_FORMAT / 4] & DP_UI_FORMAT_LINEAR)) {
+         u->stride >>= 4;
+     }
+-    return u->base != 0;
++    return u->base != 0 || u->table != 0;
+ }
+ 
+ static size_t layer_row_bytes(const UILayer *u)
+@@ -673,12 +727,12 @@ static size_t layer_fetch(S5L8930DisplayState *s, const UILayer *u, uint8_t *dst
+     uint32_t base = u->base + u->sy * u->stride + u->sx * (u->fmt ? 2 : 4);
+ 
+     if (u->sh == rows && u->stride == row) {
+-        fb_read(s, base, dst, row * rows);
++        layer_read(s, u, base, dst, row * rows);
+         return row * rows;
+     }
+     for (unsigned y = u->y0; y < u->y1; y++) {
+         unsigned sy = (unsigned)((uint64_t)(y - u->y0) * u->sh / rows);
+-        fb_read(s, base + sy * u->stride, dst + (y - u->y0) * row, row);
++        layer_read(s, u, base + sy * u->stride, dst + (y - u->y0) * row, row);
+     }
+     return row * rows;
+ }
+@@ -750,8 +804,8 @@ static bool layers(S5L8930DisplayState *s, unsigned w, unsigned h, UILayer u[2],
+     if (key) {
+         key[0] = w << 16 | h;
+         key[1] = (on[0] ? 1 : 0) | (on[1] ? 2 : 0) | (video ? 4 : 0);
+-        key[2] = on[0] ? u[0].base : 0;
+-        key[3] = on[1] ? u[1].base : 0;
++        key[2] = on[0] ? u[0].base ^ u[0].table : 0;
++        key[3] = on[1] ? u[1].base ^ u[1].table : 0;
+     }
+     return on[0] || on[1] || video;
+ }
+@@ -1074,7 +1128,11 @@ static void s5l8930_display_reset(DeviceState *dev)
+         r[(DP_UI_BASE(0) + DP_UI_STRIDE) / 4] = s->width * 4 | 2;
+         /* ARGB and linear, as iBoot programs its framebuffer (iBoot-931 0x5ff01bfc: format << 8 | 1). */
+         r[(DP_UI_BASE(0) + DP_UI_FORMAT) / 4] = DP_UI_FORMAT_LINEAR;
+-        r[(DP_UI_BASE(0) + DP_UI_SRC_END) / 4] = s->width << 16 | s->height;
++        if (s->h4p) {
++            r[(DP_UI_BASE(0) + H4P_UI_SRC_END) / 4] = s->width << 16 | s->height;
++        } else {
++            r[(DP_UI_BASE(0) + DP_UI_SRC_END) / 4] = s->width << 16 | s->height;
++        }
+     }
+     pipes_update_irq(s);
+     s->next_vbl = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + VBL_PERIOD_NS(s);
+@@ -1245,6 +1303,7 @@ static const Property s5l8930_display_properties[] = {
+     DEFINE_PROP_UINT32("panel-height", S5L8930DisplayState, ph, 0),
+     /* Faster than the devices' 60 Hz on request (Light Touch's experimental 120 Hz), as ipod_touch_lcd's. */
+     DEFINE_PROP_UINT32("refresh-hz", S5L8930DisplayState, refresh_hz, 60),
++    DEFINE_PROP_BOOL("h4p", S5L8930DisplayState, h4p, false),
+ };
+ 
+ static void s5l8930_display_class_init(ObjectClass *klass, const void *data)
+diff --git a/hw/arm/s5l8940_aic.c b/hw/arm/s5l8940_aic.c
+new file mode 100644
+index 0000000000..41dc153fcb
+--- /dev/null
++++ b/hw/arm/s5l8940_aic.c
+@@ -0,0 +1,537 @@
++/*
++ * Apple Interrupt Controller as the 32-bit A5 has it (DT "aic,1",
++ * AppleInterruptController), replacing the A4's four PL192s.
++ *
++ * Register map: xnu-4570.1.46 pexpert/pexpert/arm/AIC.h, the first open
++ * xnu with 32-bit ARM. How the kernel drives the per-core timer comes from
++ * the same release's T8002 path (pe_identify_machine.c pe_arm_init_timer,
++ * machine_routines_asm.s fleh_fiq_t8002 / t8002_{get,set}_decrementer):
++ *   - the decrementer is kAICTmrCnt: written with a tick count, read back
++ *     as what is left;
++ *   - it fires on FIQ, and the FIQ handler clears it by writing
++ *     kAICTmrIntStatPct to kAICTmrIntStat.
++ * External interrupts come on IRQ and are taken by reading kAICIack, which
++ * masks the line it returns until the driver writes kAICIntMaskClr (as on
++ * the later AICs; an assumption still). IPIs work the same way with their
++ * own mask, per core at +0x24 (set) and +0x28 (clear), bit 31 the self IPI
++ * and bit 0 the normal one: 9.3.5's AppleInterruptController writes those in
++ * disableVectorHard/enableVector for an IPI vector, and both kernels mask
++ * both IPIs at boot (0x2024 = 0x80000001). Taking an IPI through kAICIack
++ * masks it and leaves it pending until kAICIPIClr (see aic_core_read).
++ *
++ * The banked registers at 0x2000 answer for the CPU doing the access; the
++ * aliases at 0x5000 + 0x80 * n for CPU n.
++ */
++#include "qemu/osdep.h"
++#include "qapi/error.h"
++#include "qemu/log.h"
++#include "qemu/module.h"
++#include "qemu/timer.h"
++#include "hw/core/irq.h"
++#include "hw/core/qdev-properties.h"
++#include "hw/core/cpu.h"
++#include "hw/arm/s5l8940.h"
++
++#define AIC_REV             0x0000
++#define AIC_CAP0            0x0004
++#define AIC_CAP1            0x0008
++#define AIC_RST             0x000c
++#define AIC_GLBCFG          0x0010
++#define AIC_MAIN_TIM_LO     0x0020
++#define AIC_MAIN_TIM_HI     0x0028
++#define AIC_IPI_NORMAL_DBG  0x0030
++#define AIC_IPI_SELF_DBG    0x0034
++
++#define AIC_BANKED          0x2000          /* this CPU's view */
++#define AIC_BANKED_END      0x202c
++#define AIC_ALIAS           0x5000          /* CPU n's view at +0x80 * n */
++#define AIC_ALIAS_STRIDE    0x80
++
++/* Offsets inside a banked or alias block. */
++#define CORE_WHOAMI         0x00
++#define CORE_IACK           0x04
++#define CORE_IPI_SET        0x08
++#define CORE_IPI_CLR        0x0c
++#define CORE_TMR_CFG        0x10
++#define CORE_TMR_CNT        0x14
++#define CORE_TMR_INTSTAT    0x18
++#define CORE_TMR_STATE_SET  0x1c
++#define CORE_TMR_STATE_CLR  0x20
++#define CORE_IPI_MASK_SET   0x24
++#define CORE_IPI_MASK_CLR   0x28
++
++#define IPI_CLR_SELF        0x80000000u
++#define IPI_MASK_SELF       0x80000000u
++#define IPI_MASK_NORMAL     1u
++#define TMR_CFG_EN          1u
++#define TMR_INTSTAT_PCT     1u
++
++#define IACK_SPURIOUS       0
++#define IACK_EXT(n)         ((1u << 16) | ((n) & 0x3ff))
++#define IACK_IPI_NORMAL     ((4u << 16) | 1)
++#define IACK_IPI_SELF       ((4u << 16) | 2)
++
++#define AIC_TGT_DST(n)      (0x3000 + 4 * (n))
++#define AIC_SW_SET(n)       (0x4000 + 4 * (n))
++#define AIC_SW_CLR(n)       (0x4080 + 4 * (n))
++#define AIC_MASK_SET(n)     (0x4100 + 4 * (n))
++#define AIC_MASK_CLR(n)     (0x4180 + 4 * (n))
++#define AIC_HW_MON(n)       (0x4200 + 4 * (n))
++
++#define AIC_WORDS           (S5L8940_AIC_NR_IRQS / 32)
++
++typedef struct AICCore {
++    struct S5L8940AICState *aic;
++    bool ipi_normal, ipi_self;
++    uint32_t ipi_mask;                       /* IPI_MASK_SELF | IPI_MASK_NORMAL */
++    uint32_t tmr_cfg, tmr_intstat, tmr_state;
++    int64_t tmr_deadline_ns;                 /* when the decrementer reaches 0 */
++    QEMUTimer *timer;
++    qemu_irq irq, fiq;
++} AICCore;
++
++struct S5L8940AICState {
++    SysBusDevice parent_obj;
++
++    MemoryRegion iomem;
++    uint32_t num_cpus;
++    uint32_t timebase_hz;
++
++    uint32_t glbcfg, rst;
++    int64_t main_tim_offset;                 /* ticks added to the free-running count */
++    uint32_t main_tim_hi_latch;
++    uint32_t hw[AIC_WORDS], sw[AIC_WORDS], mask[AIC_WORDS];
++    uint32_t target[S5L8940_AIC_NR_IRQS];
++    AICCore core[S5L8940_AIC_MAX_CPUS];
++};
++
++static uint64_t aic_ticks(S5L8940AICState *s, int64_t ns)
++{
++    return muldiv64(ns, s->timebase_hz, NANOSECONDS_PER_SECOND);
++}
++
++static int64_t aic_ns(S5L8940AICState *s, uint64_t ticks)
++{
++    return muldiv64(ticks, NANOSECONDS_PER_SECOND, s->timebase_hz);
++}
++
++static bool aic_ext_pending_for(S5L8940AICState *s, int cpu, int *irq_out)
++{
++    for (int w = 0; w < AIC_WORDS; w++) {
++        uint32_t p = (s->hw[w] | s->sw[w]) & ~s->mask[w];
++
++        while (p) {
++            int n = w * 32 + ctz32(p);
++
++            p &= p - 1;
++            /*
++             * A line nobody has targeted goes to CPU 0, so a driver that unmasks
++             * before writing TgtDst still sees its interrupt during bring-up.
++             */
++            if ((s->target[n] ? s->target[n] : 1) & (1u << cpu)) {
++                if (irq_out) {
++                    *irq_out = n;
++                }
++                return true;
++            }
++        }
++    }
++    return false;
++}
++
++static bool aic_ipi_self_live(AICCore *core)
++{
++    return core->ipi_self && !(core->ipi_mask & IPI_MASK_SELF);
++}
++
++static bool aic_ipi_normal_live(AICCore *core)
++{
++    return core->ipi_normal && !(core->ipi_mask & IPI_MASK_NORMAL);
++}
++
++static void aic_update(S5L8940AICState *s)
++{
++    for (int c = 0; c < s->num_cpus; c++) {
++        AICCore *core = &s->core[c];
++
++        qemu_set_irq(core->irq, aic_ipi_self_live(core) || aic_ipi_normal_live(core) ||
++                                aic_ext_pending_for(s, c, NULL));
++        qemu_set_irq(core->fiq, (core->tmr_cfg & TMR_CFG_EN) &&
++                                (core->tmr_intstat & TMR_INTSTAT_PCT));
++    }
++}
++
++static void aic_timer_cb(void *opaque)
++{
++    AICCore *core = opaque;
++
++    core->tmr_intstat |= TMR_INTSTAT_PCT;
++    aic_update(core->aic);
++}
++
++static uint32_t aic_tmr_cnt(S5L8940AICState *s, AICCore *core)
++{
++    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
++
++    if (core->tmr_deadline_ns <= now) {
++        return 0;
++    }
++    return MIN(aic_ticks(s, core->tmr_deadline_ns - now), 0xffffffffull);
++}
++
++static void aic_tmr_set_cnt(S5L8940AICState *s, AICCore *core, uint32_t cnt)
++{
++    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
++
++    core->tmr_deadline_ns = now + aic_ns(s, cnt);
++    timer_mod(core->timer, core->tmr_deadline_ns);
++}
++
++static int aic_current_cpu(S5L8940AICState *s)
++{
++    int c = current_cpu ? current_cpu->cpu_index : 0;
++
++    return c < s->num_cpus ? c : 0;
++}
++
++static uint32_t aic_core_read(S5L8940AICState *s, int c, hwaddr off)
++{
++    AICCore *core = &s->core[c];
++    int n;
++
++    switch (off) {
++    case CORE_WHOAMI:
++        return c;
++    case CORE_IACK:
++        /*
++         * Taking an IPI through Iack masks it; it stays pending until IPIClr.
++         * The handler skips an IPI whose vector is not registered yet, with no
++         * IPIClr: 7.1.2 after the performance controller starts, and 9.3.5 when
++         * AppleARMCPU kicks cpu0 (causeVector 0xc0) before its vector is in.
++         * That IPI must come back once enableVector unmasks it (+0x28): it is
++         * what clears the kernel's SIGPdisabled and runs a SIGPdec that a timer
++         * FIQ left while IRQs were off (9.3.5 fleh_dec -> cpu_signal). Cleared
++         * on Iack, it was lost, and 9.3.5's decrementer never rearmed.
++         */
++        if (aic_ipi_self_live(core)) {
++            core->ipi_mask |= IPI_MASK_SELF;
++            aic_update(s);
++            return IACK_IPI_SELF;
++        }
++        if (aic_ipi_normal_live(core)) {
++            core->ipi_mask |= IPI_MASK_NORMAL;
++            aic_update(s);
++            return IACK_IPI_NORMAL;
++        }
++        if (aic_ext_pending_for(s, c, &n)) {
++            s->mask[n / 32] |= 1u << (n % 32);
++            aic_update(s);
++            return IACK_EXT(n);
++        }
++        return IACK_SPURIOUS;
++    case CORE_TMR_CFG:
++        return core->tmr_cfg;
++    case CORE_TMR_CNT:
++        return aic_tmr_cnt(s, core);
++    case CORE_TMR_INTSTAT:
++        return core->tmr_intstat;
++    case CORE_TMR_STATE_SET:
++    case CORE_TMR_STATE_CLR:
++        return core->tmr_state;
++    case CORE_IPI_MASK_SET:
++    case CORE_IPI_MASK_CLR:
++        return core->ipi_mask;
++    default:
++        qemu_log_mask(LOG_UNIMP, "aic: cpu%d read of core reg 0x%" HWADDR_PRIx "\n", c, off);
++        return 0;
++    }
++}
++
++static void aic_core_write(S5L8940AICState *s, int c, hwaddr off, uint32_t val)
++{
++    AICCore *core = &s->core[c];
++
++    switch (off) {
++    case CORE_IPI_SET:
++        if (val & IPI_CLR_SELF) {
++            core->ipi_self = true;
++        }
++        for (int t = 0; t < s->num_cpus; t++) {
++            if (val & (1u << t)) {
++                s->core[t].ipi_normal = true;
++            }
++        }
++        break;
++    case CORE_IPI_CLR:
++        if (val & IPI_CLR_SELF) {
++            core->ipi_self = false;
++        }
++        if (val & ~IPI_CLR_SELF) {
++            core->ipi_normal = false;
++        }
++        break;
++    case CORE_TMR_CFG:
++        core->tmr_cfg = val;
++        break;
++    case CORE_TMR_CNT:
++        aic_tmr_set_cnt(s, core, val);
++        break;
++    case CORE_TMR_INTSTAT:
++        core->tmr_intstat &= ~val;
++        break;
++    case CORE_TMR_STATE_SET:
++        core->tmr_state |= val;
++        break;
++    case CORE_TMR_STATE_CLR:
++        core->tmr_state &= ~val;
++        break;
++    case CORE_IPI_MASK_SET:
++        core->ipi_mask |= val & (IPI_MASK_SELF | IPI_MASK_NORMAL);
++        break;
++    case CORE_IPI_MASK_CLR:
++        core->ipi_mask &= ~val;
++        break;
++    default:
++        qemu_log_mask(LOG_UNIMP, "aic: cpu%d write 0x%x to core reg 0x%" HWADDR_PRIx "\n",
++                      c, val, off);
++        return;
++    }
++    aic_update(s);
++}
++
++static uint64_t aic_main_tim(S5L8940AICState *s)
++{
++    return aic_ticks(s, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL)) + s->main_tim_offset;
++}
++
++/* AIC_TRACE=1: log every register access, for bring-up. */
++static bool aic_trace(void)
++{
++    static int on = -1;
++
++    if (on < 0) {
++        on = g_strcmp0(getenv("AIC_TRACE"), "1") == 0;
++    }
++    return on;
++}
++
++static uint64_t aic_read_reg(void *opaque, hwaddr addr, unsigned size);
++
++static uint64_t aic_read(void *opaque, hwaddr addr, unsigned size)
++{
++    uint64_t val = aic_read_reg(opaque, addr, size);
++
++    if (aic_trace()) {
++        qemu_log("aic: read  0x%04" HWADDR_PRIx " -> 0x%08" PRIx64 "\n", addr, val);
++    }
++    return val;
++}
++
++static uint64_t aic_read_reg(void *opaque, hwaddr addr, unsigned size)
++{
++    S5L8940AICState *s = opaque;
++
++    if (addr >= AIC_BANKED && addr < AIC_BANKED_END) {
++        return aic_core_read(s, aic_current_cpu(s), addr - AIC_BANKED);
++    }
++    if (addr >= AIC_ALIAS && addr < AIC_ALIAS + AIC_ALIAS_STRIDE * s->num_cpus) {
++        return aic_core_read(s, (addr - AIC_ALIAS) / AIC_ALIAS_STRIDE,
++                             (addr - AIC_ALIAS) % AIC_ALIAS_STRIDE);
++    }
++    if (addr >= AIC_TGT_DST(0) && addr < AIC_TGT_DST(S5L8940_AIC_NR_IRQS)) {
++        return s->target[(addr - AIC_TGT_DST(0)) / 4];
++    }
++    /* The set and clear halves both read back the current word. */
++    if (addr >= AIC_SW_SET(0) && addr < AIC_SW_SET(AIC_WORDS)) {
++        return s->sw[(addr - AIC_SW_SET(0)) / 4];
++    }
++    if (addr >= AIC_SW_CLR(0) && addr < AIC_SW_CLR(AIC_WORDS)) {
++        return s->sw[(addr - AIC_SW_CLR(0)) / 4];
++    }
++    if (addr >= AIC_MASK_SET(0) && addr < AIC_MASK_SET(AIC_WORDS)) {
++        return s->mask[(addr - AIC_MASK_SET(0)) / 4];
++    }
++    if (addr >= AIC_MASK_CLR(0) && addr < AIC_MASK_CLR(AIC_WORDS)) {
++        return s->mask[(addr - AIC_MASK_CLR(0)) / 4];
++    }
++    if (addr >= AIC_HW_MON(0) && addr < AIC_HW_MON(AIC_WORDS)) {
++        return s->hw[(addr - AIC_HW_MON(0)) / 4];
++    }
++
++    switch (addr) {
++    case AIC_REV:
++        return 0;
++    case AIC_CAP0:
++        return ((s->num_cpus - 1) << 16) | S5L8940_AIC_NR_IRQS;
++    case AIC_CAP1:
++        return 0;
++    case AIC_RST:
++        return s->rst;
++    case AIC_GLBCFG:
++        return s->glbcfg;
++    case AIC_MAIN_TIM_LO: {
++        uint64_t t = aic_main_tim(s);
++
++        s->main_tim_hi_latch = t >> 32;
++        return (uint32_t)t;
++    }
++    case AIC_MAIN_TIM_HI:
++        return s->main_tim_hi_latch;
++    default:
++        qemu_log_mask(LOG_UNIMP, "aic: read of 0x%" HWADDR_PRIx "\n", addr);
++        return 0;
++    }
++}
++
++static void aic_write(void *opaque, hwaddr addr, uint64_t val64, unsigned size)
++{
++    S5L8940AICState *s = opaque;
++    uint32_t val = val64;
++    int w;
++
++    if (aic_trace()) {
++        qemu_log("aic: write 0x%04" HWADDR_PRIx " <- 0x%08x\n", addr, val);
++    }
++    if (addr >= AIC_BANKED && addr < AIC_BANKED_END) {
++        aic_core_write(s, aic_current_cpu(s), addr - AIC_BANKED, val);
++        return;
++    }
++    if (addr >= AIC_ALIAS && addr < AIC_ALIAS + AIC_ALIAS_STRIDE * s->num_cpus) {
++        aic_core_write(s, (addr - AIC_ALIAS) / AIC_ALIAS_STRIDE,
++                       (addr - AIC_ALIAS) % AIC_ALIAS_STRIDE, val);
++        return;
++    }
++    if (addr >= AIC_TGT_DST(0) && addr < AIC_TGT_DST(S5L8940_AIC_NR_IRQS)) {
++        s->target[(addr - AIC_TGT_DST(0)) / 4] = val;
++        aic_update(s);
++        return;
++    }
++    if (addr >= AIC_SW_SET(0) && addr < AIC_SW_SET(AIC_WORDS)) {
++        s->sw[(addr - AIC_SW_SET(0)) / 4] |= val;
++    } else if (addr >= AIC_SW_CLR(0) && addr < AIC_SW_CLR(AIC_WORDS)) {
++        s->sw[(addr - AIC_SW_CLR(0)) / 4] &= ~val;
++    } else if (addr >= AIC_MASK_SET(0) && addr < AIC_MASK_SET(AIC_WORDS)) {
++        s->mask[(addr - AIC_MASK_SET(0)) / 4] |= val;
++    } else if (addr >= AIC_MASK_CLR(0) && addr < AIC_MASK_CLR(AIC_WORDS)) {
++        s->mask[(addr - AIC_MASK_CLR(0)) / 4] &= ~val;
++    } else {
++        switch (addr) {
++        case AIC_RST:
++            s->rst = val;
++            break;
++        case AIC_GLBCFG:
++            s->glbcfg = val;
++            break;
++        case AIC_MAIN_TIM_LO:
++        case AIC_MAIN_TIM_HI: {
++            uint64_t t = aic_main_tim(s);
++
++            w = addr == AIC_MAIN_TIM_HI;
++            t = w ? (t & 0xffffffffull) | ((uint64_t)val << 32)
++                  : (t & ~0xffffffffull) | val;
++            s->main_tim_offset = t - aic_ticks(s, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
++            break;
++        }
++        default:
++            qemu_log_mask(LOG_UNIMP, "aic: write 0x%x to 0x%" HWADDR_PRIx "\n", val, addr);
++            return;
++        }
++    }
++    aic_update(s);
++}
++
++static const MemoryRegionOps aic_ops = {
++    .read = aic_read,
++    .write = aic_write,
++    .endianness = DEVICE_LITTLE_ENDIAN,
++    .valid.min_access_size = 4,
++    .valid.max_access_size = 4,
++};
++
++/* Input lines, level-triggered, as the SoC's blocks raise them. */
++static void aic_set_irq(void *opaque, int n, int level)
++{
++    S5L8940AICState *s = opaque;
++
++    if (level) {
++        s->hw[n / 32] |= 1u << (n % 32);
++    } else {
++        s->hw[n / 32] &= ~(1u << (n % 32));
++    }
++    aic_update(s);
++}
++
++static void aic_reset_hold(Object *obj, ResetType type)
++{
++    S5L8940AICState *s = S5L8940_AIC(obj);
++
++    s->glbcfg = 0;
++    s->rst = 0;
++    s->main_tim_offset = 0;
++    memset(s->sw, 0, sizeof(s->sw));
++    memset(s->mask, 0xff, sizeof(s->mask));  /* every line masked out of reset */
++    memset(s->target, 0, sizeof(s->target));
++    for (int c = 0; c < S5L8940_AIC_MAX_CPUS; c++) {
++        AICCore *core = &s->core[c];
++
++        core->ipi_normal = core->ipi_self = false;
++        core->ipi_mask = 0;
++        core->tmr_cfg = core->tmr_intstat = core->tmr_state = 0;
++        core->tmr_deadline_ns = 0;
++        if (core->timer) {
++            timer_del(core->timer);
++        }
++    }
++    aic_update(s);
++}
++
++static void aic_realize(DeviceState *dev, Error **errp)
++{
++    S5L8940AICState *s = S5L8940_AIC(dev);
++    SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
++
++    if (s->num_cpus < 1 || s->num_cpus > S5L8940_AIC_MAX_CPUS) {
++        error_setg(errp, "aic: num-cpus must be 1 to %d", S5L8940_AIC_MAX_CPUS);
++        return;
++    }
++    memory_region_init_io(&s->iomem, OBJECT(s), &aic_ops, s, "s5l8940.aic",
++                          S5L8940_AIC_SIZE);
++    sysbus_init_mmio(sbd, &s->iomem);
++    /* Outputs: IRQ then FIQ for each CPU. */
++    for (int c = 0; c < s->num_cpus; c++) {
++        s->core[c].aic = s;
++        s->core[c].timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, aic_timer_cb, &s->core[c]);
++        sysbus_init_irq(sbd, &s->core[c].irq);
++        sysbus_init_irq(sbd, &s->core[c].fiq);
++    }
++    qdev_init_gpio_in(dev, aic_set_irq, S5L8940_AIC_NR_IRQS);
++}
++
++static const Property aic_properties[] = {
++    DEFINE_PROP_UINT32("num-cpus", S5L8940AICState, num_cpus, 1),
++    DEFINE_PROP_UINT32("timebase-hz", S5L8940AICState, timebase_hz, 24000000),
++};
++
++static void aic_class_init(ObjectClass *klass, const void *data)
++{
++    DeviceClass *dc = DEVICE_CLASS(klass);
++    ResettableClass *rc = RESETTABLE_CLASS(klass);
++
++    dc->realize = aic_realize;
++    rc->phases.hold = aic_reset_hold;
++    device_class_set_props(dc, aic_properties);
++}
++
++static const TypeInfo aic_info = {
++    .name = TYPE_S5L8940_AIC,
++    .parent = TYPE_SYS_BUS_DEVICE,
++    .instance_size = sizeof(S5L8940AICState),
++    .class_init = aic_class_init,
++};
++
++static void aic_register_types(void)
++{
++    type_register_static(&aic_info);
++}
++
++type_init(aic_register_types)
+diff --git a/hw/arm/s5l8940_i2c.c b/hw/arm/s5l8940_i2c.c
+new file mode 100644
+index 0000000000..77dd14195f
+--- /dev/null
++++ b/hw/arm/s5l8940_i2c.c
+@@ -0,0 +1,344 @@
++/*
++ * S5L8940 ("A5") I2C controller (DT "i2c,s5l8940x", AppleS5L8940XI2CController)
++ * and a register-file stand-in for the Dialog D1881 PMU on i2c0.
++ *
++ * Unlike the A4's Samsung-style controller (s5l8930_i2c.c) this is the PA Semi
++ * SMBus block Linux drives as i2c-pasemi, read off 7.1.2's driver
++ * (__PRELINK_TEXT 0x80976c40 init, 0x80976e80 transfer, 0x809776f8 RX drain,
++ * 0x80977034 _checkBusStatus):
++ *   0x00 MTXFIFO  command words: data byte | 0x100 START | 0x200 STOP | 0x400
++ *                 READ (the byte is then the count). A write is START+addr,
++ *                 the bytes, STOP on the last; a read is START+(addr|1), then
++ *                 count|READ|STOP.
++ *   0x04 MRXFIFO  a received byte, or 0x100 while empty (the driver spins on it)
++ *   0x14 SMSTA    status, write-1-to-clear; XIP bit 28 while a transfer runs,
++ *                 XEN bit 27 when it ended. Init clears 0x0aa00040.
++ *   0x18 IMASK    which SMSTA bits interrupt
++ *   0x1c CTL      bits 0-7 the clock divider (init writes max(4, DT value))
++ *   0x0c XFSTA    "xfer" in the driver's failure log (i2c-pasemi's name)
++ *   0x08, 0x10, 0x20-0x3c  0x08 is the log's "fifo", 0x10 written 0x80000000
++ *                 at init, 0x2c 0x100 before an interrupt-mode wait. Kept, not
++ *                 decoded.
++ * A transfer runs to completion inside the MTXFIFO write.
++ *
++ * Whether SDA is stuck is read off the pin (function-iic_sda, a GPIO), not this
++ * block: the machine rests those pins high.
++ *
++ * I2C_TRACE=1 logs every controller access and every PMU register access.
++ */
++#include "qemu/osdep.h"
++#include "qapi/error.h"
++#include "qemu/log.h"
++#include "qemu/module.h"
++#include "hw/core/irq.h"
++#include "hw/i2c/i2c.h"
++#include "hw/arm/s5l8940.h"
++
++#define I2C_MTXFIFO     0x00
++#define I2C_MRXFIFO     0x04
++#define I2C_REG08       0x08
++#define I2C_REG0C       0x0c
++#define I2C_REG10       0x10
++#define I2C_SMSTA       0x14
++#define I2C_IMASK       0x18
++#define I2C_CTL         0x1c
++
++#define MTX_START       0x100
++#define MTX_STOP        0x200
++#define MTX_READ        0x400
++#define MRX_EMPTY       0x100
++
++/* Bit names as Linux i2c-pasemi-core.c has them. */
++#define SMSTA_XIP       0x10000000
++#define SMSTA_XEN       0x08000000
++#define SMSTA_MTN       0x00200000      /* NACK */
++#define SMSTA_MRNE      0x00080000      /* RX FIFO not empty */
++/*
++ * Not in i2c-pasemi. The A5 driver waits for its transfer with IMASK
++ * 0x00b00040 (MTO, MTN, this bit, TOM) after writing 0x100 to 0x2c, so this
++ * is taken as its "transfer done" interrupt, raised with XEN.
++ */
++#define SMSTA_XDN       0x00100000
++
++#define RX_FIFO_SIZE    256
++
++struct S5L8940I2CState {
++    SysBusDevice parent_obj;
++
++    MemoryRegion iomem;
++    qemu_irq irq;
++    I2CBus *bus;
++
++    uint32_t smsta, imask, ctl, reg08, reg0c, reg10;
++    uint32_t hi[8];                         /* 0x20-0x3c: 0x28 REV in i2c-pasemi, 0x2c written 0x100 */
++    bool in_xfer;
++    uint8_t rx[RX_FIFO_SIZE];
++    unsigned rx_head, rx_count;
++};
++
++static bool i2c_trace(void)
++{
++    static int on = -1;
++
++    if (on < 0) {
++        on = g_strcmp0(getenv("I2C_TRACE"), "1") == 0;
++    }
++    return on;
++}
++
++static void s5l8940_i2c_update(S5L8940I2CState *s)
++{
++    qemu_set_irq(s->irq, (s->smsta & s->imask) != 0);
++}
++
++static void rx_push(S5L8940I2CState *s, uint8_t b)
++{
++    if (s->rx_count < RX_FIFO_SIZE) {
++        s->rx[(s->rx_head + s->rx_count++) % RX_FIFO_SIZE] = b;
++    }
++}
++
++static void s5l8940_i2c_stop(S5L8940I2CState *s)
++{
++    if (s->in_xfer) {
++        i2c_end_transfer(s->bus);
++        s->in_xfer = false;
++    }
++    s->smsta |= SMSTA_XEN | SMSTA_XDN;
++}
++
++static void s5l8940_i2c_command(S5L8940I2CState *s, uint32_t cmd)
++{
++    if (cmd & MTX_START) {
++        uint8_t addr = cmd & 0xff;
++
++        if (i2c_start_transfer(s->bus, addr >> 1, addr & 1)) {
++            /* Nobody answered: NACK, and the transfer is over. */
++            s->in_xfer = false;
++            s->smsta |= SMSTA_MTN | SMSTA_XEN | SMSTA_XDN;
++            i2c_end_transfer(s->bus);
++            return;
++        }
++        s->in_xfer = true;
++    } else if (cmd & MTX_READ) {
++        unsigned n = (cmd & 0xff) ? (cmd & 0xff) : 256;
++
++        for (unsigned i = 0; i < n && s->in_xfer; i++) {
++            rx_push(s, i2c_recv(s->bus));
++        }
++    } else if (s->in_xfer) {
++        if (i2c_send(s->bus, cmd & 0xff)) {
++            s->smsta |= SMSTA_MTN;
++        }
++    }
++    if (cmd & MTX_STOP) {
++        s5l8940_i2c_stop(s);
++    }
++}
++
++static uint64_t s5l8940_i2c_read(void *opaque, hwaddr addr, unsigned size)
++{
++    S5L8940I2CState *s = opaque;
++    uint32_t v = 0;
++
++    switch (addr) {
++    case I2C_MRXFIFO:
++        if (s->rx_count) {
++            v = s->rx[s->rx_head];
++            s->rx_head = (s->rx_head + 1) % RX_FIFO_SIZE;
++            s->rx_count--;
++        } else {
++            v = MRX_EMPTY;
++        }
++        break;
++    case I2C_REG08:
++        v = s->reg08;
++        break;
++    case I2C_REG0C:
++        v = s->reg0c;
++        break;
++    case I2C_REG10:
++        v = s->reg10;
++        break;
++    case I2C_SMSTA:
++        v = s->smsta | (s->rx_count ? SMSTA_MRNE : 0);
++        break;
++    case I2C_IMASK:
++        v = s->imask;
++        break;
++    case I2C_CTL:
++        v = s->ctl;
++        break;
++    case 0x20 ... 0x3c:
++        v = s->hi[(addr - 0x20) / 4];
++        break;
++    default:
++        qemu_log_mask(LOG_UNIMP, "s5l8940.i2c: read of 0x%" HWADDR_PRIx "\n", addr);
++        break;
++    }
++    if (i2c_trace()) {
++        qemu_log("%s: read  0x%02" HWADDR_PRIx " -> 0x%08x\n",
++                 object_get_canonical_path_component(OBJECT(s)), addr, v);
++    }
++    return v;
++}
++
++static void s5l8940_i2c_write(void *opaque, hwaddr addr, uint64_t val64, unsigned size)
++{
++    S5L8940I2CState *s = opaque;
++    uint32_t val = val64;
++
++    if (i2c_trace()) {
++        qemu_log("%s: write 0x%02" HWADDR_PRIx " <- 0x%08x\n",
++                 object_get_canonical_path_component(OBJECT(s)), addr, val);
++    }
++    switch (addr) {
++    case I2C_MTXFIFO:
++        s5l8940_i2c_command(s, val);
++        break;
++    case I2C_REG08:
++        s->reg08 = val;
++        break;
++    case I2C_REG0C:
++        s->reg0c = val;
++        break;
++    case I2C_REG10:
++        s->reg10 = val;
++        break;
++    case I2C_SMSTA:
++        s->smsta &= ~val;
++        break;
++    case I2C_IMASK:
++        s->imask = val;
++        break;
++    case I2C_CTL:
++        s->ctl = val;
++        break;
++    case 0x20 ... 0x3c:
++        s->hi[(addr - 0x20) / 4] = val;
++        break;
++    default:
++        qemu_log_mask(LOG_UNIMP, "s5l8940.i2c: write 0x%x to 0x%" HWADDR_PRIx "\n", val, addr);
++        return;
++    }
++    s5l8940_i2c_update(s);
++}
++
++static const MemoryRegionOps s5l8940_i2c_ops = {
++    .read = s5l8940_i2c_read,
++    .write = s5l8940_i2c_write,
++    .endianness = DEVICE_LITTLE_ENDIAN,
++    .valid.min_access_size = 4,
++    .valid.max_access_size = 4,
++};
++
++static void s5l8940_i2c_reset_hold(Object *obj, ResetType type)
++{
++    S5L8940I2CState *s = S5L8940_I2C(obj);
++
++    s->smsta = s->imask = s->ctl = s->reg08 = s->reg0c = s->reg10 = 0;
++    memset(s->hi, 0, sizeof(s->hi));
++    s->in_xfer = false;
++    s->rx_head = s->rx_count = 0;
++    s5l8940_i2c_update(s);
++}
++
++static void s5l8940_i2c_init(Object *obj)
++{
++    S5L8940I2CState *s = S5L8940_I2C(obj);
++    SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
++
++    memory_region_init_io(&s->iomem, obj, &s5l8940_i2c_ops, s, "s5l8940.i2c", 0x1000);
++    sysbus_init_mmio(sbd, &s->iomem);
++    sysbus_init_irq(sbd, &s->irq);
++    s->bus = i2c_init_bus(DEVICE(obj), "i2c");
++}
++
++static void s5l8940_i2c_class_init(ObjectClass *klass, const void *data)
++{
++    RESETTABLE_CLASS(klass)->phases.hold = s5l8940_i2c_reset_hold;
++}
++
++/* ---- D1881 PMU: 256 one-byte registers behind a one-byte register address ---- */
++
++struct S5L8940D1881State {
++    I2CSlave parent_obj;
++
++    bool addressing;
++    uint8_t reg;
++    uint8_t regs[256];
++};
++
++static int d1881_event(I2CSlave *i2c, enum i2c_event event)
++{
++    S5L8940D1881State *s = S5L8940_D1881(i2c);
++
++    if (event == I2C_START_SEND) {
++        s->addressing = true;
++    }
++    return 0;
++}
++
++static uint8_t d1881_recv(I2CSlave *i2c)
++{
++    S5L8940D1881State *s = S5L8940_D1881(i2c);
++    uint8_t reg = s->reg++;
++
++    if (i2c_trace()) {
++        qemu_log("d1881: read  0x%02x -> 0x%02x\n", reg, s->regs[reg]);
++    }
++    return s->regs[reg];
++}
++
++static int d1881_send(I2CSlave *i2c, uint8_t data)
++{
++    S5L8940D1881State *s = S5L8940_D1881(i2c);
++
++    if (s->addressing) {
++        s->addressing = false;
++        s->reg = data;
++        return 0;
++    }
++    if (i2c_trace()) {
++        qemu_log("d1881: write 0x%02x <- 0x%02x\n", s->reg, data);
++    }
++    s->regs[s->reg++] = data;
++    return 0;
++}
++
++static void d1881_reset_hold(Object *obj, ResetType type)
++{
++    S5L8940D1881State *s = S5L8940_D1881(obj);
++
++    s->addressing = false;
++    s->reg = 0;
++    memset(s->regs, 0, sizeof(s->regs));
++}
++
++static void d1881_class_init(ObjectClass *klass, const void *data)
++{
++    I2CSlaveClass *k = I2C_SLAVE_CLASS(klass);
++
++    k->event = d1881_event;
++    k->recv = d1881_recv;
++    k->send = d1881_send;
++    RESETTABLE_CLASS(klass)->phases.hold = d1881_reset_hold;
++}
++
++static const TypeInfo s5l8940_i2c_types[] = {
++    {
++        .name = TYPE_S5L8940_I2C,
++        .parent = TYPE_SYS_BUS_DEVICE,
++        .instance_size = sizeof(S5L8940I2CState),
++        .instance_init = s5l8940_i2c_init,
++        .class_init = s5l8940_i2c_class_init,
++    },
++    {
++        .name = TYPE_S5L8940_D1881,
++        .parent = TYPE_I2C_SLAVE,
++        .instance_size = sizeof(S5L8940D1881State),
++        .class_init = d1881_class_init,
++    },
++};
++
++DEFINE_TYPES(s5l8940_i2c_types)
+diff --git a/hw/arm/s5l8940_pmgr.c b/hw/arm/s5l8940_pmgr.c
+new file mode 100644
+index 0000000000..1f78307009
+--- /dev/null
++++ b/hw/arm/s5l8940_pmgr.c
+@@ -0,0 +1,102 @@
++/*
++ * S5L8940 ("A5") PMGR, DT "pmgr,s5l8940x" (AppleS5L8940XPerformanceController),
++ * first window only (reg 0xF100000, 0x7000; the DT's six other windows stay
++ * unimplemented). Bring-up model: what 7.1.2 and 9.3.5 poll on is answered, the
++ * rest is plain storage.
++ *
++ * - Clock gates at 0x1010 + 4n, through 0x117c on this chip: as on the A4
++ *   (s5l8930_pmgr.c), bits 0-3 request a state and bits 4-7 report it, bit 31
++ *   is a reset pulse. The kernel writes 0xf and reads back; with nothing
++ *   following the request it panicked "Power gate 0x6c enabled before clock
++ *   was enabled". Here the state follows at once and the pulse self-clears.
++ * - Clock configs, read 0x38-0x104 at boot: bit 30 is the A4's change-pending
++ *   bit; a write completes at once, so it never reads set.
++ * - 0x38 is also the CPU clock config iBoot's cpu-clk-cfgs entries are made
++ *   from (n78_kboot.py): source in bits 28-29, divider in bits 0-4.
++ * The A5's timebase is the AIC's (s5l8940_aic.c), so there is no timer here.
++ */
++#include "qemu/osdep.h"
++#include "qemu/log.h"
++#include "qemu/module.h"
++#include "hw/arm/s5l8940.h"
++
++#define PMGR_SIZE           0x8000
++#define CLKCFG_START        0x38
++#define CLKCFG_END          0x108
++#define CLKCFG_BUSY         (1u << 30)
++#define GATE_START          0x1010
++#define GATE_END            0x1180
++#define GATE_REQ            0x0000000fu
++#define GATE_ACT_SHIFT      4
++#define GATE_RESET          (1u << 31)
++
++struct S5L8940PMGRState {
++    SysBusDevice parent_obj;
++
++    MemoryRegion iomem;
++    uint32_t regs[PMGR_SIZE / 4];
++};
++
++static uint64_t s5l8940_pmgr_read(void *opaque, hwaddr addr, unsigned size)
++{
++    S5L8940PMGRState *s = opaque;
++
++    return s->regs[addr / 4];
++}
++
++static void s5l8940_pmgr_write(void *opaque, hwaddr addr, uint64_t val64, unsigned size)
++{
++    S5L8940PMGRState *s = opaque;
++    uint32_t val = val64;
++
++    if (addr >= GATE_START && addr < GATE_END) {
++        val &= ~(GATE_RESET | (GATE_REQ << GATE_ACT_SHIFT));
++        val |= (val & GATE_REQ) << GATE_ACT_SHIFT;
++    } else if (addr >= CLKCFG_START && addr < CLKCFG_END) {
++        val &= ~CLKCFG_BUSY;
++    }
++    s->regs[addr / 4] = val;
++}
++
++static const MemoryRegionOps s5l8940_pmgr_ops = {
++    .read = s5l8940_pmgr_read,
++    .write = s5l8940_pmgr_write,
++    .endianness = DEVICE_LITTLE_ENDIAN,
++    .valid.min_access_size = 4,
++    .valid.max_access_size = 4,
++};
++
++static void s5l8940_pmgr_reset_hold(Object *obj, ResetType type)
++{
++    S5L8940PMGRState *s = S5L8940_PMGR(obj);
++
++    memset(s->regs, 0, sizeof(s->regs));
++}
++
++static void s5l8940_pmgr_init(Object *obj)
++{
++    S5L8940PMGRState *s = S5L8940_PMGR(obj);
++
++    memory_region_init_io(&s->iomem, obj, &s5l8940_pmgr_ops, s, "s5l8940.pmgr", PMGR_SIZE);
++    sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->iomem);
++}
++
++static void s5l8940_pmgr_class_init(ObjectClass *klass, const void *data)
++{
++    RESETTABLE_CLASS(klass)->phases.hold = s5l8940_pmgr_reset_hold;
++}
++
++static const TypeInfo s5l8940_pmgr_info = {
++    .name = TYPE_S5L8940_PMGR,
++    .parent = TYPE_SYS_BUS_DEVICE,
++    .instance_size = sizeof(S5L8940PMGRState),
++    .instance_init = s5l8940_pmgr_init,
++    .class_init = s5l8940_pmgr_class_init,
++};
++
++static void s5l8940_pmgr_register_types(void)
++{
++    type_register_static(&s5l8940_pmgr_info);
++}
++
++type_init(s5l8940_pmgr_register_types)
+diff --git a/include/hw/arm/s5l8940.h b/include/hw/arm/s5l8940.h
+new file mode 100644
+index 0000000000..d2a4a65580
+--- /dev/null
++++ b/include/hw/arm/s5l8940.h
+@@ -0,0 +1,96 @@
++/*
++ * Apple S5L8940X/S5L8942X ("A5"): addresses and the models only A5 has.
++ *
++ * The A5's arm-io window is 0x30000000 (DT ranges 0x0 -> 0x30000000, len
++ * 0x10000000). Most blocks keep the offsets they had in the A4's window at
++ * 0x80000000 (docs/research/ios8-10-step0.md §1.2 in ClassicTouch), so the
++ * A4 models are reused at A5_IO(offset).
++ */
++#ifndef HW_ARM_S5L8940_H
++#define HW_ARM_S5L8940_H
++
++#include "hw/core/sysbus.h"
++#include "qom/object.h"
++
++#define S5L8940_IO_BASE          0x30000000
++#define S5L8940_IO_SIZE          0x10000000
++#define A5_IO(off)               (S5L8940_IO_BASE + (off))
++
++#define S5L8940_DRAM_BASE        0x80000000
++#define S5L8940_UART_BASE(n)     A5_IO(0x2500000 + (n) * 0x100000)
++#define S5L8940_PMGR_BASE        A5_IO(0xF100000)
++#define S5L8940_AIC_BASE         A5_IO(0xF200000)
++#define S5L8940_AIC_SIZE         0x10000
++
++/*
++ * AIC: external interrupt lines, and CPUs it can target (A5 is dual-core).
++ * 192 lines: 9.3.5's AppleInterruptController sizes the DT's 24-byte
++ * ipid-mask from AicCap0 and panics on any other count. The cpu nodes'
++ * 0xc0-0xc3 sit just past them, the IPI numbers.
++ */
++#define S5L8940_AIC_NR_IRQS      192
++#define S5L8940_AIC_MAX_CPUS     2
++
++#define TYPE_S5L8940_AIC "s5l8940.aic"
++OBJECT_DECLARE_SIMPLE_TYPE(S5L8940AICState, S5L8940_AIC)
++
++/* I2C (DT i2c0/i2c2), the GPIO block the A4 model serves, and their AIC lines. */
++#define S5L8940_I2C_BASE(n)      A5_IO(0x3200000 + (n) * 0x100000)
++#define S5L8940_GPIO_BASE        A5_IO(0xFA00000)
++#define S5L8940_IRQ_I2C0         0x12
++#define S5L8940_IRQ_I2C2         0x14
++#define S5L8940_IRQ_GPIO         0x77
++#define S5L8940_GPIO_PORTS       28     /* DT #gpio-ports */
++#define S5L8940_GPIO_INT_GROUPS  8      /* DT #interrupt-groups */
++#define S5L8940_D1881_ADDR       0x74   /* i2c0/pmu reg */
++
++/*
++ * CDMA and its AES contexts (DT arm-io/cdma, cdma-version 3): the A4's block
++ * (hw/arm/s5l8930_cdma.c) with 0x2b channel slots; the DT lists channels 1 to
++ * 0x2a on AIC lines 0x33 to 0x5c, and reg sizes the AES window for 9 contexts.
++ */
++#define S5L8940_CDMA_BASE        A5_IO(0x7000000)
++#define S5L8940_CDMA_CHANNELS    0x2b
++#define S5L8940_AES_BASE         A5_IO(0x7800000)
++#define S5L8940_IRQ_CDMA(ch)     (0x32 + (ch))
++
++/*
++ * Display (DT clcd, rgbout, tv-out, mipi-dsim): the A4's blocks
++ * (hw/arm/s5l8930_display.c, ipod_touch_mipi_dsi.c). CLCD, TV-out and DSIM
++ * keep their A4 offsets; the two DisplayPipes moved to 0xa100000 (clcd reg[0])
++ * and 0xa200000 (rgbout reg[0]), and RGBOUT's control block is rgbout reg[1].
++ * clcd interrupts are {pipe0, CLCD}, rgbout's first is its pipe.
++ */
++#define S5L8940_DISP_PIPE0_BASE  A5_IO(0xa100000)
++#define S5L8940_CLCD_BASE        A5_IO(0x9200000)
++#define S5L8940_RGBOUT_BASE      A5_IO(0xa200000)
++#define S5L8940_TVOUT_BASE       A5_IO(0x9400000)
++#define S5L8940_DSIM_BASE        A5_IO(0x9500000)
++#define S5L8940_RGBOUT_CTRL_BASE A5_IO(0x9600000)
++#define S5L8940_IRQ_DSIM         0x29
++#define S5L8940_IRQ_CLCD         0x2a
++#define S5L8940_IRQ_DISP_PIPE0   0x2b
++#define S5L8940_IRQ_RGBOUT_PIPE  0x2c
++
++/*
++ * USB (DT otgphyctrl, usb-complex): the A4's layout at the A5's window. usb-complex ranges map its
++ * children from 0x6100000: usb-device (Synopsys OTG) +0, usb-ehci +0x300000, usb-ohci0 +0x400000,
++ * usb-ohci1 +0x500000, on AIC 0x0b to 0x0e. The same in 7.1.2's and 9.3.5's DTs.
++ */
++#define S5L8940_USB_PHY_BASE     A5_IO(0x6000000)
++#define S5L8940_USB_OTG_BASE     A5_IO(0x6100000)
++#define S5L8940_USB_EHCI_BASE    A5_IO(0x6400000)
++#define S5L8940_USB_OHCI0_BASE   A5_IO(0x6500000)
++#define S5L8940_IRQ_USB_OTG      0x0b
++#define S5L8940_IRQ_USB_EHCI     0x0c
++#define S5L8940_IRQ_USB_OHCI0    0x0d
++
++#define TYPE_S5L8940_PMGR "s5l8940.pmgr"
++OBJECT_DECLARE_SIMPLE_TYPE(S5L8940PMGRState, S5L8940_PMGR)
++
++#define TYPE_S5L8940_I2C "s5l8940.i2c"
++OBJECT_DECLARE_SIMPLE_TYPE(S5L8940I2CState, S5L8940_I2C)
++#define TYPE_S5L8940_D1881 "s5l8940.d1881"
++OBJECT_DECLARE_SIMPLE_TYPE(S5L8940D1881State, S5L8940_D1881)
++
++#endif
