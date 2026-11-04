@@ -5,7 +5,7 @@ Run stock iPhone OS 1 through iOS 10 on an iPhone, for anyone who wants to revis
 > Work in progress. Nothing has been released and there is no build to download.
 
 <p>
-  <img src="docs/reports/img/ios14pro-935-window.png" width="200" alt="iOS 9.3.5 running in the app on an iPhone 14 Pro">
+  <img src="docs/reports/img/a6-app-14pro-window.png" width="200" alt="iOS 10.3.4 running in the app on an iPhone 14 Pro">
   <img src="docs/reports/img/a6-1034-wallpaper-lock.png" width="200" alt="iOS 10.3.4 lock screen on the emulated iPhone 5">
   <img src="docs/reports/img/m2gl-device-n90ap-7.1.2-stikdebug-jit256-home.png" width="200" alt="iOS 7.1.2 running in the app on an iPhone 18 Pro">
 </p>
@@ -21,15 +21,16 @@ Run stock iPhone OS 1 through iOS 10 on an iPhone, for anyone who wants to revis
 | 2011 | iPhone 4 | A4 | iOS 5.1.1 | Through Setup Assistant | Home screen | Not tried |
 | 2012 | iPhone 3GS | S5L8920 | iOS 6.1.6 | Home screen | Home screen | 18 Pro, about 23 s |
 | 2013 | iPhone 4 | A4 | iOS 7.1.2 | Home screen | Home screen | 18 Pro, about 37 s |
-| 2013 | iPod touch (5th gen) | **A5** (new machine) | iOS 7.1.2 | Home screen | Settings | 14 Pro, 142 s |
-| 2015 | iPod touch (5th gen) | **A5** (new machine) | iOS 9.3.5 | Settings | Settings | 14 Pro, 141 s |
-| 2016 | iPhone 5 | **A6** (new machine) | iOS 10.3.4 | Settings, with wallpaper; wakes from screen off | Settings | 14 Pro, 146 s |
+| 2013 | iPod touch (5th gen) | **A5** (new machine) | iOS 7.1.2 | Home screen | Settings | 14 Pro, lock screen in 41 s (see below) |
+| 2015 | iPod touch (5th gen) | **A5** (new machine) | iOS 9.3.5 | Settings | Settings | 14 Pro, 172 s |
+| 2016 | iPhone 5 | **A6** (new machine) | iOS 10.3.4 | Settings, with wallpaper; wakes from screen off | Settings | 14 Pro, 102 s |
 
-- Times are from boot to the home screen. On the iPhone 18 Pro, JIT comes from [StikDebug](https://github.com/StikDebug/StikDebug) on the phone, with no computer needed. On the iPhone 14 Pro, JIT currently comes from a Mac over a cable, and over 40 s of each boot goes to preparing the code buffer across that cable.
-- A5 and A6 are machines this project added to qemu-ios. As far as we know, no public emulator went past iOS 7.1.2 on the A4 before. See [`docs/reports/a5-step1.md`](docs/reports/a5-step1.md), [`docs/reports/a6-step1.md`](docs/reports/a6-step1.md), [`docs/reports/a6-app.md`](docs/reports/a6-app.md) and [`docs/reports/ios-device-14pro.md`](docs/reports/ios-device-14pro.md).
+- Times are from boot to the home screen. On both phones JIT comes from [StikDebug](https://github.com/StikDebug/StikDebug) on the phone, with no computer needed (LocalDevVPN has to be on). On the iPhone 14 Pro (iOS 27.0.1), StikDebug prepares the 256 MiB code buffer in about 1.2 s.
+- On the phone, the app's automatic slide-to-unlock for iOS 7 and 9 often fails, so 9.3.5 took 8 tries and 7.1.2 stayed on its lock screen; iOS 10 unlocks with a Home press. With JIT from a tethered Mac instead, 7.1.2 reached the home screen in 142 s.
+- A5 and A6 are machines this project added to qemu-ios. As far as we know, no public emulator went past iOS 7.1.2 on the A4 before. See [`docs/reports/a5-step1.md`](docs/reports/a5-step1.md), [`docs/reports/a6-step1.md`](docs/reports/a6-step1.md), [`docs/reports/a6-app.md`](docs/reports/a6-app.md), [`docs/reports/ios-device-14pro.md`](docs/reports/ios-device-14pro.md) and [`docs/reports/stikdebug-14pro.md`](docs/reports/stikdebug-14pro.md).
 - Graphics run on the phone's own GPU (OpenGL ES). The app opens on a timeline of systems; tap one to boot it. Switching systems restarts the app.
 
-**Not done yet:** iOS 8; sound; multi-touch; downloading firmware and building devices on the phone itself; JIT without a computer on iOS 27.0.1. **Known issues:** touch on the A5 is off by about 100 pixels vertically; iOS 10 shows the wrong battery level.
+**Not done yet:** iOS 8; sound; multi-touch; downloading firmware and building devices on the phone itself. **Known issues:** the automatic slide-to-unlock on the phone (above); touch on the A5 is off by about 100 pixels vertically; iOS 10 shows the wrong battery level.
 
 ## How it works
 

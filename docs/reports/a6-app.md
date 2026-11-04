@@ -84,3 +84,7 @@ The "Cannot Use Device" notification on the iPod touch 5 7.1.2 lock screen was a
 ## 8. Files touched this round
 
 `app/ClassicTouch/DeviceProfile.swift`, `Theme.swift`, `LibraryViewController.swift`, `GuestText.swift`, `EmulatorViewController.swift`; `patches/a5-n78-ios-ui.patch`; `scripts/ios/sim-boot.sh`, `sim-settings.sh`, `device-boot.sh`; this report and its screenshots; `README.md` (status table) and `CHANGELOG.md`.
+
+## 9. StikDebug
+
+JIT from StikDebug on the phone, without the Mac's debugger, is in `docs/reports/stikdebug-14pro.md`: iOS 10.3.4 reached the home screen in 102 s.
