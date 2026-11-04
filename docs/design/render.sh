@@ -1,7 +1,7 @@
 #!/bin/zsh
-# 把 mockups/ 里的样稿用无头 Chrome 截成 PNG，放到 docs/reports/img/ui-*.png。
-# 手机屏按 402 × 874 pt、3 倍出图（1206 × 2622，和 iPhone 18 Pro 截图一样大）；总览图按 2 倍。
-# 用法：docs/design/render.sh [名字…]，不带参数就全部重出。名字如 a-home、overview。
+# Screenshot the mockups in mockups/ to PNG with headless Chrome, into docs/reports/img/ui-*.png.
+# Phone screens are rendered at 402 × 874 pt, 3x (1206 × 2622, the same size as an iPhone 18 Pro screenshot); the overview at 2x.
+# Usage: docs/design/render.sh [name…]; with no arguments, regenerates all of them. Names are like a-home, overview.
 # SPDX-License-Identifier: GPL-2.0-or-later
 set -euo pipefail
 here=${0:A:h}

@@ -1,14 +1,14 @@
-# 上游克隆、构建产物、固件、设备镜像：都不进仓库
+# Upstream clones, build products, firmware, device images: none of these go into the repository
 upstream/
 work/
 *.ipsw
 *.ctpack
 
-# Xcode 和系统
+# Xcode and the system
 DerivedData/
 xcuserdata/
 *.xcuserstate
 .DS_Store
 
-# 本机的 Claude 设置
+# This machine's Claude settings
 .claude/settings.local.json

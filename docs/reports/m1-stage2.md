@@ -1,149 +1,149 @@
-# M1 第二阶段：JIT 改走通用协议
+# M1 stage 2: JIT moves to the universal protocol
 
-- 日期：2026-11-01
-- 执行会话：M1 执行会话（接第一阶段）。范围是决策会话派的第二阶段：新 JIT 协议补丁、调试器支持、模拟器回归、真机 256 MB 重测、iPod touch 2 代长待机。中途决策会话三次收窄：取消长待机测试；真机每台只测一轮 256 MB；不做 512 MB 和「不开镜像」的对照。
-- 没做的：没碰 iPhone 14 Pro，没装 StikDebug，没拷 6 到 7 GB 的设备符号，没 commit。
+- Date: 2026-11-01
+- Execution session: M1 execution session (continuing from stage 1). The scope is stage 2 as assigned by the decision session: the new JIT protocol patch, debugger support, simulator regression, a 256 MB re-test on device, and a long standby test on the iPod touch 2nd gen. The decision session narrowed the scope three times along the way: the long standby test was cancelled; each device gets only one 256 MB round; no 512 MB run and no "without mirroring" comparison.
+- Not done: did not touch the iPhone 14 Pro, did not install StikDebug, did not copy the 6 to 7 GB of device symbols, did not commit.
 
-## 0. 结论
+## 0. Conclusions
 
-1. **新协议能用，但没达到「256 MB 几秒准备好」的目标。** 补丁 `patches/ios-txm-jit-protocol.patch` 让 QEMU 发 `brk #0xf00d`（StikDebug universal.js 的约定）。Mac 上的调试器用 debugserver 的 `_M` 分配可执行内存，**256 MB 只要 0.02 秒**；QEMU 映射好后发「脱离」，之后 App 不再带着调试器跑。iPhone 18 Pro 上 32 MB 端到端成功 4 次，都开到了主屏。
-2. **分配之后仍要调试器把每一页写一遍，这一步受连接速度限制。** 实测只分配不写的话，生成的代码执行不了：App 单核满载、画面不动。Wi-Fi 下有两种写法：整块写约 2.0 到 2.2 MB/s，32 MB 用 15 到 17 秒；逐页写 1 字节（StikDebug 的做法）每页约 29 毫秒，32 MB 用 60 秒。照此推算，256 MB 整块写约 2 分钟、逐页写约 8 分钟。旧协议读出再写回 256 MB 是 322 秒。StikDebug 在手机本机上跑，往返几乎为零，逐页写才快。从 Mac 隔着网络调试，这一步快不起来。
-3. **256 MB 的真机正式测量没完成，两台的 JIT 锁屏时间和待机 CPU 都没有新数。** 原因是我的调试器脚本（`lldb_jit_runner.py`）在 Xcode 27.2 的 LLDB 下不稳，后面三段的细节见第 4 节：
-   - 先是两个测量脚本同时在跑、互相把 App 杀掉，造成连续挂载失败。现在加了单实例锁。
-   - 把 QEMU 用到的信号设成「LLDB 内部处理」时，挂载有时卡死（Resume timed out）。
-   - 改成「停下再逐个放行」以后挂载稳了，但又改不动寄存器：PC 跳不过 `brk`，同一个请求反复触发。
+1. **The new protocol works, but it does not reach the goal of "256 MB ready in a few seconds".** The patch `patches/ios-txm-jit-protocol.patch` makes QEMU issue `brk #0xf00d` (the convention of StikDebug's universal.js). The debugger on the Mac allocates executable memory with debugserver's `_M`, and **256 MB takes only 0.02 seconds**; once QEMU has mapped it, it sends "detach", and from then on the App no longer runs with a debugger attached. On the iPhone 18 Pro, 32 MB succeeded end to end 4 times, each reaching the home screen.
+2. **After allocation the debugger still has to write every page once, and this step is limited by connection speed.** Measured: if memory is only allocated and not written, the generated code cannot execute: the App pins one core and the screen does not move. Over Wi-Fi there are two ways to write: writing the whole block runs at about 2.0 to 2.2 MB/s, so 32 MB takes 15 to 17 seconds; writing 1 byte per page (what StikDebug does) takes about 29 ms per page, so 32 MB takes 60 seconds. Extrapolating, 256 MB takes about 2 minutes as a whole-block write and about 8 minutes page by page. The old protocol's read-and-write-back of 256 MB took 322 seconds. StikDebug runs on the phone itself, where the round trip is nearly zero, which is why page-by-page writing is fast there. Debugging from the Mac across the network, this step cannot be made fast.
+3. **The formal 256 MB measurement on device was not completed; there are no new numbers for JIT lock screen time or idle CPU on either device.** The reason is that my debugger script (`lldb_jit_runner.py`) is unstable under the LLDB in Xcode 27.2. Details of the three phases below are in section 4:
+   - First, two measurement scripts were running at the same time and kept killing each other's App, causing repeated attach failures. A single-instance lock has been added.
+   - With the signals QEMU uses set to "handled internally by LLDB", attaching sometimes hung (Resume timed out).
+   - After switching to "stop, then pass each one through", attaching became stable, but registers could no longer be changed: the PC could not step past `brk`, and the same request fired again and again.
 
-   按决策会话的约定，在这里停下。手机上的 App 已结束，没有残留进程。
-4. 32 MB 下新旧协议的开机表现一致，区别只在准备耗时：
-   - QEMU 亮屏：新协议 12.0 到 15.9 秒，旧协议 12.8 秒。
-   - 扣掉停顿到锁屏：新协议约 16 到 18 秒，旧协议约 18 秒。
-   - 主屏待机 CPU：新协议 23% 到 28%，旧协议 21%。
-5. 模拟器回归和第一阶段一致，改动只影响真机 JIT。iPod touch 2 代长待机测试按指示取消，SecureROM 占位文件列为「已知风险，未测」（第 5 节）。
+   As agreed with the decision session, I stopped here. The App on the phone has been terminated and no processes are left over.
+4. At 32 MB, boot behavior is the same under the new and old protocols; the only difference is the preparation time:
+   - QEMU screen on: new protocol 12.0 to 15.9 seconds, old protocol 12.8 seconds.
+   - To lock screen, excluding the pause: new protocol about 16 to 18 seconds, old protocol about 18 seconds.
+   - Home screen idle CPU: new protocol 23% to 28%, old protocol 21%.
+5. The simulator regression matches stage 1; the change only affects JIT on device. The iPod touch 2nd gen long standby test was cancelled as instructed, and the SecureROM placeholder file is listed as "known risk, untested" (section 5).
 
-## 1. 补丁：`patches/ios-txm-jit-protocol.patch`
+## 1. Patch: `patches/ios-txm-jit-protocol.patch`
 
-改 `tcg/region.c`，只在 iOS 真机、iOS 26 以上、JIT 构建、有调试器时生效：
+Changes `tcg/region.c`, and only takes effect on a real iOS device, iOS 26 or later, JIT build, with a debugger attached:
 
-- `jit26_prepare_region(0, size)`：`mov x16, #1; brk #0xf00d; ret`，x0 为 0 表示请调试器分配，x1 是长度，调试器把地址写回 x0。返回值不是页对齐、或低于 4 GiB 的 `__PAGEZERO`，就当调试器没处理，报错退出。
-- 拿到 RX 地址后，用 `mach_vm_remap` 做一个别名再 `mprotect` 成 RW，作为 TCG 写代码的那一侧（split-wx）。
-- `jit26_detach()`：`mov x16, #0; brk #0xf00d`，请调试器脱离。QEMU 只映射一次代码区，之后不再需要调试器。
-- 环境变量 `QEMU_IOS_JIT_PROTOCOL=legacy` 保留旧的 `brk #0x69` 读写回，方便对照。App 的启动参数 `-jitprotocol legacy` 会设这个变量。
-- 写法参考 vytska69/Ios-emul 的 0016 补丁，协议以 StikDebug 的 universal.js 为准（`_M<长度>,rx` 分配，`prepare_memory_region` 每 16 KiB 页写 1 字节，见 StikDebug 的 `JSDebugSupport.swift`）。
-- 补丁开头写了原因和基于的上游提交（b225694505，叠在 `ios-host-gles-option.patch` 之后）。四份 dylib 都已重编，真机 JIT 版里能看到 3 处 `brk #0xf00d`。
+- `jit26_prepare_region(0, size)`: `mov x16, #1; brk #0xf00d; ret`. x0 = 0 asks the debugger to allocate, x1 is the length, and the debugger writes the address back into x0. If the return value is not page-aligned, or is below the 4 GiB `__PAGEZERO`, it is treated as the debugger not having handled the request, and QEMU exits with an error.
+- After getting the RX address, it makes an alias with `mach_vm_remap` and then `mprotect`s it to RW, as the side TCG writes code to (split-wx).
+- `jit26_detach()`: `mov x16, #0; brk #0xf00d`, asking the debugger to detach. QEMU maps the code region only once and no longer needs the debugger after that.
+- The environment variable `QEMU_IOS_JIT_PROTOCOL=legacy` keeps the old `brk #0x69` read-and-write-back for comparison. The App launch argument `-jitprotocol legacy` sets this variable.
+- The implementation follows the 0016 patch in vytska69/Ios-emul; the protocol follows StikDebug's universal.js (`_M<length>,rx` to allocate, `prepare_memory_region` writes 1 byte per 16 KiB page; see StikDebug's `JSDebugSupport.swift`).
+- The patch header gives the reason and the upstream commit it is based on (b225694505, stacked after `ios-host-gles-option.patch`). All four dylibs have been rebuilt, and 3 instances of `brk #0xf00d` can be seen in the device JIT build.
 
-这个补丁同时也是将来用 StikDebug 脱离电脑拿 JIT 的前提：universal.js 对 `brk #0x69` 只回一个错误码。
+This patch is also the prerequisite for later getting JIT through StikDebug without a computer: universal.js only returns an error code for `brk #0x69`.
 
-## 2. 调试器端：`scripts/ios/lldb_jit_runner.py`
+## 2. Debugger side: `scripts/ios/lldb_jit_runner.py`
 
-- 认 `brk #0xf00d`：x16=1 时用 `SBProcess.AllocateMemory(size, 可读可执行)` 分配，再按 `JIT_TOUCH` 写：
-  - `bulk`（默认）：整块写零。
-  - `page`：逐页写 1 字节。
-  - `none`：只分配不写。
+- Recognizes `brk #0xf00d`: when x16=1, it allocates with `SBProcess.AllocateMemory(size, readable and executable)`, then writes according to `JIT_TOUCH`:
+  - `bulk` (default): write zeros over the whole block.
+  - `page`: write 1 byte per page.
+  - `none`: allocate only, do not write.
 
-  写完把地址写回 x0、PC 加 4。x16=0 时 detach 后退出。旧的 `brk #0x69` 照常支持。
-- 绕开的 LLDB 问题（第一阶段已有）：
-  - 不用命令行驱动的停止钩子，改用 SB API 同步模式；
-  - 关闭并行加载模块；
-  - `target.memory-module-load-level minimal`：本机没有手机 24B119 的符号缓存；
-  - gdb-remote 包超时调到 60 秒。
-- 第二阶段新加：
-  - 写寄存器后读回核对，不对就用 `register write` 再写；
-  - 同一个准备请求出现第三次就结束进程，不让手机一直冻着；
-  - 连续 3 次 Resume timed out 就先让包日志落盘再退出；
-  - 可选的 gdb-remote 包日志（`LLDB_PACKET_LOG`）。
-- `device-boot.sh` 新增：
-  - `TBSIZE`、`JITPROTO`、`JIT_TOUCH` 参数；
-  - 挂载卡住自动重试（最多 3 次）；
-  - 单实例锁；
-  - 摘要里记录当时 iPhone 镜像 App 是否在运行、Mac 负载、调试器准备耗时。
-- App 新增：
-  - `-jitprotocol` 参数；
-  - JIT 准备期间状态栏写明「画面会停住一会儿」，并先画出来再起 QEMU；
-  - 等调试器之前先把 JIT 版的库加载好；
-  - `-qemuargs` 改成直接读原始参数（UserDefaults 会把以「-」开头的值当成新的键）。
+  After writing, it writes the address back into x0 and adds 4 to PC. When x16=0, it detaches and exits. The old `brk #0x69` is still supported as before.
+- LLDB problems worked around (already present in stage 1):
+  - no stop hooks driven from the command line; the SB API in synchronous mode is used instead;
+  - parallel module loading is turned off;
+  - `target.memory-module-load-level minimal`: this machine has no symbol cache for the phone's 24B119;
+  - the gdb-remote packet timeout is raised to 60 seconds.
+- New in stage 2:
+  - after writing registers, read them back to verify, and if they are wrong, write again with `register write`;
+  - if the same prepare request appears a third time, terminate the process so the phone does not stay frozen;
+  - after 3 consecutive Resume timed out, flush the packet log to disk first and then exit;
+  - an optional gdb-remote packet log (`LLDB_PACKET_LOG`).
+- New in `device-boot.sh`:
+  - `TBSIZE`, `JITPROTO`, `JIT_TOUCH` parameters;
+  - automatic retry when attaching hangs (up to 3 times);
+  - single-instance lock;
+  - the summary records whether the iPhone Mirroring App was running at the time, the Mac load, and the debugger preparation time.
+- New in the App:
+  - the `-jitprotocol` argument;
+  - during JIT preparation the status bar says "The screen will freeze for a moment", and this is drawn before QEMU starts;
+  - the JIT build of the library is loaded before waiting for the debugger;
+  - `-qemuargs` now reads the raw arguments directly (UserDefaults treats a value starting with "-" as a new key).
 
-## 3. 测量结果
+## 3. Measurements
 
-### 3.1 模拟器回归（新补丁不影响模拟器）
+### 3.1 Simulator regression (the new patch does not affect the simulator)
 
-| 设备 | 后端 | QEMU 亮屏 | 锁屏 | 主屏 | 主屏待机 CPU | 最大占用 |
+| Device | Backend | QEMU screen on | Lock screen | Home screen | Home screen idle CPU | Peak footprint |
 |---|---|---|---|---|---|---|
-| iPod touch 2 代 3.1.3 | JIT 256 MB | 8.8 秒 | 11 秒 | 19 秒 | 20% | 703 MB |
-| iPod touch 2 代 3.1.3 | 解释器 | 36.3 秒 | 54 秒 | 64 秒 | 77% | 399 MB |
-| iPhone 3GS 6.1.6 | JIT 256 MB | 18.6 秒 | 19 秒 | 48 秒 | 12% | 799 MB |
+| iPod touch 2nd gen 3.1.3 | JIT 256 MB | 8.8 s | 11 s | 19 s | 20% | 703 MB |
+| iPod touch 2nd gen 3.1.3 | Interpreter | 36.3 s | 54 s | 64 s | 77% | 399 MB |
+| iPhone 3GS 6.1.6 | JIT 256 MB | 18.6 s | 19 s | 48 s | 12% | 799 MB |
 
-和第一阶段（10 秒、54 秒、19 秒到锁屏）一致。待机段核对过，没有事件，帧编号没变。
+Matches stage 1 (10 seconds, 54 seconds, 19 seconds to the lock screen). The idle segments were checked: no events, and the frame number did not change.
 
-### 3.2 iPhone 18 Pro，iPod touch 2 代 3.1.3，JIT，代码区 32 MB
+### 3.2 iPhone 18 Pro, iPod touch 2nd gen 3.1.3, JIT, 32 MB code region
 
-| 运行 | 协议、写法 | 准备耗时 | QEMU 亮屏 | 锁屏（扣停顿） | 锁屏时 CPU 秒 | 主屏待机 CPU | 占用 | 可用内存 |
+| Run | Protocol, write method | Preparation time | QEMU screen on | Lock screen (pause excluded) | CPU seconds at lock screen | Home screen idle CPU | Footprint | Available memory |
 |---|---|---|---|---|---|---|---|---|
-| 第一阶段 195249 | 旧协议，读出写回 | 46.4 秒 | 12.8 秒 | 约 18 秒 | 17.8 | 21% | 277 MB | 3099 MB |
-| 203400 | 新协议，逐页写 | 分配 0.10 秒 + 写 60.1 秒 | 12.3 秒 | 17 秒 | 16.6 | 23% | 242 MB | 3134 MB |
-| 203806 | 新协议，整块写 | 0.02 + 16.7 秒 | 12.0 秒 | 16 秒 | 15.8 | 25% | 247 MB | 3129 MB |
-| 204358 | 新协议，整块写 | 0.03 + 16.8 秒 | 12.8 秒 | 18 秒 | 17.9 | 25% | 248 MB | 3128 MB |
-| 204542 | 新协议，整块写 | 0.10 + 17.0 秒 | 15.9 秒 | 18 秒 | 17.4 | 28% | 250 MB | 3126 MB |
+| Stage 1 195249 | Old protocol, read and write back | 46.4 s | 12.8 s | about 18 s | 17.8 | 21% | 277 MB | 3099 MB |
+| 203400 | New protocol, page by page | allocate 0.10 s + write 60.1 s | 12.3 s | 17 s | 16.6 | 23% | 242 MB | 3134 MB |
+| 203806 | New protocol, whole block | 0.02 + 16.7 s | 12.0 s | 16 s | 15.8 | 25% | 247 MB | 3129 MB |
+| 204358 | New protocol, whole block | 0.03 + 16.8 s | 12.8 s | 18 s | 17.9 | 25% | 248 MB | 3128 MB |
+| 204542 | New protocol, whole block | 0.10 + 17.0 s | 15.9 s | 18 s | 17.4 | 28% | 250 MB | 3126 MB |
 
-- 全部走 Wi-Fi，Mac 1 分钟负载 3.3 到 3.7。各轮待机段（主屏后到退出前约 20 秒）都用 `check-idle.py` 核对过：没有脚本以外的事件，帧编号变化 0 到 1（状态栏时钟），可以用。
-- 「镜像」一栏只能记到 Mac 上的 iPhone 镜像 App 有没有在运行（这几轮都在），记不到镜像会话是不是正连着。
-- 只分配不写（`JIT_TOUCH=none`，256 MB，203629）：分配 0.02 秒、随即脱离，但 App 之后单核 100% 空转、帧编号停在 1、占用只有 25 到 38 MB，没开机。说明 TXM 确实只认调试器写过的页。
+- All runs over Wi-Fi, Mac 1-minute load 3.3 to 3.7. Each round's idle segment (about 20 seconds from the home screen until exit) was checked with `check-idle.py`: no events other than the script's, frame number change of 0 to 1 (the status bar clock), so the data is usable.
+- The "mirroring" column can only record whether the iPhone Mirroring App on the Mac was running (it was in all these rounds), not whether a mirroring session was actually connected.
+- Allocate only, no write (`JIT_TOUCH=none`, 256 MB, 203629): allocation took 0.02 seconds followed immediately by detach, but afterwards the App spun one core at 100%, the frame number stayed at 1, the footprint was only 25 to 38 MB, and it did not boot. This shows that TXM really only accepts pages the debugger has written.
 
-截图：`docs/reports/img/m1s2-device-n72ap-3.1.3-jit32-universal-home.png`（203806 那轮 App 自己存的窗口快照，主屏，状态栏显示 JIT）。
+Screenshot: `docs/reports/img/m1s2-device-n72ap-3.1.3-jit32-universal-home.png` (window snapshot saved by the App itself in run 203806, home screen, status bar shows JIT).
 
-### 3.3 256 MB 真机正式测量：没有完成
+### 3.3 Formal 256 MB measurement on device: not completed
 
-两台都没有拿到 256 MB 的新数。能给的只有推算：Wi-Fi 下整块写约 2.1 MB/s，256 MB 约 2 分钟；第一阶段同样在 Wi-Fi 下，旧协议读出写回用了 322 秒。插线（有线）的速度也没量到：用户插线那段时间，挂载正被下一节的问题卡住，一次也没成功。
+Neither device got new 256 MB numbers. All I can give is an extrapolation: over Wi-Fi, whole-block writing is about 2.1 MB/s, so 256 MB takes about 2 minutes; in stage 1, also over Wi-Fi, the old protocol's read-and-write-back took 322 seconds. The wired (cable) speed was not measured either: while the user had the cable plugged in, attaching was stuck on the problem described in the next section and never succeeded once.
 
-### 3.4 顺带更正第一阶段的待机 CPU
+### 3.4 Side note: correcting stage 1's idle CPU
 
-第一阶段 `summarize-run.py` 把 QEMU 退出后那几秒也算进了待机段，所以待机 CPU 偏低。按「主屏后 3 秒到退出前」重算：
+In stage 1, `summarize-run.py` also counted the few seconds after QEMU exited as part of the idle segment, so the idle CPU was too low. Recomputed as "3 seconds after the home screen until exit":
 
-| 第一阶段运行 | 原来报的 | 重算 |
+| Stage 1 run | Originally reported | Recomputed |
 |---|---|---|
-| 真机 iPod 解释器 | 50% | 61% |
-| 真机 3GS 解释器 | 91% | 108%（超过一个核） |
-| 真机 iPod JIT 32 MB | 18% | 21% |
-| 真机 3GS JIT 32 MB | 79% | 作废：决策会话已核对，那段时间有人点了设置 |
+| Device iPod interpreter | 50% | 61% |
+| Device 3GS interpreter | 91% | 108% (more than one core) |
+| Device iPod JIT 32 MB | 18% | 21% |
+| Device 3GS JIT 32 MB | 79% | Void: the decision session checked and someone tapped Settings during that period |
 
-脚本已改，第二阶段的数都按新口径算。
+The script has been fixed, and all stage 2 numbers use the new method.
 
-## 4. 卡在哪里：调试器端在 Xcode LLDB 下不稳
+## 4. Where it got stuck: the debugger side is unstable under Xcode's LLDB
 
-按时间顺序，每一段都有日志（`work/ios/runs/device/lldb-*.log`、`packets-*.log`）：
+In chronological order; every phase has logs (`work/ios/runs/device/lldb-*.log`, `packets-*.log`):
 
-1. **20:25 到 20:46，旧的信号设置**（SIGUSR1/2 等「不停下、LLDB 内部处理并递给进程」）：成功 6 次（含 4 次正式的 32 MB），失败 4 次。失败都是挂上后先来两次「没原因的停止」，接着每次继续都 `Resume timed out`。
-2. **20:40 到 21:10，误判阶段**：我先后以为是 Wi-Fi 延迟、手机锁屏、dyld 加载通知，各改了一轮，插上线也照样失败。最后发现 21:04 那次正式测量的脚本重试失败后一直没退出，后面的验证脚本和它同时在跑，两边都用 `--terminate-existing` 启动 App，互相把对方的 App 杀掉。20:41 以后的连续失败，至少有一部分是这个原因。已加单实例锁。
-3. **包日志里的另一个问题**（21:05，`packets-fail.log`）：QEMU 线程收到 SIGUSR2 停下（sigaltstack 协程靠它切栈），LLDB 恢复时发的是不带信号的 `c`，而不是 `vCont;…;C1f`，信号被吞，QEMU 线程永远停在 `sigsuspend`。这一次采样时旧脚本可能也在跑，不能完全排除干扰。
-4. **改成「停下、提示、逐个放行」以后**（21:13、21:58）：挂载稳了，0.5 秒挂上、2 秒后就停在 `brk #0xf00d`，整块写 32 MB 用 15 到 18 秒。但写回 x0 和 PC 都不生效，SBValue 和 `register write` 读回来都还是旧值，同一个 `brk` 反复触发，调试器每次都重新分配、重写 32 MB。第二次是我加的保护在第 3 次触发时结束了进程。同一段代码在第 1 步的设置下改寄存器是正常的，所以怀疑和「信号停下」的设置有关（线程还有待递的信号时 LLDB 不接受改寄存器？），没来得及验证。
+1. **20:25 to 20:46, the old signal settings** (SIGUSR1/2 etc. set to "do not stop, handled internally by LLDB and passed to the process"): 6 successes (including 4 formal 32 MB runs), 4 failures. Every failure began with two "stops with no reason" right after attaching, and then every continue gave `Resume timed out`.
+2. **20:40 to 21:10, the misdiagnosis phase**: I suspected, in turn, Wi-Fi latency, the phone's lock screen, and dyld load notifications, and changed things for each one; it still failed with the cable plugged in. Finally I found that the script from the formal measurement at 21:04 had never exited after its retry failed, and the later verification script was running alongside it. Both launched the App with `--terminate-existing` and kept killing each other's App. At least part of the consecutive failures after 20:41 came from this. A single-instance lock has been added.
+3. **Another problem in the packet log** (21:05, `packets-fail.log`): a QEMU thread stopped on SIGUSR2 (the sigaltstack coroutines rely on it to switch stacks), and when LLDB resumed it sent a plain `c` with no signal instead of `vCont;…;C1f`, so the signal was swallowed and the QEMU thread stayed in `sigsuspend` forever. When this sample was taken the old script may also have been running, so interference cannot be fully ruled out.
+4. **After switching to "stop, notify, pass each one through"** (21:13, 21:58): attaching became stable, attaching in 0.5 seconds and stopping at `brk #0xf00d` 2 seconds later, with a whole-block write of 32 MB taking 15 to 18 seconds. But writing back x0 and PC had no effect: both SBValue and `register write` read back the old values, the same `brk` fired again and again, and the debugger reallocated and rewrote 32 MB each time. The second time, the guard I added terminated the process on the 3rd trigger. The same code changed registers fine under the settings in step 1, so I suspect it is related to the "stop on signal" setting (does LLDB refuse register changes while a thread still has a pending signal?). There was no time to verify this.
 
-另外确认了一条和代码无关的限制：**手机锁着时，Mac 上的 devicectl 启动 App 会被系统拒绝**（「Unable to launch org.classictouch.app because the device was not, or could not be, unlocked」）。用 iPhone 镜像时手机本体是锁的，所以真机测量期间不能开镜像，要用户解锁、直接看手机。`lockState` 里 passcodeRequired 为 false 时也被拒过，要以实际启动结果为准。
+I also confirmed a limitation unrelated to the code: **while the phone is locked, the system refuses an App launch from devicectl on the Mac** ("Unable to launch org.classictouch.app because the device was not, or could not be, unlocked"). With iPhone Mirroring, the phone itself is locked, so mirroring cannot be used during device measurements; the user has to unlock the phone and look at it directly. Launches were refused even when `lockState` showed passcodeRequired as false, so go by the actual launch result.
 
-### 可选路线
+### Options
 
-1. **把信号处理和改寄存器分开（推荐，先在不占手机的情况下准备好）**：恢复第 1 步的信号设置（第 1 步时改寄存器是正常的），单实例锁已经排除了第 2 步那种互相打架。只在「没原因的停止」时不急着继续，等 LLDB 内部的恢复走完再发。之后在用户方便时，32 MB 验证一次，再跑两轮 256 MB。每轮在 Wi-Fi 下手机会停约 2 分钟。
-2. **用 USB**：插线后整块写应该快很多，但这次没量到，前提还是第 1 条先修好。
-3. **长远看，JIT 本来就不该靠 Mac 上的 LLDB**：发布形态是 StikDebug（或内嵌 StikJIT）在手机本机上应答 `brk #0xf00d`，本机往返几乎为零，逐页写也能流水线批量发，256 MB 也就几秒。补丁已经按这个协议写好，E3 装 StikDebug 时可以直接验证。StikDebug 要用户批准才装。
+1. **Separate signal handling from register changes (recommended; prepare it first without occupying the phone)**: restore the signal settings from step 1 (register changes worked in step 1); the single-instance lock already rules out the kind of mutual interference in step 2. Only on a "stop with no reason", do not rush to continue; wait for LLDB's internal resume to finish before sending. Then, when convenient for the user, verify once at 32 MB and run two rounds at 256 MB. Each round over Wi-Fi freezes the phone for about 2 minutes.
+2. **Use USB**: with the cable plugged in, whole-block writing should be much faster, but it was not measured this time, and it still requires fixing item 1 first.
+3. **In the long run, JIT should not depend on LLDB on the Mac at all**: the release form is StikDebug (or embedded StikJIT) answering `brk #0xf00d` on the phone itself, where the round trip is nearly zero and page-by-page writes can also be pipelined in batches, so 256 MB would take just a few seconds. The patch is already written to this protocol and can be verified directly when StikDebug is installed in E3. StikDebug needs the user's approval before it is installed.
 
-## 5. iPod touch 2 代 SecureROM 占位文件：长待机测试已取消，列为已知风险
+## 5. iPod touch 2nd gen SecureROM placeholder file: long standby test cancelled, listed as a known risk
 
-在第二台模拟器（ClassicTouch Standby）里跑了约 11 分钟后，按决策会话的指示停掉，模拟器已关。观察到的：
+After running for about 11 minutes in the second simulator (ClassicTouch Standby), it was stopped as instructed by the decision session, and the simulator has been shut down. Observations:
 
-- 锁屏后约 1 分钟背光变 0，CPU 2% 到 4%，帧编号不再变。
-- 每分钟经 QMP 读一次 CPU 的 PC，11 次都在客体内核同一处（0xc0567e3c，像是空闲等中断），没看到 AP 断电或唤醒走 bootrom 的迹象。
-- 没到「按 Home 唤醒」那一步。
+- About 1 minute after the lock screen, the backlight went to 0, CPU 2% to 4%, and the frame number stopped changing.
+- Reading the CPU's PC over QMP once a minute, all 11 readings were at the same place in the guest kernel (0xc0567e3c, apparently idle waiting for an interrupt); no sign of the AP powering off or of wake-up going through the bootrom.
+- It never got to the "press Home to wake" step.
 
-结论：**已知风险，未测**。iPod touch 2 代正式支持时再处理：要么让用户自己提供 SecureROM，要么让唤醒也走 direct-iboot（只调研改哪里，还没做）。
+Conclusion: **known risk, untested**. To be handled when the iPod touch 2nd gen is officially supported: either have the user supply their own SecureROM, or make wake-up also go through direct-iboot (only researched where to change; not done yet).
 
-## 6. 文件
+## 6. Files
 
-- 新增或修改：
+- Added or modified:
   - `patches/ios-txm-jit-protocol.patch`
-  - `scripts/ios/lldb_jit_runner.py`、`device-boot.sh`、`sim-boot.sh`、`summarize-run.py`
-  - 新增脚本 `check-idle.py`、`sim-standby.sh`、`qmp.py`
-  - `app/ClassicTouch/Engine.swift`、`EmulatorViewController.swift`
-  - 本报告和 `docs/reports/img/m1s2-*.png`
-- 原始记录：
-  - `work/ios/runs/device/`：各轮的运行目录、摘要、调试器日志、包日志
+  - `scripts/ios/lldb_jit_runner.py`, `device-boot.sh`, `sim-boot.sh`, `summarize-run.py`
+  - new scripts `check-idle.py`, `sim-standby.sh`, `qmp.py`
+  - `app/ClassicTouch/Engine.swift`, `EmulatorViewController.swift`
+  - this report and `docs/reports/img/m1s2-*.png`
+- Raw records:
+  - `work/ios/runs/device/`: each round's run directory, summary, debugger log, packet log
   - `work/ios/runs/standby-cancelled.log`
   - `work/ios/logs/`
-- 研究材料：`work/ios/research/`（Ios-emul 的 0016 补丁、StikDebug 的 universal.js 和 JSDebugSupport.swift，只读参考）。
+- Research material: `work/ios/research/` (the 0016 patch from Ios-emul, StikDebug's universal.js and JSDebugSupport.swift, read-only reference).

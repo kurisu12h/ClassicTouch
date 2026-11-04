@@ -44,7 +44,7 @@ while [ $(($(date +%s) - t0)) -lt "$LIMIT" ] && [ -z "$settings" ]; do
         text="$("$OCR" "$R/$f" 2>/dev/null | jq -r .text | tr '\n' '|')"
         if grep -qi 'Trust This Computer' <<<"$text"; then
             trust=$t
-        elif [ -z "$home" ] && grep -Eqi 'slide to unlock|to unl' <<<"$text"; then
+        elif [ -z "$home" ] && grep -Eqi 'slide to unlock|to unl|press home|day, *(january|february|march|april|may|june|july|august|september|october|november|december)' <<<"$text"; then   # iOS 10: "Press home to open" or the date line
             [ -n "$lock" ] || { lock=$t; echo "锁屏：$t 秒"; }
         elif [ -z "$home" ] && [ "$(grep -Eo 'Settings|Safari|Calendar|Photos|Clock|Maps|Mail|Notes' <<<"$text" | sort -u | wc -l)" -ge 3 ]; then
             home=$t

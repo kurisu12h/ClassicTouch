@@ -1,0 +1,20 @@
+name: Feature request
+description: A device, OS version or app feature you would like
+labels: [enhancement]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What you would like
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why
+      description: What you would use it for, and how you work around it today
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else
+      description: Related material, upstream projects, the parts you could help with

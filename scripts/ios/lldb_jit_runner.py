@@ -142,7 +142,24 @@ def main():
     run("settings set plugin.process.gdb-remote.packet-timeout 60")
     if os.environ.get("LLDB_PACKET_LOG"):  # 排查用：gdb-remote 包和进程状态的详细日志
         run("log enable -f %s gdb-remote packets process" % os.environ["LLDB_PACKET_LOG"])
-    run("device select " + core)
+    # 选不上设备就不附加：不选时附加的是默认那台，同时连着别的手机时会挂错。手机锁着屏时 device select 报
+    # 「Device needs to be unlocked.」，附加也会接着一串 Resume timed out：等用户解锁，最多 2 分钟
+    # （docs/reports/ios-device-14pro.md 第 7 节）。报错没有文字的当作选上了（14 Pro 上见过这样也能正常附加）。
+    for i in range(60):
+        r = lldb.SBCommandReturnObject()
+        interp.HandleCommand("device select " + core, r)
+        err = (r.GetError() or "").strip()
+        if r.Succeeded() or not err:
+            log("device select ->", "ok" if r.Succeeded() else "没报错（当作选上）")
+            break
+        if i % 10 == 0:
+            log("device select 失败：%s" % err[:200])
+        if "unlocked" not in err:
+            run("device list")
+        time.sleep(2)
+    else:
+        log("选不上设备 %s，不附加" % core)
+        sys.exit(1)
     t0 = time.time()
     if not run("device process attach -p " + pid):
         sys.exit(1)

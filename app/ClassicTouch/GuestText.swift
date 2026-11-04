@@ -48,11 +48,20 @@ enum GuestText {
 
     /// iOS 7 的「slide to unlock」是灰字，上面还有一道流动的高光，识别常把它认错（真机上认成过「Slide to unlog.」
     /// 「slide to umoax」，一次 13 秒里一次都没认全），所以不看空格，认出「slide to un」或「slide」「unlock」分在两段都算。
+    /// iOS 10 has no slider. Its "Press home to open" shows only for a few seconds after the screen lights, so the
+    /// lock screen's date line ("Wednesday, December 31") counts too; the home screen's Calendar icon has the weekday
+    /// and the day on two lines, with no comma and no month.
     static func isLockScreen(_ texts: [String]) -> Bool {
         let all = texts.map { $0.lowercased().filter { !$0.isWhitespace } }
         return all.contains { $0.contains("slidetoun") }   // 「Slide to unlog.」也算
             || (all.contains { $0.contains("slide") } && all.contains { $0.contains("unlock") })
+            || all.contains { $0.contains("presshome") }
+            || texts.contains { $0.lowercased().range(of: dateLine, options: .regularExpression) != nil }
     }
+
+    static let dateLine = "(mon|tues|wednes|thurs|fri|satur|sun)day, *(january|february|march|april|may|june|july|august|"
+        + "september|october|november|december)"
+
 
     /// 「设置」的第一屏：iOS 3 到 7 都有这些行里的至少两行
     static func isSettingsScreen(_ texts: [String]) -> Bool {

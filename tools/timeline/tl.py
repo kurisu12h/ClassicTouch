@@ -1,18 +1,23 @@
 #!/usr/bin/env python3
-"""年表补全（m2-timeline）：在 Mac 上用 M0 的原生 QEMU（JIT）开 iPhone OS 1.x、2.x 的设备。
+"""Timeline completion (m2-timeline): boot iPhone OS 1.x and 2.x devices on the Mac with M0's native QEMU (JIT).
 
-这两代系统里没有 guest agent（it_agent），M0 的 bench.py 靠 agent 判前台，所以这里改成每秒 screendump 加
-OCR：认出「slide to unlock」记锁屏，按 Home 再滑动解锁，认出主屏图标名记主屏。机器控制（QMP、触摸、按键、
-CPU 采样）照用 tools/m0/bench.py 的 Machine。iOS 4、5 有 agent，直接用 bench.py setup。
+These two generations of the system have no guest agent (it_agent), and M0's bench.py relies on the agent to tell
+what is in the foreground, so here it takes a screendump plus OCR every second instead: recognizing "slide to unlock"
+records the lock screen, then it presses Home and slides to unlock, and recognizing home screen icon names records the
+home screen. Machine control (QMP, touch, keys, CPU sampling) still uses the Machine from tools/m0/bench.py. iOS 4 and
+5 have the agent, so use bench.py setup directly.
 
   tl.py setup --device work/devices/m68ap-1A543a --golden work/states/m68ap-1A543a
-      从设备本体冷启动，到主屏后截图、量 20 秒主屏静止 CPU，关机，留下的 state/ 就是黄金状态。
-  tl.py setup ... --direct-iboot <解密的 iBoot.bin>
-      iPod touch 2 代的 2.x：FirmwareKit 做的是 SecureROM → NOR 里的 LLB → iBoot 整条链（boot_strategy
-      bootrom），苹果的 SecureROM 不在 IPSW 里，我们只有占位文件。这个选项改成像 3.x 那样直接进解密过的 iBoot。
+      Cold boot from the base device; on reaching the home screen, take a screenshot, measure 20 seconds of home
+      screen idle CPU and shut down. The state/ left behind is the golden state.
+  tl.py setup ... --direct-iboot <decrypted iBoot.bin>
+      2.x on the iPod touch 2nd gen: FirmwareKit builds the whole chain SecureROM → LLB in NOR → iBoot (boot_strategy
+      bootrom), but Apple's SecureROM is not in the IPSW and we only have a placeholder file. This option instead goes
+      straight into the decrypted iBoot, as 3.x does.
 
-黄金状态的目录照 App（app/ClassicTouch/DeviceProfile.swift）：state/nor.bin 加 state/nand/（就地写的 NAND
-镜像库，从本体逐个 clonefile）。1.x 机型的 NOR 是 pflash（-drive if=pflash），2.x 是 nor-rw。
+The golden state's directory layout follows the App (app/ClassicTouch/DeviceProfile.swift): state/nor.bin plus
+state/nand/ (the NAND image store, written in place, clonefile'd chip by chip from the base device). The NOR on 1.x
+models is pflash (-drive if=pflash), and on 2.x it is nor-rw.
 """
 import argparse
 import json
@@ -22,13 +27,13 @@ import subprocess
 import sys
 import time
 
-ROOT = "/path/to/classic-ios"
+ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))  # the checkout's root
 sys.path.insert(0, ROOT + "/tools/m0")
 import bench  # noqa: E402
 
 PLACEHOLDER = ROOT + "/work/timeline/placeholder"
-# 占位 SecureROM：一条 ARM「b .」。S5L8900 机型只把 ROM 放在 0x20000000 给 iBoot 的跳转表用，跳转表里两个
-# 8900 校验/解密的槽 QEMU 自己指到桩上（hw/arm/ipod_touch_1g.c 的 n45_stage_boot_chain）。
+# Placeholder SecureROM: a single ARM "b .". S5L8900 models only put the ROM at 0x20000000 for iBoot's jump table; QEMU
+# itself points the jump table's two 8900 verify/decrypt slots at stubs (n45_stage_boot_chain in hw/arm/ipod_touch_1g.c).
 B_SELF = bytes([0xFE, 0xFF, 0xFF, 0xEA])
 HOME_WORDS = ("Settings", "Safari", "Calendar", "Photos", "Clock", "Weather", "Notes", "Stocks", "Maps")
 log = bench.log
@@ -44,7 +49,7 @@ def placeholder(name):
 
 
 class OldMachine(bench.Machine):
-    """bench.Machine 的 argv 换成 BootRecipe.iPod1G（1.x）或 BootRecipe.iPod 的 2.x 两种开法。"""
+    """bench.Machine with its argv replaced by one of two ways to boot: BootRecipe.iPod1G (1.x) or BootRecipe.iPod's 2.x."""
 
     def __init__(self, build, base, state, run, direct_iboot=None):
         self.base, self.state, self.run = base, state, run
@@ -53,7 +58,7 @@ class OldMachine(bench.Machine):
         self.lock = lock
         hw = bench.board_info(lock["board"])
         self.hw = hw
-        # 1.x、2.x 的 Home 和电源键都走键盘组合键（Command+Shift+H、Command+L），和 n72 一样
+        # on 1.x and 2.x, Home and the power button both go through keyboard shortcuts (Command+Shift+H, Command+L), as on n72
         self.ipod = True
         env = dict(os.environ)
         esc = bench.esc
@@ -76,7 +81,7 @@ class OldMachine(bench.Machine):
             m += opts
             argv_m = ["-M", m, "-m", "128M"]
             env["IT_TVOUT_READY"] = "1"
-        # unix 套接字路径上限 104 字节，运行目录可能太深
+        # unix socket paths are limited to 104 bytes, and the run directory may be too deep
         os.makedirs(ROOT + "/work/timeline/sock", exist_ok=True)
         self.qmp_path = ROOT + "/work/timeline/sock/qmp-%d.sock" % os.getpid()
         if os.path.exists(self.qmp_path):
@@ -96,7 +101,7 @@ class OldMachine(bench.Machine):
         try:
             self.qmp = bench.QMP(self.qmp_path)
         except BaseException:
-            self.p.kill()  # 连不上 QMP 就别留下没人管的 QEMU
+            self.p.kill()  # if QMP cannot connect, do not leave an unattended QEMU behind
             raise
         self.seq = 0
         self.samples = []
@@ -107,7 +112,7 @@ class OldMachine(bench.Machine):
 
 
 def fresh_state(device, state):
-    """state/nor.bin（可写）加 state/nand/（本体每个 chip 文件 clonefile 一份，改成可写）。"""
+    """state/nor.bin (writable) plus state/nand/ (a clonefile of each chip file from the base device, made writable)."""
     if os.path.exists(state):
         shutil.rmtree(state)
     os.makedirs(os.path.join(state, "nand"))
@@ -124,9 +129,11 @@ def words(found):
 
 
 def watch(m, shots, limit, wake_after=None):
-    """每秒截一张、OCR。返回 (锁屏秒, 主屏秒)；没到就是 None。画面一变就留一张图。
-    wake_after：过了这么多秒还没认出锁屏，就每 15 秒按一次 Home 再滑动（2.x 熄屏后 SpringBoard 只在唤醒时重读
-    lockdown 的状态，qemu-ios docs/ipod/from-ipsw.md「2.1.1 home screen」）。"""
+    """Take a screenshot and OCR it every second. Returns (lock screen seconds, home screen seconds), None for one not
+    reached. Keeps an image whenever the screen changes.
+    wake_after: if the lock screen has not been recognized after this many seconds, press Home and slide every 15
+    seconds (on 2.x, after the screen turns off, SpringBoard only rereads lockdown's state on wake; qemu-ios
+    docs/ipod/from-ipsw.md "2.1.1 home screen")."""
     lock = home = None
     last_wake = 0.0
     last_unlock = 0.0
@@ -134,7 +141,7 @@ def watch(m, shots, limit, wake_after=None):
     n = 0
     while m.elapsed() < limit:
         if m.p.poll() is not None:
-            log("QEMU 退出了（%s）" % m.p.returncode)
+            log("QEMU exited (%s)" % m.p.returncode)
             break
         t = m.elapsed()
         n += 1
@@ -142,30 +149,30 @@ def watch(m, shots, limit, wake_after=None):
         try:
             m.screenshot(png)
         except (RuntimeError, OSError, EOFError) as e:
-            log("screendump 失败：%s" % e)
+            log("screendump failed: %s" % e)
             time.sleep(1)
             continue
         time.sleep(0.2)
         found = bench.ocr(png)
         text = words(found)
         if text != last_text:
-            log("%.0f s：%s" % (t, text[:160]))
+            log("%.0f s: %s" % (t, text[:160]))
             last_text = text
         elif n % 5:
-            os.unlink(png)  # 画面没变的只留每 5 秒一张
+            os.unlink(png)  # while the screen is unchanged, keep only one image every 5 seconds
         low = text.lower()
         if lock is None and home is None and "slide to" not in low and sum(w in found for w in HOME_WORDS) >= 3:
-            # iPod 的 2.x 激活后第一次开机不经过锁屏，直接是主屏
+            # on the iPod's 2.x, the first boot after activation skips the lock screen and goes straight to the home screen
             home = t
-            log("主屏（没经过锁屏）：%.1f 秒" % t)
+            log("home screen (lock screen skipped): %.1f s" % t)
             return lock, home
         if lock is None and "slide to unlock" in low:
             lock = t
-            log("锁屏：%.1f 秒" % t)
+            log("lock screen: %.1f s" % t)
         if lock is not None and home is None:
             if "slide to" not in low and any(w in found for w in HOME_WORDS):
                 home = t
-                log("主屏：%.1f 秒" % t)
+                log("home screen: %.1f s" % t)
                 return lock, home
             if time.time() - last_unlock > 15:
                 last_unlock = time.time()
@@ -174,7 +181,7 @@ def watch(m, shots, limit, wake_after=None):
                 m.drag(0.18, 0.9, 0.92, 0.9, seconds=0.6, steps=20)
         elif lock is None and wake_after is not None and t > wake_after and time.time() - last_wake > 15:
             last_wake = time.time()
-            log("%.0f s：还没锁屏，按 Home 再滑动" % t)
+            log("%.0f s: no lock screen yet, pressing Home and sliding" % t)
             m.home()
             time.sleep(2.0)
             m.drag(0.18, 0.9, 0.92, 0.9, seconds=0.6, steps=20)
@@ -193,7 +200,7 @@ def cmd_setup(a):
     golden = a.golden
     state = os.path.join(golden, "state")
     if a.reuse_state:
-        # 接着上一次留下的状态开（不重来），本次的记录放 setup-run-<时间>
+        # continue from the state the previous run left (no fresh start); this run's records go in setup-run-<time>
         run = os.path.join(golden, "setup-run-" + time.strftime("%H%M%S"))
     else:
         if os.path.exists(golden):
@@ -203,17 +210,17 @@ def cmd_setup(a):
     shots = os.path.join(run, "shots")
     os.makedirs(shots)
     m = OldMachine("jit", a.device, state, run, direct_iboot=a.direct_iboot)
-    log("开机 %s（%s）" % (a.device, " ".join(m.argv[1:3])))
+    log("booting %s (%s)" % (a.device, " ".join(m.argv[1:3])))
     res = {"device": a.device, "direct_iboot": a.direct_iboot, "load_start": os.getloadavg()[0]}
     lock, home = watch(m, shots, a.limit, a.wake_after)
     res.update(lock_s=lock, home_s=home, cpu_s_to_home=m.cpu())
     if home is not None:
-        time.sleep(10)  # 解锁动画、图标落定
+        time.sleep(10)  # unlock animation, icons settling
         m.screenshot(os.path.join(golden, "home-after-setup.png"))
         res["home_idle_cpu_pct"] = idle_cpu(m, 20)
         res["load_idle"] = os.getloadavg()[0]
-        log("主屏静止 20 秒：%s%% 单核" % res["home_idle_cpu_pct"])
-        log("关机（system_powerdown）")
+        log("home screen idle for 20 seconds: %s%% of one core" % res["home_idle_cpu_pct"])
+        log("shutting down (system_powerdown)")
         m.qmp.cmd("system_powerdown")
         t = time.time()
         while time.time() - t < a.powerdown:
@@ -222,7 +229,7 @@ def cmd_setup(a):
             time.sleep(1)
         res["powerdown"] = "exited" if m.p.poll() is not None else m.status()
         res["powerdown_s"] = round(time.time() - t, 1)
-        log("关机后状态 %s（%.0f 秒）" % (res["powerdown"], res["powerdown_s"]))
+        log("state after shutdown: %s (%.0f s)" % (res["powerdown"], res["powerdown_s"]))
     else:
         m.screenshot(os.path.join(run, "stuck.png"))
         try:
@@ -232,7 +239,7 @@ def cmd_setup(a):
     m.quit()
     with open(os.path.join(run if a.reuse_state else golden, "setup.json"), "w") as fh:
         json.dump(res, fh, indent=1)
-    log("结果：%s" % {k: v for k, v in res.items() if k != "regs"})
+    log("result: %s" % {k: v for k, v in res.items() if k != "regs"})
     if home is None:
         raise SystemExit(1)
 
@@ -244,10 +251,10 @@ def main():
     s.add_argument("--device", required=True)
     s.add_argument("--golden", required=True)
     s.add_argument("--direct-iboot")
-    s.add_argument("--limit", type=float, default=300, help="等到主屏最多几秒")
-    s.add_argument("--powerdown", type=float, default=90, help="关机最多等几秒，之后 QMP quit")
-    s.add_argument("--wake-after", type=float, help="过了这么多秒还没锁屏就定时按 Home、滑动")
-    s.add_argument("--reuse-state", action="store_true", help="接着 golden/state 开，不从本体重来")
+    s.add_argument("--limit", type=float, default=300, help="maximum seconds to wait for the home screen")
+    s.add_argument("--powerdown", type=float, default=90, help="maximum seconds to wait for shutdown, then QMP quit")
+    s.add_argument("--wake-after", type=float, help="if there is no lock screen after this many seconds, press Home and slide periodically")
+    s.add_argument("--reuse-state", action="store_true", help="continue from golden/state instead of starting over from the base device")
     a = ap.parse_args()
     a.device, a.golden = os.path.abspath(a.device), os.path.abspath(a.golden)
     if a.direct_iboot:

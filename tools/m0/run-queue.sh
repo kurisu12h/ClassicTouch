@@ -1,7 +1,7 @@
 #!/bin/bash
 # M0: the measured runs one after another (never two emulators measuring at once), host load before and after each.
 # usage: run-queue.sh NAME:DEVICE:BUILD ...   e.g. n90-jit-1:n90ap-11D257:jit
-cd /path/to/classic-ios
+cd "$(dirname "$0")/../.."
 for spec in "$@"; do
     IFS=: read -r name device build <<< "$spec"
     log=work/runs/$name.log

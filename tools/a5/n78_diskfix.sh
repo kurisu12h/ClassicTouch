@@ -7,7 +7,10 @@
 #     the boots, NULL + 0xc; the iPod touch 5 has no compass; cause not found, report 3.15).
 #   11D257: activation in lockdownd; data volume (s2): /private/var/.it_sealed (FirmwareKit's it_seal otherwise
 #     halts the first boot) and the Setup Assistant steps an iPhone 4 walk does not have (Siri, Activation Lock,
-#     iCloud Keychain, email updates) on top of FirmwareKit's seed.
+#     iCloud Keychain, email updates) on top of FirmwareKit's seed; DeviceOMatic (com.apple.device-o-matic,
+#     launched on any removable IOUSBDevice: our USB root disk) disabled in launchd's overrides.plist (owner root):
+#     it posts "Cannot Use Device / QEMU USB HARDDRIVE: The connected device is not supported." over the lock
+#     screen, which on a phone took five unlock tries (docs/reports/ios-device-14pro.md 7).
 #   13G36: activation in mobileactivationd (8.x moved it there); the shared cache marked development
 #     (n78_devcache.py) so dyld-390 loads the GL front end, $GLES (default work/a5/guest/OpenGLES, contrib/gles-public
 #     with the 9.x color formats), as OpenGLES.framework/OpenGLES, owned by root; data volume: Setup's finished state
@@ -78,6 +81,20 @@ if [ "$BUILD" = 11D257 ]; then
     done
 else
     python3 -I -B "$HERE/n78_setupdone.py" "$M"
+fi
+if [ "$BUILD" = 11D257 ]; then
+    sync; umount "$M"; mount -t hfs -o noowners "${D}s2" "$M"     # db/launchd.db is root's
+    mkdir -p "$M/db/launchd.db/com.apple.launchd"
+    python3 -I -B -c "import os, plistlib, sys
+p = sys.argv[1]; raw = open(p, 'rb').read() if os.path.exists(p) else b''
+d = plistlib.loads(raw) if raw.strip() else {}
+d['com.apple.device-o-matic'] = {'Disabled': True}
+b = plistlib.dumps(d); open(p, 'r+b' if os.path.exists(p) else 'wb').write(b); os.truncate(p, len(b))
+print('launchd overrides:', d)" "$M/db/launchd.db/com.apple.launchd/overrides.plist"
+    sync; umount "$M"
+    python3 -I -B -c "import sys, types; sys.path.insert(0, sys.argv[1]); sys.modules['mkpkg'] = types.ModuleType('mkpkg')
+import build_nand as bn; print('owner root:', bn.set_owner(sys.argv[2], ['db/launchd.db/com.apple.launchd/overrides.plist'], 0, 0), 'record')" \
+        "$HERE/../../work/a5/imgtools" "${D}s2"
 fi
 if [ "$BUILD" = 14G61 ]; then
     rm -f "$M/mobile/Library/Caches/MappedImageCache/Wallpaper/"*        # SpringBoard draws it again

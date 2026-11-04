@@ -1,15 +1,18 @@
-ios-txm-jit-protocol.patch：iOS 26 以上（TXM）的 JIT 代码区改走 StikDebug 的通用协议（brk #0xf00d）。
+ios-txm-jit-protocol.patch: on iOS 26 and later (TXM), prepare the JIT code buffer through StikDebug's universal
+protocol (brk #0xf00d).
 
-原因：上游 tcg/region.c 的 TXM 路径用旧协议 brk #0x69，自己映射代码区，再请调试器把整块读出写回。
-M1 第一阶段在 iPhone 18 Pro（iOS 27.2）上实测，Mac 上的 LLDB 经 Wi-Fi 约 0.8 MB/s，256 MiB 要 322 秒，
-只好把代码区缩到 32 MiB，JIT 因此频繁清空重翻译，提速打了折扣。新协议（universal.js、StikJIT
-INTEGRATION.md）让调试器自己分配已可执行的内存（debugserver 的 _M 包），每页只写 1 个字节，准备时间
-基本不随代码区变大；准备完就让调试器脱离（x16=0），App 之后不再带着调试器跑。也是将来用 StikDebug
-脱离电脑拿 JIT 的前提（它的 universal.js 对 brk #0x69 只回错误码）。
-写法参考 vytska69/Ios-emul 的 qemu/patches/inferno/0016-ios-txm-jit-via-stikdebug.patch。
-环境变量 QEMU_IOS_JIT_PROTOCOL=legacy 保留旧协议做对照。只影响 iOS 真机的 JIT 构建（模拟器、解释器不变）。
-基于 samhenrigold/qemu-ios b225694505，叠在 ios-host-gles-option.patch 之后。
-
+Why: upstream tcg/region.c's TXM path uses the old protocol, brk #0x69: it maps the code buffer itself, then asks the
+debugger to read the whole buffer out and write it back. Measured in M1 stage 1 on an iPhone 18 Pro (iOS 27.2), LLDB on
+a Mac over Wi-Fi moves about 0.8 MB/s, so 256 MiB takes 322 seconds; the code buffer had to shrink to 32 MiB and the JIT
+then flushed and retranslated often, eating into the speedup. In the new protocol (universal.js, StikJIT
+INTEGRATION.md) the debugger allocates already-executable memory itself (debugserver's _M packet) and writes only 1 byte
+per page, so preparation time barely grows with the buffer size. Once it is ready the debugger detaches (x16=0) and the
+app runs without it from then on. It is also what getting JIT from StikDebug without a computer needs later (its
+universal.js only returns an error code for brk #0x69).
+Modeled on qemu/patches/inferno/0016-ios-txm-jit-via-stikdebug.patch in vytska69/Ios-emul.
+The environment variable QEMU_IOS_JIT_PROTOCOL=legacy keeps the old protocol for comparison. Only the JIT build for real
+iOS devices is affected (the simulator and the interpreter are unchanged).
+Based on samhenrigold/qemu-ios b225694505, applied after ios-host-gles-option.patch.
 diff --git a/tcg/region.c b/tcg/region.c
 index f4249712af..4625687e79 100644
 --- a/tcg/region.c

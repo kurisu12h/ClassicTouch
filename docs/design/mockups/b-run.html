@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8">
-<title>方案 B 怀旧拟物：运行中</title>
+<html lang="en"><head><meta charset="utf-8">
+<title>Proposal B Nostalgic skeuomorphic: running</title>
 <link rel="stylesheet" href="common.css">
 <style>
-  /* 深色亚麻布：噪点加细密经纬线，App 里用 Core Graphics 画，不用图片 */
+  /* Dark linen: noise plus fine warp and weft lines; the App draws it with Core Graphics, no images */
   body { font-family: "Helvetica Neue", "PingFang SC", sans-serif; background-color: #34363b;
          background-image:
            url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 .55 0'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E"),
@@ -35,14 +35,14 @@
     <path d="M1 15.5 13 2.2Q14 1 15.6 1H69a4 4 0 0 1 4 4v21a4 4 0 0 1-4 4H15.6Q14 30 13 28.8z" fill="url(#bk)" stroke="#000"/>
     <path d="M14 2.2Q14.6 1.7 15.6 1.7H69a3.3 3.3 0 0 1 3.3 3.3" fill="none" stroke="rgba(255,255,255,.22)"/>
     <text x="44" y="20.5" text-anchor="middle" fill="#fff" font-family="Helvetica Neue, PingFang SC" font-weight="bold" font-size="13"
-          style="text-shadow:0 -1px 0 #000">系统</text>
+          style="text-shadow:0 -1px 0 #000">Systems</text>
   </svg>
-  <div class="t">iPod touch（第 2 代）</div>
+  <div class="t">iPod touch (2nd gen)</div>
   <div class="s">iPhone OS 3.1.3 · JIT · 0:54</div>
   <div class="info" data-icon="info 19 #fff 1.8"></div>
 </div>
 
-<!-- 机身：屏幕按原机 1:1（320 × 480 pt）。顶部按键 = 电源，圆键 = Home，都能点 -->
+<!-- Device body: screen 1:1 with the original device (320 × 480 pt). Top button = Power, round button = Home, both tappable -->
 <svg class="abs body" width="360" height="672" viewBox="0 0 360 672" style="overflow:visible">
   <defs>
     <linearGradient id="chrome" x1="0" y1="0" x2="1" y2="0">
@@ -57,7 +57,7 @@
       <stop offset="0" stop-color="#000"/><stop offset=".75" stop-color="#1b1c1f"/><stop offset="1" stop-color="#3a3c40"/></radialGradient>
     <filter id="sh" x="-20%" y="-10%" width="140%" height="130%"><feDropShadow dx="0" dy="14" stdDeviation="16" flood-opacity=".6"/></filter>
   </defs>
-  <!-- 顶部电源键（这台在左上） -->
+  <!-- Top power button (on this model it is at the top left) -->
   <rect x="44" y="-5" width="46" height="10" rx="4" fill="url(#chrome)" stroke="#55585d" stroke-width=".8"/>
   <g filter="url(#sh)">
     <rect x="0" y="0" width="360" height="672" rx="54" fill="url(#chrome)"/>
@@ -70,11 +70,11 @@
   <rect x="5" y="5" width="350" height="662" rx="50" fill="url(#sheen)" pointer-events="none"/>
 </svg>
 
-<!-- 第一次进来时的提示，点一下就消失 -->
-<div class="tag" style="top:99px; left:118px">← 电源</div>
+<!-- Hint shown on first entry; disappears on tap -->
+<div class="tag" style="top:99px; left:118px">← Power</div>
 <div class="tag" style="top:796px; left:178px; display:none">Home</div>
 
-<div class="abs cap">点圆键回主屏 · 机身顶部的按键是电源，长按关机</div>
+<div class="abs cap">Tap the round button for the home screen · The button on top is Power; hold to shut down</div>
 
 <script src="common.js"></script>
 <script>fillDevices(); hostChrome('#fff');</script>

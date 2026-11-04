@@ -1,65 +1,65 @@
-# M0：Mac 上的 JIT 与纯解释器（TCI）测速
+# M0: JIT vs pure interpreter (TCI) benchmarks on the Mac
 
-- 日期：2026-11-01
-- 执行会话：M0（接手中断的上一个后台代理）。范围：3GS 6.1.6 的 TCI；iPhone 4 7.1.2 和 iPod touch 2 代 3.1.3 的首次设置与 JIT、TCI 测速；每轮的系统负载；快照和宿主 GL 的关系；推算到两台测试机；本报告。
-- 没做的：没下载任何东西；没碰 M1 的目录（只读了 `docs/reports/m1-stage1.md` 拿真机数字做校准）；上游两个仓库没改（`git status` 干净，所以 `patches/` 里没有 M0 的补丁）；没 commit，没对外发任何东西。
-- 测试机：M4 Max（10 性能核 + 4 能效核，36 GB），macOS 27.0.1，Xcode 27.2。qemu-ios b225694505（QEMU 11），LightTouchMac b06012fa4c。
+- Date: 2026-11-01
+- Execution session: M0 (took over from the previous background agent, which had been interrupted). Scope: TCI on 3GS 6.1.6; first-time setup plus JIT and TCI benchmarks for iPhone 4 7.1.2 and iPod touch 2nd gen 3.1.3; system load during each run; how snapshots relate to host GL; extrapolation to the two test phones; this report.
+- Not done: nothing was downloaded; M1's directories were not touched (only read `docs/reports/m1-stage1.md` to get real-device numbers for calibration); the two upstream repositories were not changed (`git status` is clean, so `patches/` has no M0 patches); no commit, nothing sent anywhere outside.
+- Test machine: M4 Max (10 performance cores + 4 efficiency cores, 36 GB), macOS 27.0.1, Xcode 27.2. qemu-ios b225694505 (QEMU 11), LightTouchMac b06012fa4c.
 
-## 0. 结论
+## 0. Conclusions
 
-1. **JIT 和 TCI 差几倍：纯算力的活差 7 到 11 倍，日常交互的平均 CPU 差 2.5 到 5 倍，系统越新差得越多。** 开机到锁屏是最干净的对比（全程吃满一个核）：客体主核线程的 CPU 秒，iPhone OS 3.1.3 差 6.9 倍，iOS 6.1.6 差 7.0 倍，iOS 7.1.2 差 11.2 倍（墙钟 5.1、6.1、10.1 倍：9 秒对 46 秒，26 秒对 156 秒，40 秒对 407 秒）。交互时客体大部分时间在空等，平均 CPU 占比只差 2.5 到 5 倍；但 iOS 7 在 TCI 下连 M4 Max 都吃满了，它的交互倍数被「最多一个核」截断，实际差距接近开机的 11 倍。
-2. **没有 JIT 时 iPhone 上大概什么体验**（iPhone 18 Pro 按 M1 真机开机数据校准，约 1.2 个 M4 Max 核；简报的粗算 0.7 更保守；iPhone 14 Pro 粗算 0.48，再慢一倍多。见第 4 节）：
-   - **iPhone OS 3（iPod touch 2 代 3.1.3）：能用。** 开机 40 秒到 1 分钟（M1 真机实测 43 秒），主屏待机约三分之一到一半个核，翻页和开 App 约半个核到 0.8 个核，主屏拖动帧率在 Mac 上不受 CPU 限制（JIT 35 帧、TCI 44 帧）。14 Pro 上翻页和开 App 会短暂吃满。
-   - **iOS 6（3GS 6.1.6）：勉强能用，卡和耗电是问题。** 开机 2 到 4 分钟（M1 实测 115 秒），待机约半个核到 0.7 个核（Mac 上 42% 到 60% 之间波动；M1 真机 91%，口径不同），翻页半个核到一个核，开 App 吃到 0.7 到 1.2 个核；主屏拖动从 JIT 的 52 帧掉到 20 多帧。14 Pro 上待机就吃满，拖动约 15 帧。
-   - **iOS 7（iPhone 4 7.1.2）：不能用。** 在 M4 Max 上 TCI 就已吃满一个核：主屏什么都不做也要 94%（iOS 7 的主屏每秒重绘 30 次），开「设置」「时钟」要 4 到 11 秒才到前台（JIT 1.3 到 1.9 秒），主屏拖动 7 帧，按 Home 到亮屏 5.6 秒，开机 6 分 47 秒。按开机倍数估，18 Pro 上日常交互约要 2 到 3 个核（粗算 4 到 6 个），客体只能跑到实速的二分之一到五分之一，开机 6 到 14 分钟。
-3. **有 JIT 时三个年代在两台手机上都宽裕。** 按粗算，14 Pro 上 iOS 7 主屏待机约半个核、翻页约 0.7 个核、开 App 约 0.6 个核，开机约 1.5 分钟；18 Pro 上都在半个核左右以内。前提是 JIT 的代码缓冲够大：M1 在手机上为了缩短调试器「准备」的时间把缓冲降到 32 MB，开机提速明显变小。（决策会话更正：M1 那次 3GS 待机的 79% 不能当证据，测量期间有人在手机上点开了设置，见 `m1-stage1.md` 第 4.2 节的补注；32 MB 对待机 CPU 的影响要等 M1 第二阶段重测。）
-4. **快照：Mac 上宿主 GL 一直开着，GL 状态跟着快照走，没问题；iPhone 上目前存不了。** Mac 的 CGL 后端把活着的 GL 状态读回来存成快照里的「gles-host」段（iOS 3 和 6 约 4 MB，iOS 7 约 18 MB，占快照 1.5% 到 4%）。快照大小约等于客体内存：iPod 115 MB、3GS 259 MB、iPhone 4 445 MB；存 0.67、1.8、3.3 秒；恢复都在 0.1 到 0.2 秒，恢复后点图标能正常开 App。但手机用的 EAGL 后端（还有 Mac 上实验性的 ANGLE）只要有一个活着的 GL 上下文就挂迁移阻断器，SpringBoard 起来以后就一直有，所以**手机上现在存不了快照**。M2 的「快照秒切」要先把 CGL 的读回和重建移植到 EAGL；在那之前手机上每次都得冷启动，而没有 JIT 时 iOS 6、7 的冷启动是分钟级的。
-5. **iPod touch 2 代的 SecureROM 有一半解了。** 4 字节占位文件就能冷启动；但实测深度睡眠后唤醒会复位进 ROM、卡死在地址 0。3GS 的机型代码对同样的唤醒做了高层模拟（`s5l8920_resume`），照着给 iPod 2 代补一段，就可以彻底不需要苹果的 SecureROM。`docs/plan.md` 记着用户已决定先不做长待机测试、等正式支持 iPod 2 代时再处理；这里的两分钟睡眠测试是在看到那条决定之前顺手做的，正好回答了那条路线的第一步「会不会卡」：会卡，下一步就是这个补丁。
-6. **测试中的干扰都有记录。** M1 同时编译加 Spotlight 建索引，负载几次冲到 20 到 63；受影响的轮次在表里标了 ⚠、不计入均值，并补测了 3GS TCI 第三轮、iPhone 4 全部四轮。另外 iOS 7 会弹「Cannot Use Device / QEMU USB Keyboard」挡住所有触摸，iPhone 4 前三轮因此作废重测（详见第 7 节）。
+1. **How far apart JIT and TCI are: 7 to 11 times on pure compute work, 2.5 to 5 times in average CPU during everyday interaction, and the newer the system, the bigger the gap.** Boot to lock screen is the cleanest comparison (it saturates one core the whole time): in CPU seconds of the guest main core thread, iPhone OS 3.1.3 differs by 6.9 times, iOS 6.1.6 by 7.0 times, iOS 7.1.2 by 11.2 times (wall clock 5.1, 6.1, 10.1 times: 9 seconds vs 46 seconds, 26 seconds vs 156 seconds, 40 seconds vs 407 seconds). During interaction the guest spends most of its time waiting, so average CPU share differs only 2.5 to 5 times; but iOS 7 under TCI saturates even an M4 Max, so its interaction ratio is clipped by the "at most one core" ceiling, and the real gap is close to the 11 times seen at boot.
+2. **Roughly what the experience on iPhone is without JIT** (iPhone 18 Pro calibrated against M1's real-device boot data, about 1.2 M4 Max cores; the brief's rough estimate of 0.7 is more conservative; iPhone 14 Pro is roughly 0.48, more than twice as slow again. See section 4):
+   - **iPhone OS 3 (iPod touch 2nd gen 3.1.3): usable.** Boot takes 40 seconds to 1 minute (M1 measured 43 seconds on the real device), home screen idle uses about a third to half a core, paging and opening apps about half a core to 0.8 cores, and home screen drag frame rate on the Mac is not CPU-bound (JIT 35 fps, TCI 44 fps). On the 14 Pro, paging and opening apps briefly saturate a core.
+   - **iOS 6 (3GS 6.1.6): barely usable; stutter and battery drain are the problems.** Boot takes 2 to 4 minutes (M1 measured 115 seconds), idle uses about half a core to 0.7 cores (fluctuating between 42% and 60% on the Mac; 91% on M1's real device, measured differently), paging half a core to one core, opening apps 0.7 to 1.2 cores; home screen drag drops from 52 fps with JIT to the low 20s. On the 14 Pro, idle alone saturates a core, and drag is about 15 fps.
+   - **iOS 7 (iPhone 4 7.1.2): not usable.** On the M4 Max, TCI already saturates one core: the home screen doing nothing takes 94% (the iOS 7 home screen redraws 30 times per second), Settings and Clock take 4 to 11 seconds to reach the foreground (JIT 1.3 to 1.9 seconds), home screen drag is 7 fps, Home press to screen on takes 5.6 seconds, and boot takes 6 min 47 s. Estimated from the boot ratio, everyday interaction on the 18 Pro would need about 2 to 3 cores (4 to 6 by the rough estimate), so the guest can only run at one half to one fifth of real speed, and boot takes 6 to 14 minutes.
+3. **With JIT, all three eras have plenty of headroom on both phones.** By the rough estimate, on the 14 Pro the iOS 7 home screen idles at about half a core, paging about 0.7 cores, opening apps about 0.6 cores, and boot about 1.5 minutes; on the 18 Pro everything is within about half a core. This assumes the JIT code buffer is large enough: on the phone, M1 cut the buffer to 32 MB to shorten the debugger "prepare" time, and the boot speedup became noticeably smaller. (Correction from the decision session: M1's 79% idle figure for the 3GS cannot be used as evidence, because someone opened Settings on the phone during the measurement; see the note added to section 4.2 of `m1-stage1.md`. The effect of 32 MB on idle CPU has to wait for M1's stage 2 remeasurement.)
+4. **Snapshots: on the Mac, host GL is always on and GL state travels with the snapshot, no problem; on iPhone they currently cannot be saved.** The Mac's CGL backend reads back the live GL state and stores it as a "gles-host" section in the snapshot (about 4 MB for iOS 3 and 6, about 18 MB for iOS 7, 1.5% to 4% of the snapshot). Snapshot size is about equal to guest memory: iPod 115 MB, 3GS 259 MB, iPhone 4 445 MB; saving takes 0.67, 1.8, 3.3 seconds; restoring takes 0.1 to 0.2 seconds for all of them, and after restoring, tapping an icon opens the app normally. But the EAGL backend used on the phone (and the experimental ANGLE on the Mac) installs a migration blocker as soon as there is one live GL context, and once SpringBoard is up there always is one, so **snapshots cannot currently be saved on the phone**. M2's "instant switching via snapshots" first needs CGL's readback and rebuild ported to EAGL; until then the phone has to cold boot every time, and without JIT, cold boots of iOS 6 and 7 take minutes.
+5. **The iPod touch 2nd gen SecureROM problem is half solved.** A 4-byte placeholder file is enough to cold boot; but in testing, waking from deep sleep resets into the ROM and hangs at address 0. The 3GS machine code does a high-level emulation of the same wake (`s5l8920_resume`); adding a similar piece for the iPod 2nd gen would remove the need for Apple's SecureROM entirely. `docs/plan.md` records that the user has decided not to do long standby tests for now and to deal with this once the iPod 2nd gen is officially supported; the two-minute sleep test here was done in passing before seeing that decision, and it happens to answer the first step of that route, "does it hang": it does, and the next step is this patch.
+6. **All interference during testing is recorded.** M1 compiling at the same time plus Spotlight indexing pushed the load to 20 to 63 several times; affected runs are marked ⚠ in the tables and excluded from the means, and extra runs were done: a third 3GS TCI run and all four iPhone 4 runs. Also, iOS 7 pops up "Cannot Use Device / QEMU USB Keyboard", which blocks all touches, so the first three iPhone 4 runs were discarded and redone (details in section 7).
 
-## 1. 测了什么、怎么测
+## 1. What was measured and how
 
-每轮从同一个「黄金状态」（首次设置走完、关机）的 APFS 克隆冷启动，`-display none`、`-audio driver=none`，网络照上游 `restrict=on,lan=off`，宿主 GL 开着（CGL，读回显示），和 Light Touch 的参数一致。测量项：
+Each run cold boots from an APFS clone of the same "golden state" (first-time setup completed, powered off), with `-display none`, `-audio driver=none`, networking per upstream `restrict=on,lan=off`, and host GL on (CGL, display by readback), matching Light Touch's parameters. Measurements:
 
-- **开机到锁屏**：从启动 QEMU 到 guest agent 报告前台是 SpringBoard 的锁屏；同时记进程 CPU 秒和各线程 CPU 秒（`CPU 0/TCG` 是客体主核，`qemu_main` 是主线程，含 GL 桥和显示）。
-- **安定**：等到某个 10 秒窗口进程 CPU 低于 60%（上限 JIT 180 秒、TCI 300 秒）。
-- **主屏静置** 40 秒、**翻页**（5 次来回）、**开「设置」和「时钟」**（guest agent 启动，各计 10 秒，另记到前台的秒数）：进程 CPU 秒 / 墙钟秒，记为「% 单核」。
-- **快照**：回主屏后 `stop` 加 `migrate file:`，记大小、耗时和其中 GL 段的大小；在对应状态的克隆上 `-incoming file:` 恢复两次，记载入时间，OCR 找「设置」图标点开验证触摸，再静置 30 秒。
-- **可见帧率**（本会话加的探针）：从快照恢复，主屏按住来回拖 20 秒，或锁屏看「滑动解锁」的微光动画，同时以 120 Hz 截屏比对，统计屏幕上新画面的次数。
-- **负载**：每轮前后 `uptime`，每个窗口开始时 load average，另有每 15 秒一条的 `work/runs/load*.log`。
+- **Boot to lock screen**: from starting QEMU until the guest agent reports that the foreground is SpringBoard's lock screen; process CPU seconds and per-thread CPU seconds are recorded at the same time (`CPU 0/TCG` is the guest main core, `qemu_main` is the main thread, which includes the GL bridge and display).
+- **Settle**: wait until some 10-second window has process CPU below 60% (limit 180 seconds for JIT, 300 seconds for TCI).
+- **Home screen idle** for 40 seconds, **paging** (5 round trips), **opening Settings and Clock** (launched by the guest agent, 10 seconds each, plus the seconds until it reaches the foreground): process CPU seconds / wall clock seconds, recorded as "% of one core".
+- **Snapshot**: after returning to the home screen, `stop` plus `migrate file:`; record size, time taken and the size of the GL section in it; restore twice with `-incoming file:` on a clone of the matching state, record load time, use OCR to find the Settings icon and tap it to verify touch, then idle for 30 seconds.
+- **Visible frame rate** (a probe added in this session): restore from a snapshot, then hold and drag back and forth on the home screen for 20 seconds, or watch the "slide to unlock" shimmer animation on the lock screen, while taking screenshots at 120 Hz and comparing them, counting how many times a new frame appears on screen.
+- **Load**: `uptime` before and after each run, load average at the start of each window, plus `work/runs/load*.log` with one entry every 15 seconds.
 
-每台设备 JIT 和 TCI 各两轮有效数据（3GS 的 TCI 三轮，其中一轮交互部分因负载作废）。测速轮次一个接一个跑，从不两个测速同时进行。帧率探针和 `swaps` 读数放在别的轮次不计量的「安定」阶段里跑（单独一个核，本机有 10 个性能核）。例外有两处：3GS TCI 第一轮的测量窗口和 iPhone 4 的首次设置重叠了（多一个 JIT 模拟器，负载 3.9），所以补了第三轮对照；iPod 睡眠测试和 iPhone 4 JIT 第二轮重叠，那一轮本来就因 USB 键盘提示作废。
+Each device has two valid runs each for JIT and TCI (three TCI runs for the 3GS, with the interaction part of one discarded because of load). Benchmark runs ran one after another, never two at once. The frame rate probes and `swaps` readings ran during other runs' unmeasured "settle" phase (a single core; this machine has 10 performance cores). There are two exceptions: the measurement window of the first 3GS TCI run overlapped with the iPhone 4 first-time setup (one extra JIT emulator, load 3.9), so a third run was added as a control; the iPod sleep test overlapped with the second iPhone 4 JIT run, which was discarded anyway because of the USB keyboard alert.
 
-## 2. 数据
+## 2. Data
 
-设备代号：n72 = iPod touch 2 代 · iPhone OS 3.1.3（7E18）；n88 = iPhone 3GS · iOS 6.1.6（10B500）；n90 = iPhone 4 · iOS 7.1.2（11D257）。「% 单核」是 QEMU 进程全部线程的 CPU 秒 / 墙钟秒 × 100，可以超过 100%（客体主核、副核和主线程同时忙）。
+Device codes: n72 = iPod touch 2nd gen · iPhone OS 3.1.3 (7E18); n88 = iPhone 3GS · iOS 6.1.6 (10B500); n90 = iPhone 4 · iOS 7.1.2 (11D257). "% of one core" is the CPU seconds of all QEMU process threads / wall clock seconds × 100, and can exceed 100% (guest main core, secondary core and main thread busy at the same time).
 
-### 2.1 三个年代并排（均值和 TCI/JIT 倍数）
+### 2.1 The three eras side by side (means and TCI/JIT ratios)
 
-| 项目 | n72 JIT | n72 TCI | 倍数 | n88 JIT | n88 TCI | 倍数 | n90 JIT | n90 TCI | 倍数 |
+| Item | n72 JIT | n72 TCI | Ratio | n88 JIT | n88 TCI | Ratio | n90 JIT | n90 TCI | Ratio |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 开机到锁屏（s） | 9.0 | 45.7 | 5.1× | 25.7 | 156.0 | 6.1× | 40.2 | 407.3 | 10.1× |
-| 开机时客体主核线程 CPU 秒 | 6.4 | 44.2 | 6.9× | 21.8 | 153.1 | 7.0× | 35.5 | 397.6 | 11.2× |
-| 主屏静置（% 单核） | 11.7 | 32.7 | 2.8× | 9.9 | 50.5 | 5.1× | 25.0 | 94.1 | 3.8× |
-| 主屏翻页（% 单核） | 23.1 | 57.3 | 2.5× | 19.2 | 66.8 | 3.5× | 35.0 | 96.5 | 2.8× |
-| 开设置的 10 秒（% 单核） | 18.6 | 54.8 | 2.9× | 18.2 | 86.6 | 4.7× | 28.9 | 102.6 | 3.5× |
-| 点开设置到前台（s） | 0.61 | 1.93 | 3.1× | 0.77 | 1.69 | 2.2× | 1.85 | 7.54 | 4.1× |
-| 点开时钟到前台（s） | 0.54 | 1.84 | 3.4× | 0.70 | 1.85 | 2.6× | 1.31 | 5.83 | 4.4× |
-| 主屏拖动可见帧率 | 34.6 | 44.3 | 0.8× | 52.5 | 26.3 | 2.0× | 15.1 | 7.2 | 2.1× |
-| 　拖动时客体主核 % | 20.6 | 74.0 | 3.6× | 29.7 | 85.9 | 2.9× | 48.8 | 73.8 | 1.5× |
-| 锁屏微光动画可见帧率 | 15.0 | – | – | 10.7 | 9.7 | 1.1× | 57.2 | 44.5 | 1.3× |
-| 　锁屏动画时客体主核 % | 9.9 | – | – | 12.2 | 72.3 | 5.9× | 36.2 | 62.9 | 1.7× |
-| 快照大小（MB） | 115.4 | 114.3 | – | 259.1 | 259.4 | – | 445.1 | 445.6 | – |
-| 其中 GL 状态（MB） | 4.4 | 4.4 | – | 3.8 | 4.4 | – | 17.6 | 17.5 | – |
-| 存快照（s） | 0.67 | 0.67 | – | 1.81 | 1.81 | – | 3.27 | 3.27 | – |
-| 恢复快照（s） | 0.10 | 0.09 | – | 0.14 | 0.13 | – | 0.16 | 0.17 | – |
-| 恢复后点设置到前台（s） | 0.31 | 1.62 | 5.2× | 0.57 | 2.80 | 4.9× | 0.85 | 5.73 | 6.8× |
+| Boot to lock screen (s) | 9.0 | 45.7 | 5.1× | 25.7 | 156.0 | 6.1× | 40.2 | 407.3 | 10.1× |
+| Guest main core thread CPU seconds during boot | 6.4 | 44.2 | 6.9× | 21.8 | 153.1 | 7.0× | 35.5 | 397.6 | 11.2× |
+| Home screen idle (% of one core) | 11.7 | 32.7 | 2.8× | 9.9 | 50.5 | 5.1× | 25.0 | 94.1 | 3.8× |
+| Home screen paging (% of one core) | 23.1 | 57.3 | 2.5× | 19.2 | 66.8 | 3.5× | 35.0 | 96.5 | 2.8× |
+| 10 seconds of opening Settings (% of one core) | 18.6 | 54.8 | 2.9× | 18.2 | 86.6 | 4.7× | 28.9 | 102.6 | 3.5× |
+| Tap Settings to foreground (s) | 0.61 | 1.93 | 3.1× | 0.77 | 1.69 | 2.2× | 1.85 | 7.54 | 4.1× |
+| Tap Clock to foreground (s) | 0.54 | 1.84 | 3.4× | 0.70 | 1.85 | 2.6× | 1.31 | 5.83 | 4.4× |
+| Home screen drag visible frame rate | 34.6 | 44.3 | 0.8× | 52.5 | 26.3 | 2.0× | 15.1 | 7.2 | 2.1× |
+| &emsp;Guest main core % during drag | 20.6 | 74.0 | 3.6× | 29.7 | 85.9 | 2.9× | 48.8 | 73.8 | 1.5× |
+| Lock screen shimmer visible frame rate | 15.0 | – | – | 10.7 | 9.7 | 1.1× | 57.2 | 44.5 | 1.3× |
+| &emsp;Guest main core % during lock screen animation | 9.9 | – | – | 12.2 | 72.3 | 5.9× | 36.2 | 62.9 | 1.7× |
+| Snapshot size (MB) | 115.4 | 114.3 | – | 259.1 | 259.4 | – | 445.1 | 445.6 | – |
+| Of which GL state (MB) | 4.4 | 4.4 | – | 3.8 | 4.4 | – | 17.6 | 17.5 | – |
+| Save snapshot (s) | 0.67 | 0.67 | – | 1.81 | 1.81 | – | 3.27 | 3.27 | – |
+| Restore snapshot (s) | 0.10 | 0.09 | – | 0.14 | 0.13 | – | 0.16 | 0.17 | – |
+| Tap Settings to foreground after restore (s) | 0.31 | 1.62 | 5.2× | 0.57 | 2.80 | 4.9× | 0.85 | 5.73 | 6.8× |
 
-均值只用测量窗口开始时 1 分钟负载不超过 8 的轮次（开机看每轮开始时的负载，交互项看静置窗口开始时的负载）。倍数是 TCI ÷ JIT；帧率一行是 JIT ÷ TCI。「点开 App 到前台」靠反复问 guest agent，TCI 下 agent 自己也慢，粒度约 1 到 3 秒，只当量级看。
+Means use only runs whose 1-minute load at the start of the measurement window was at most 8 (for boot, the load at the start of each run; for interaction items, the load at the start of the idle window). Ratios are TCI ÷ JIT; for the frame rate rows it is JIT ÷ TCI. "Tap app to foreground" relies on repeatedly asking the guest agent, and under TCI the agent itself is slow, so the granularity is about 1 to 3 seconds; treat it only as an order of magnitude.
 
-### 2.2 每轮原始数据和当时的负载
+### 2.2 Raw data per run and the load at the time
 
-| 轮次 | 开机到锁屏 s | 开机 CPU s | 主屏静置 %核 | 翻页 %核 | 开设置 s | 开设置 %核 | 开时钟 s | 开时钟 %核 | 快照 MB | 存 s | 恢复 s | 恢复后静置 %核 | 拖动可见帧率 | 负载 开始 | 负载 静置窗口 | 负载 结束 |
+| Run | Boot to lock screen s | Boot CPU s | Home screen idle % core | Paging % core | Open Settings s | Open Settings % core | Open Clock s | Open Clock % core | Snapshot MB | Save s | Restore s | Idle after restore % core | Drag visible frame rate | Load at start | Load at idle window | Load at end |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | n72-jit-1 | 9.0 | 6.8 | 12.4 | 25.3 | 0.62 | 20.5 | 0.46 | 20.2 | 115 | 0.67 | 0.09 | 11.5 | 34.6 | 6.2 | 5.0 | 63.6 |
 | n72-jit-2 ⚠ | 8.7 | 7.0 | 10.9 | 20.9 | 0.61 | 16.7 | 0.61 | 18.5 | 116 | 0.67 | 0.10 | 10.6 | – | 8.2 | 6.7 | 3.3 |
@@ -75,123 +75,123 @@
 | n90-tci-3 ⚠ | 403.2 | 415.6 | 92.4 | 101.7 | 10.61 | 103.4 | 3.68 | 101.5 | 444 | 3.25 | 0.17 | 90.6 | 7.2 | 15.1 | 3.1 | 3.3 |
 | n90-tci-4 | 407.3 | 440.1 | 95.7 | 91.3 | 4.46 | 101.8 | 7.97 | 102.2 | 448 | 3.29 | 0.17 | 91.2 | – | 3.3 | 3.0 | 3.9 |
 
-⚠：这一轮开始或静置窗口开始时 1 分钟负载超过 8（M1 编译或 Spotlight），对应部分不计入均值。n72-jit-2 和 n90-tci-3 只是开机那一刻碰上负载高峰（8.2 和 15.1，随即回落），开机时间和其他轮一致。3GS TCI 的静置三轮是 41.5%、57.7%（负载 20.8）、59.6%（负载 4.1），第三轮说明第二轮的高值并不是负载造成的，3GS TCI 的静置本身就在 42% 到 60% 之间波动；第三轮开机也比前两轮慢 10%（166 秒对 151 秒），当时本机已连续满载一个多小时，可能有降频。
+⚠: the 1-minute load at the start of this run or of its idle window exceeded 8 (M1 compiling or Spotlight); the corresponding part is excluded from the means. n72-jit-2 and n90-tci-3 only hit a load spike at the moment of boot (8.2 and 15.1, dropping right after), and their boot times match the other runs. The three 3GS TCI idle runs are 41.5%, 57.7% (load 20.8) and 59.6% (load 4.1); the third run shows the second run's high value was not caused by load, and 3GS TCI idle itself fluctuates between 42% and 60%. The third run also booted 10% slower than the first two (166 seconds vs 151 seconds); by then this machine had been fully loaded for more than an hour straight, so there may have been throttling.
 
-### 2.3 帧率怎么看
+### 2.3 How to read the frame rates
 
-截屏比对测的是「屏幕上实际出现的新画面」，上限是采样率 120 Hz，和渲染走哪条路无关。三种系统的情况不一样，要分开看：
+Screenshot comparison measures "new frames actually appearing on screen", capped at the 120 Hz sampling rate, regardless of which rendering path is used. The three systems behave differently and have to be read separately:
 
-- **iOS 6（3GS）主屏拖动是 CPU 受限的**：JIT 52.5 帧（客体主核 30%），TCI 26.3 帧（客体主核 86%，接近吃满），差一半。这是推算手机帧率时唯一可靠的一组。
-- **iPhone OS 3（iPod）主屏拖动不受 CPU 限制**：JIT 34.6 帧、TCI 44.3 帧，客体主核 21% 和 74% 都没吃满，两者的差别是噪声，说明在 Mac 上 TCI 并不拖累 3.x 的拖动。锁屏微光在 3.x 上本身就只有约 15 帧。
-- **iOS 7（iPhone 4）**：主屏拖动连 JIT 也只有 15 帧，客体主核才 49%，瓶颈不在 CPU（可能在触摸上报或 640×960 的显示路径，留给 M2 查）；TCI 降到 7 帧。锁屏「滑动解锁」的微光是 60 帧的连续动画：JIT 57 帧，TCI 44.5 帧（客体主核 63%，加主线程 38%）。另外用显示模型的 `swaps` 计数确认，iOS 7 的主屏什么都不做时面板也每秒换帧 30 次（JIT 下 14% 单核），这就是 iOS 7 待机比 iOS 6 贵得多、TCI 下直接吃满的原因；系统里的「减少动态效果」也许能压下来，值得 M2 试。
-- iOS 6 的锁屏微光本身也只有约 10 帧，JIT 和 TCI 一样，不能用来比较。
+- **iOS 6 (3GS) home screen drag is CPU-bound**: JIT 52.5 fps (guest main core 30%), TCI 26.3 fps (guest main core 86%, nearly saturated), a difference of half. This is the only reliable set for extrapolating phone frame rates.
+- **iPhone OS 3 (iPod) home screen drag is not CPU-bound**: JIT 34.6 fps, TCI 44.3 fps; the guest main core at 21% and 74% is not saturated in either case, and the difference between them is noise, which shows that on the Mac TCI does not slow down 3.x dragging. The lock screen shimmer on 3.x is itself only about 15 fps.
+- **iOS 7 (iPhone 4)**: home screen drag is only 15 fps even with JIT, with the guest main core at just 49%, so the bottleneck is not the CPU (possibly touch reporting or the 640×960 display path, left for M2 to investigate); TCI drops to 7 fps. The "slide to unlock" shimmer on the lock screen is a continuous 60 fps animation: JIT 57 fps, TCI 44.5 fps (guest main core 63%, plus main thread 38%). Also, the display model's `swaps` counter confirms that even when the iOS 7 home screen is doing nothing, the panel swaps frames 30 times per second (14% of one core under JIT). This is why iOS 7 idle costs much more than iOS 6 and saturates a core under TCI; the system's "Reduce Motion" setting might bring it down, worth trying in M2.
+- The iOS 6 lock screen shimmer is itself only about 10 fps, the same under JIT and TCI, so it cannot be used for comparison.
 
-### 2.4 作废轮次里的开机数字
+### 2.4 Boot numbers from discarded runs
 
-iPhone 4 前三轮（USB 键盘提示，见第 7 节）和中途停掉的一轮，开机都发生在提示出现之前，开机数字仍可参考：JIT 41.2 秒（负载 9.5）、59.2 秒（负载 63，受干扰）；TCI 399.2 秒、405.5 秒。加上有效轮次，iPhone 4 TCI 的四次开机是 399、405、403、407 秒，非常稳定。
+In the first three iPhone 4 runs (USB keyboard alert, see section 7) and the run stopped midway, boot happened before the alert appeared, so their boot numbers are still usable as a reference: JIT 41.2 seconds (load 9.5), 59.2 seconds (load 63, interfered with); TCI 399.2 seconds, 405.5 seconds. Together with the valid runs, the four iPhone 4 TCI boots are 399, 405, 403 and 407 seconds, very stable.
 
-## 3. 快照和宿主 GL
+## 3. Snapshots and host GL
 
-**测量时 GL 开着。** 所有轮次（包括快照和恢复）都开着宿主 GL：日志里有 `[gles] host GL up: 2.1 Metal - 91.7 / Apple M4 Max, present by readback`，CoreAnimation 走宿主合成。Mac 上没有关 GL 的开关可比：FirmwareKit 制作设备时总是把 GL 前端（替换 OpenGLES.framework 的 shim）烧进系统，没有「不带 GL」的选项；QEMU 侧也只有 `gl-renderer=cgl|angle` 二选一。
+**GL was on during measurement.** All runs (including snapshot and restore) had host GL on: the log has `[gles] host GL up: 2.1 Metal - 91.7 / Apple M4 Max, present by readback`, and CoreAnimation uses host compositing. On the Mac there is no switch to turn GL off for comparison: FirmwareKit always burns the GL frontend (a shim replacing OpenGLES.framework) into the system when making a device, with no "without GL" option; on the QEMU side there is only the choice `gl-renderer=cgl|angle`.
 
-**Mac（CGL）上 GL 对快照的影响很小。** `hw/arm/gles-host-snapshot.c.inc` 在存快照时用 GL 把每个上下文的状态读回来（共享组、上下文、缓冲、带像素的纹理、渲染缓冲的尺寸、帧缓冲挂接、着色器和程序、固定管线状态），打成一个「gles-host」段，恢复时重建上下文再灌回去。实测这一段在 iPod 和 3GS 上约 4 MB，iPhone 4 上约 18 MB（iOS 7 的纹理多），占整个快照的 1.5% 到 4%。存快照的时间几乎全花在写内存上（3GS 约 252 MB 内存页，1.16 Gbit/s，1.74 秒，和实测 1.8 秒吻合）。恢复后 GL 正常出图，点图标能打开 App（iPod 0.31 秒、3GS 0.57 秒、iPhone 4 0.85 秒到前台，JIT）。
+**On the Mac (CGL), GL has very little effect on snapshots.** When saving a snapshot, `hw/arm/gles-host-snapshot.c.inc` uses GL to read back each context's state (share groups, contexts, buffers, textures with their pixels, renderbuffer sizes, framebuffer attachments, shaders and programs, fixed-function pipeline state) and packs it into a "gles-host" section; on restore it rebuilds the contexts and loads the state back in. Measured, this section is about 4 MB on the iPod and 3GS and about 18 MB on the iPhone 4 (iOS 7 has more textures), 1.5% to 4% of the whole snapshot. Saving time goes almost entirely into writing memory (3GS about 252 MB of memory pages, 1.16 Gbit/s, 1.74 seconds, matching the measured 1.8 seconds). After restore, GL renders normally and tapping an icon opens the app (iPod 0.31 seconds, 3GS 0.57 seconds, iPhone 4 0.85 seconds to foreground, JIT).
 
-**iPhone 上目前存不了。** 同一个文件在 iOS 宿主上编成 EAGL 后端（`TARGET_OS_IPHONE` → `GLES_HOST_EAGL`），`gles_begin_context` 在第一个 GL 上下文建立时就挂上迁移阻断器「Live OpenGL ES state cannot be saved (including accelerated system UI)」，直到所有上下文销毁才解除；SpringBoard 起来后一直有上下文，所以 `migrate` 会被拒绝。实验性的 ANGLE 渲染器也一样（「angle (experimental; no snapshots)」）。要在手机上做快照，得把 CGL 的读回和重建搬到 EAGL：iOS 的 OpenGLES.framework 仍导出完整的 ES 1.1 固定管线，所以状态读回大多能照搬，但 ES 没有 `glGetTexImage`，纹理像素要改成挂到 FBO 上 `glReadPixels`，ES 2.0 的着色器程序要靠重编译。M1 报告里也已把「快照（无 GL 时存）」「`glGetTexImage` 探测」列进下一阶段。
+**On iPhone they currently cannot be saved.** On an iOS host the same file compiles to the EAGL backend (`TARGET_OS_IPHONE` → `GLES_HOST_EAGL`), and `gles_begin_context` installs the migration blocker "Live OpenGL ES state cannot be saved (including accelerated system UI)" as soon as the first GL context is created, lifting it only when all contexts are destroyed; after SpringBoard is up there is always a context, so `migrate` is refused. The experimental ANGLE renderer is the same ("angle (experimental; no snapshots)"). To do snapshots on the phone, CGL's readback and rebuild have to be moved to EAGL: iOS's OpenGLES.framework still exports the full ES 1.1 fixed-function pipeline, so most of the state readback carries over as is, but ES has no `glGetTexImage`, so texture pixels have to be read instead by attaching the texture to an FBO and calling `glReadPixels`, and ES 2.0 shader programs have to be recompiled. The M1 report has also already put "snapshot (save when there is no GL)" and "`glGetTexImage` probe" into the next stage.
 
-**快照大小和客体内存成正比**：iPod 128 MB 内存 → 115 MB，3GS 256 MB → 259 MB，iPhone 4 512 MB → 445 MB。iOS 把内存用得很满（3GS 的全零页只有约 4000 页），压缩的空间不大。存快照约 145 MB/s，卡在 QEMU 的迁移代码而不是磁盘（本机 SSD 快得多），手机上应是同一量级：iPhone 4 的 445 MB 要 3 秒多，App 切到后台时存快照要考虑这个时间。恢复只要 0.1 到 0.2 秒，但这时快照文件刚写完、还在系统缓存里；手机上冷读按闪存 1 到 2 GB/s 估，约 0.1 到 0.5 秒，仍然算「秒切」。
+**Snapshot size is proportional to guest memory**: iPod 128 MB of memory → 115 MB, 3GS 256 MB → 259 MB, iPhone 4 512 MB → 445 MB. iOS uses memory very fully (the 3GS has only about 4000 all-zero pages), so there is little room for compression. Saving runs at about 145 MB/s, limited by QEMU's migration code rather than the disk (this machine's SSD is much faster), and on the phone it should be the same order of magnitude: the iPhone 4's 445 MB takes over 3 seconds, which has to be accounted for when saving a snapshot as the app goes to the background. Restoring takes only 0.1 to 0.2 seconds, but at that point the snapshot file has just been written and is still in the system cache; a cold read on the phone, estimated at 1 to 2 GB/s for flash, takes about 0.1 to 0.5 seconds, which still counts as "instant switching".
 
-## 4. 推算到 iPhone
+## 4. Extrapolation to iPhone
 
-**换算系数**。上游可行性研究（qemu-ios 已删的 `docs/research/ipod-touch-2g-on-iphone.md`，2026-08-03）：A19 Pro 单线程约 0.90 个 M4 Max 核，乘持续负载降频 0.75，约 0.68 个「M4 Max 核当量」。照简报：iPhone 18 Pro（A20 Pro）按 0.7，iPhone 14 Pro（A16）按 A19 Pro 的 0.7 倍粗算，约 0.48。这两个都是粗算。
+**Conversion factor.** Upstream feasibility study (qemu-ios's since-deleted `docs/research/ipod-touch-2g-on-iphone.md`, 2026-08-03): A19 Pro single-thread performance is about 0.90 M4 Max cores; multiplied by 0.75 for throttling under sustained load, that is about 0.68 "M4 Max core equivalents". Per the brief: iPhone 18 Pro (A20 Pro) at 0.7, and iPhone 14 Pro (A16) roughly 0.7 times the A19 Pro, about 0.48. Both are rough estimates.
 
-**M1 的真机数字说明 0.7 偏保守。** M1 在 iPhone 18 Pro 上用解释器版开机（`docs/reports/m1-stage1.md` 第 4.2 节）：iPod 43 秒、3GS 115 秒到锁屏；本机 TCI 是 45.7 秒和 150.7 秒。也就是说，短时间的解释器负载上 A20 Pro 约等于 1.06 到 1.31 个 M4 Max 核，所以表里多给一列「按 M1 真机开机校准，1.2」。要注意两点：一是开机只有一两分钟，测不出长时间玩的降频，持续使用应介于 0.7 和 1.2 之间；二是 M1 的 iOS 构建关了宿主 GL（`-Dhost_gles=disabled`），App 自己每次屏幕刷新取一帧画面，口径和这里不同。M1 测到的待机 CPU（iPod 50%、3GS 91%）比这里推的高，很可能就是这两点造成的，不是手机更慢。
+**M1's real-device numbers show 0.7 is on the conservative side.** M1 booted the interpreter build on the iPhone 18 Pro (section 4.2 of `docs/reports/m1-stage1.md`): iPod 43 seconds, 3GS 115 seconds to the lock screen; TCI on this machine is 45.7 seconds and 150.7 seconds. In other words, under short interpreter loads the A20 Pro is about 1.06 to 1.31 M4 Max cores, so the tables give one more column, "calibrated against M1's real-device boot, 1.2". Two caveats: first, boot lasts only a minute or two, which cannot reveal throttling during long play sessions, so sustained use should fall between 0.7 and 1.2; second, M1's iOS build had host GL disabled (`-Dhost_gles=disabled`) and the app itself grabbed a frame on every screen refresh, so it measures differently from here. M1's measured idle CPU (iPod 50%, 3GS 91%) is higher than extrapolated here, very likely because of these two points, not because the phone is slower.
 
-**怎么读**：开机秒数 / k；CPU 占比 / k，按手机的一个核算，超过 100% 表示吃满，客体就会比实速慢（例如 179% 大约是实速的 56%）；拖动帧率 = Mac 帧率 × min(1, k / 客体主核占比)，只对 CPU 受限的 3GS 有意义，iPod 和 iPhone 4 的拖动瓶颈不在 CPU，算出来的只是上限。iPhone 4 的 TCI 在 Mac 上已经吃满（≥90%），客体在 Mac 上就已比实速慢，直接除以 k 会低估，所以写成「≥下限（约 估计）」，估计 = JIT 占比 × 开机时客体主核 CPU 的 TCI/JIT 倍数（11.2）/ k；这个估计偏高（主线程的显示和 GL 开销不随解释器变慢），但量级可信。
+**How to read**: boot seconds / k; CPU share / k, counted against one phone core, where over 100% means saturated and the guest then runs slower than real speed (for example 179% is about 56% of real speed); drag frame rate = Mac frame rate × min(1, k / guest main core share), meaningful only for the CPU-bound 3GS; for the iPod and iPhone 4 the drag bottleneck is not the CPU, so the computed value is only an upper bound. iPhone 4 TCI is already saturated on the Mac (≥90%), so the guest already runs slower than real speed on the Mac and dividing directly by k would underestimate; it is therefore written as "≥lower bound (about estimate)", where estimate = JIT share × the TCI/JIT ratio of guest main core CPU during boot (11.2) / k. This estimate is on the high side (the main thread's display and GL overhead does not slow down with the interpreter), but the order of magnitude is credible.
 
-#### iPhone 18 Pro（A20 Pro，粗算 0.7）
+#### iPhone 18 Pro (A20 Pro, rough estimate 0.7)
 
-| 机型 | 模式 | 开机到锁屏 s | 主屏静置 %核 | 翻页 %核 | 开 App %核 | 主屏拖动帧率 |
+| Model | Mode | Boot to lock screen s | Home screen idle % core | Paging % core | Open app % core | Home screen drag frame rate |
 |---|---|---:|---:|---:|---:|---:|
-| iPod touch 2 代 · iPhone OS 3.1.3 | JIT | 13 | 17 | 33 | 27 | 35 |
-| iPod touch 2 代 · iPhone OS 3.1.3 | TCI | 65 | 47 | 82 | 77 | 42 |
+| iPod touch 2nd gen · iPhone OS 3.1.3 | JIT | 13 | 17 | 33 | 27 | 35 |
+| iPod touch 2nd gen · iPhone OS 3.1.3 | TCI | 65 | 47 | 82 | 77 | 42 |
 | iPhone 3GS · iOS 6.1.6 | JIT | 37 | 14 | 28 | 27 | 52 |
 | iPhone 3GS · iOS 6.1.6 | TCI | 223 | 72 | 96 | 122 | 21 |
 | iPhone 4 · iOS 7.1.2 | JIT | 57 | 36 | 50 | 44 | 15 |
-| iPhone 4 · iOS 7.1.2 | TCI | 582 | ≥134（约 400） | ≥138（约 559） | ≥146（约 487） | 7 |
+| iPhone 4 · iOS 7.1.2 | TCI | 582 | ≥134 (about 400) | ≥138 (about 559) | ≥146 (about 487) | 7 |
 
-#### iPhone 14 Pro（A16，粗算 0.48）
+#### iPhone 14 Pro (A16, rough estimate 0.48)
 
-| 机型 | 模式 | 开机到锁屏 s | 主屏静置 %核 | 翻页 %核 | 开 App %核 | 主屏拖动帧率 |
+| Model | Mode | Boot to lock screen s | Home screen idle % core | Paging % core | Open app % core | Home screen drag frame rate |
 |---|---|---:|---:|---:|---:|---:|
-| iPod touch 2 代 · iPhone OS 3.1.3 | JIT | 19 | 24 | 49 | 40 | 35 |
-| iPod touch 2 代 · iPhone OS 3.1.3 | TCI | 96 | 69 | 120 | 113 | 28 |
+| iPod touch 2nd gen · iPhone OS 3.1.3 | JIT | 19 | 24 | 49 | 40 | 35 |
+| iPod touch 2nd gen · iPhone OS 3.1.3 | TCI | 96 | 69 | 120 | 113 | 28 |
 | iPhone 3GS · iOS 6.1.6 | JIT | 54 | 21 | 40 | 40 | 52 |
 | iPhone 3GS · iOS 6.1.6 | TCI | 328 | 106 | 140 | 179 | 15 |
 | iPhone 4 · iOS 7.1.2 | JIT | 84 | 53 | 74 | 64 | 15 |
-| iPhone 4 · iOS 7.1.2 | TCI | 856 | ≥198（约 588） | ≥203（约 823） | ≥215（约 716） | 5 |
+| iPhone 4 · iOS 7.1.2 | TCI | 856 | ≥198 (about 588) | ≥203 (about 823) | ≥215 (about 716) | 5 |
 
-#### iPhone 18 Pro（按 M1 真机开机校准 1.2）
+#### iPhone 18 Pro (calibrated against M1's real-device boot, 1.2)
 
-| 机型 | 模式 | 开机到锁屏 s | 主屏静置 %核 | 翻页 %核 | 开 App %核 | 主屏拖动帧率 |
+| Model | Mode | Boot to lock screen s | Home screen idle % core | Paging % core | Open app % core | Home screen drag frame rate |
 |---|---|---:|---:|---:|---:|---:|
-| iPod touch 2 代 · iPhone OS 3.1.3 | JIT | 8 | 10 | 19 | 16 | 35 |
-| iPod touch 2 代 · iPhone OS 3.1.3 | TCI | 38 | 27 | 48 | 45 | 44 |
+| iPod touch 2nd gen · iPhone OS 3.1.3 | JIT | 8 | 10 | 19 | 16 | 35 |
+| iPod touch 2nd gen · iPhone OS 3.1.3 | TCI | 38 | 27 | 48 | 45 | 44 |
 | iPhone 3GS · iOS 6.1.6 | JIT | 21 | 8 | 16 | 16 | 52 |
 | iPhone 3GS · iOS 6.1.6 | TCI | 130 | 42 | 56 | 71 | 26 |
 | iPhone 4 · iOS 7.1.2 | JIT | 34 | 21 | 29 | 25 | 15 |
-| iPhone 4 · iOS 7.1.2 | TCI | 339 | ≥78（约 233） | ≥80（约 326） | ≥85（约 284） | 7 |
+| iPhone 4 · iOS 7.1.2 | TCI | 339 | ≥78 (about 233) | ≥80 (about 326) | ≥85 (about 284) | 7 |
 
-## 5. 截图
+## 5. Screenshots
 
-三个版本走完首次设置后的主屏（JIT，Mac 上无头运行时的 `screendump`）：
+Home screens of the three versions after first-time setup (JIT, `screendump` from headless runs on the Mac):
 
-| iPod touch 2 代 · iPhone OS 3.1.3 | iPhone 3GS · iOS 6.1.6 | iPhone 4 · iOS 7.1.2 |
+| iPod touch 2nd gen · iPhone OS 3.1.3 | iPhone 3GS · iOS 6.1.6 | iPhone 4 · iOS 7.1.2 |
 |---|---|---|
 | ![](img/n72ap-7E18-home-after-setup.png) | ![](img/n88ap-10B500-home-after-setup.png) | ![](img/n90ap-11D257-home-after-setup.png) |
 
-iOS 7 的 USB 键盘提示（作废的 iPhone 4 轮次，「翻页」时其实被它挡住了）：
+The iOS 7 USB keyboard alert (discarded iPhone 4 runs; during "paging" it was in fact blocking the screen):
 
 ![](img/m0-n90ap-11D257-usbkbd-alert.png)
 
-每轮的锁屏、主屏、第二页、设置、时钟、恢复后的截图都在 `work/runs/<轮次>/`。
+Screenshots of each run's lock screen, home screen, second page, Settings, Clock and post-restore state are in `work/runs/<run>/`.
 
-## 6. 复现步骤
+## 6. Reproduction steps
 
-全部命令在项目根目录 `~/Developer/classic-ios` 下执行。产物都在 `work/`（不进仓库）。上游两个仓库只读，没有改动（`git status` 干净，见「上游改动」）。
+All commands run from the project root `~/Developer/classic-ios`. All outputs are in `work/` (not in the repository). The two upstream repositories are read-only and unchanged (`git status` is clean, see "Upstream changes").
 
-### 0. 环境和依赖
+### 0. Environment and dependencies
 
-本机：M4 Max（10 个性能核 + 4 个能效核，36 GB），macOS 27.0.1，Xcode 27.2。
+This machine: M4 Max (10 performance cores + 4 efficiency cores, 36 GB), macOS 27.0.1, Xcode 27.2.
 
 ```bash
 brew install glib ninja meson pixman pkgconf openssl@3 python@3.12 libslirp ldid jq
 ```
 
-QEMU 的 configure 要用 Homebrew 的 python@3.12（RUNNING.md 的排错段落：最新的 Python 缺 distlib）。
+QEMU's configure needs Homebrew's python@3.12 (troubleshooting section of RUNNING.md: the latest Python lacks distlib).
 
-### 1. 上游源码
+### 1. Upstream source
 
 ```bash
 git clone https://github.com/samhenrigold/qemu-ios upstream/qemu-ios          # b225694505
 git clone https://github.com/samhenrigold/LightTouchMac upstream/LightTouchMac  # b06012fa4c
 ```
 
-### 2. FFmpeg（绕路 1）
+### 2. FFmpeg (workaround 1)
 
-QEMU 把 libavcodec/libavutil 当可选依赖（`hw/arm/meson.build`：iPod touch 2 代的 H.264 和 AAC 解码），没有也能编，但 Light Touch 发布版用的是打了两个上游补丁（`contrib/ffmpeg/*.patch`）的 FFmpeg 9.0.1，Homebrew 的版本没有这两个补丁。所以照 LightTouchMac `build-support/recipes/build-package-native.sh` 的选项自己编一份最小的（只开 aac、mp3、alac、h264 解码器）：
+QEMU treats libavcodec/libavutil as optional dependencies (`hw/arm/meson.build`: H.264 and AAC decoding for the iPod touch 2nd gen) and builds without them, but the Light Touch release uses FFmpeg 9.0.1 with two upstream patches (`contrib/ffmpeg/*.patch`), which the Homebrew version lacks. So a minimal build is made by hand with the options from LightTouchMac's `build-support/recipes/build-package-native.sh` (only the aac, mp3, alac and h264 decoders enabled):
 
 ```bash
-tools/m0/build-ffmpeg.sh            # 下载 ffmpeg-9.0.1.tar.xz（校验 sha256），打补丁，装到 work/ffmpeg/prefix
+tools/m0/build-ffmpeg.sh            # downloads ffmpeg-9.0.1.tar.xz (checks sha256), applies the patches, installs to work/ffmpeg/prefix
 mkdir -p work/build-jit/ffmpeg-pkgconfig
 ln -s $PWD/work/ffmpeg/prefix/lib/pkgconfig/libavcodec.pc $PWD/work/ffmpeg/prefix/lib/pkgconfig/libavutil.pc \
   work/build-jit/ffmpeg-pkgconfig/
 ```
 
-（TCI 构建也指向这个目录。只放这两个 .pc 是为了让 pkg-config 只从这里拿 FFmpeg，不碰 Homebrew 里别的东西。）
+(The TCI build points to this directory too. Only these two .pc files are put there so that pkg-config takes FFmpeg only from here and does not touch anything else in Homebrew.)
 
-### 3. QEMU：JIT 版和纯解释器（TCI）版
+### 3. QEMU: JIT build and pure interpreter (TCI) build
 
-两个构建只差一个 `--enable-tcg-interpreter`：
+The two builds differ only by `--enable-tcg-interpreter`:
 
 ```bash
 for kind in jit tci; do
@@ -206,11 +206,11 @@ for kind in jit tci; do
 done
 ```
 
-每个构建约 1 分钟（14 核）。`--disable-sdl`：只跑无头（`-display none`）；`--disable-fuse`、`--disable-capstone`、`--disable-pie` 照 RUNNING.md 的 Apple Silicon 配置。
+Each build takes about 1 minute (14 cores). `--disable-sdl`: headless only (`-display none`); `--disable-fuse`, `--disable-capstone` and `--disable-pie` follow RUNNING.md's Apple Silicon configuration.
 
-### 4. guest 工具：替代 SDK（绕路 2）
+### 4. Guest tools: substitute SDK (workaround 2)
 
-FirmwareKit 制作设备时要往固件里装 qemu-ios 的 guest 工具（GL 前端 OpenGLES、it_agent、AppSync 等），它们由 `contrib/export-guest-artifacts.sh` 编译，要求 iPhoneOS 3.1.3 和 3.2 两个老 SDK。这两个是苹果的下载，不在本机，也不能去拿。实际上编译只用到 SDK 里的两样东西：`usr/include` 的 C 头文件，和一个带 armv7 切片的 libSystem 桩（只给链接器解析符号用，运行时由固件自己的 libSystem 绑定）。`tools/m0/make-substitute-sdk.py` 用本机 Xcode 的 iPhoneOS SDK 造一个替身：复制头文件（强制关掉 `_FORTIFY_SOURCE`，因为 3.x 的 libSystem 没有 `__*_chk` 系列），补上编译器自带的独立头文件（stdbool.h 之类，老 SDK 自带，新 SDK 不带），再把 libSystem.B.tbd 里所有导出符号压平成一个 armv7-ios 的文本桩。替身里没有任何苹果二进制，也不打包分发。
+When making a device, FirmwareKit installs qemu-ios's guest tools into the firmware (the OpenGLES GL frontend, it_agent, AppSync and so on). They are compiled by `contrib/export-guest-artifacts.sh`, which requires two old SDKs, iPhoneOS 3.1.3 and 3.2. Those are Apple downloads, not on this machine, and may not be fetched. In practice the build uses only two things from the SDK: the C headers in `usr/include`, and a libSystem stub with an armv7 slice (used only by the linker to resolve symbols; at runtime the firmware's own libSystem is bound). `tools/m0/make-substitute-sdk.py` builds a stand-in from the local Xcode's iPhoneOS SDK: it copies the headers (forcing `_FORTIFY_SOURCE` off, because 3.x's libSystem has no `__*_chk` family), adds the compiler's own freestanding headers (stdbool.h and the like, which the old SDKs shipped and the new SDK does not), and then flattens all exported symbols in libSystem.B.tbd into a single armv7-ios text stub. The stand-in contains no Apple binaries and is not packaged or distributed.
 
 ```bash
 python3 tools/m0/make-substitute-sdk.py work/sdk-substitute/iPhoneOS-substitute.sdk
@@ -218,40 +218,40 @@ ARMV6_SDK=$PWD/work/sdk-substitute/iPhoneOS-substitute.sdk IPAD_SDK=$PWD/work/sd
   LDID=$(command -v ldid) upstream/qemu-ios/contrib/export-guest-artifacts.sh work/guest-artifacts
 ```
 
-结果：44 个文件，`work/guest-artifacts/ipad-guest-tools/` 是 FirmwareKit 要的平铺目录。三台设备制作时 GL 前端、AppSync、it_agent 都装上了，开机后 GL 桥正常工作（`[gles] host GL up`）。
+Result: 44 files; `work/guest-artifacts/ipad-guest-tools/` is the flat directory FirmwareKit expects. All three devices got the GL frontend, AppSync and it_agent installed when they were made, and after boot the GL bridge works normally (`[gles] host GL up`).
 
-### 5. FirmwareKit 和假的 LightTouchDevice（绕路 3）
+### 5. FirmwareKit and a fake LightTouchDevice (workaround 3)
 
 ```bash
 swift build -c release --package-path upstream/LightTouchMac/Packages/FirmwareKit --scratch-path work/build-firmwarekit
-# 产物 work/build-firmwarekit/release/firmwarekit（约 50 秒）
+# output: work/build-firmwarekit/release/firmwarekit (about 50 seconds)
 ```
 
-`firmwarekit create` 在制作 iOS 4 以后的设备时要开机几次（封存、建 keybag、检查），这几次开机交给 Light Touch 的设备辅助程序 LightTouchDevice（Xcode 构建、签名、沙盒化，在进程内加载 libqemu-arm.dylib）。我们不构建 Light Touch App，所以 `tools/m0/helper-shim/` 写了一个替身：只实现 firmwarekit 用到的两种模式，`machines`（列出机型，取自 `tests/fixtures/machines.json`）和 `oneshot`（用同一份 argv 跑 `qemu-system-arm`，直到 QEMU 退出、串口出现标记或超时）。有一个细节：firmwarekit 从屏蔽了 SIGTERM 的线程启动辅助程序，信号屏蔽会被 exec 继承，替身要先解除屏蔽，否则到了标记时 QEMU 收不到 SIGTERM。
+When making devices for iOS 4 and later, `firmwarekit create` boots them a few times (sealing, creating the keybag, checking), and hands these boots to Light Touch's device helper LightTouchDevice (built with Xcode, signed, sandboxed, loading libqemu-arm.dylib in process). We do not build the Light Touch app, so `tools/m0/helper-shim/` provides a stand-in: it implements only the two modes firmwarekit uses, `machines` (lists machine types, taken from `tests/fixtures/machines.json`) and `oneshot` (runs `qemu-system-arm` with the same argv until QEMU exits, a marker appears on the serial port, or it times out). One detail: firmwarekit launches the helper from a thread that blocks SIGTERM, and the signal mask is inherited across exec, so the stand-in must unblock it first, otherwise QEMU does not receive SIGTERM when the marker arrives.
 
 ```bash
 mkdir -p work/tools && cp -R tools/m0/helper-shim work/tools/helper-shim
 ```
 
-### 6. OCR 小工具
+### 6. OCR tool
 
-首次设置（Setup Assistant）靠截屏识字自动点，照 LightTouchMac SessionKit 的 TextReader 用 Vision 实现：
+First-time setup (Setup Assistant) is driven automatically by reading text from screenshots and tapping, implemented with Vision following the TextReader in LightTouchMac's SessionKit:
 
 ```bash
 mkdir -p work/tools/ocr && swiftc -O tools/m0/ocr.swift -o work/tools/ocr/ocr
 ```
 
-### 7. 固件（用户自己下载，不进仓库）
+### 7. Firmware (downloaded by the user, not in the repository)
 
-| 设备 | 文件 | 来源 | SHA-1 |
+| Device | File | Source | SHA-1 |
 |---|---|---|---|
-| iPhone 3GS 6.1.6 | iPhone2,1_6.1.6_10B500_Restore.ipsw | 苹果服务器（固件表里的 URL） | eb7f495760a500bb284b07f11492a4fadf687802 |
-| iPhone 4 7.1.2 | iPhone3,1_7.1.2_11D257_Restore.ipsw | 苹果服务器 | 81da17b3e893a61508fe203849b7e1f60e2127b1 |
-| iPod touch 2 代 3.1.3 | iPod2,1_3.1.3_7E18_Restore.ipsw | archive.org（固件表里的 URL，苹果已下架） | 5f4f5c01eda2f811f73167e7d1f82dbeed82367b |
+| iPhone 3GS 6.1.6 | iPhone2,1_6.1.6_10B500_Restore.ipsw | Apple servers (URL from the firmware catalog) | eb7f495760a500bb284b07f11492a4fadf687802 |
+| iPhone 4 7.1.2 | iPhone3,1_7.1.2_11D257_Restore.ipsw | Apple servers | 81da17b3e893a61508fe203849b7e1f60e2127b1 |
+| iPod touch 2nd gen 3.1.3 | iPod2,1_3.1.3_7E18_Restore.ipsw | archive.org (URL from the firmware catalog; Apple has taken it down) | 5f4f5c01eda2f811f73167e7d1f82dbeed82367b |
 
-URL 都取自 `upstream/LightTouchMac/LightTouchMac/Resources/firmware-catalog.json`，下载后用 `shasum` 对照。
+All URLs come from `upstream/LightTouchMac/LightTouchMac/Resources/firmware-catalog.json`; after downloading, check them against it with `shasum`.
 
-### 8. 制作设备
+### 8. Making the devices
 
 ```bash
 for id in n88ap-10B500:iPhone2,1_6.1.6_10B500 n90ap-11D257:iPhone3,1_7.1.2_11D257 n72ap-7E18:iPod2,1_3.1.3_7E18; do
@@ -265,9 +265,9 @@ for id in n88ap-10B500:iPhone2,1_6.1.6_10B500 n90ap-11D257:iPhone3,1_7.1.2_11D25
 done
 ```
 
-耗时：3GS 237 秒（含三次一次性开机），iPhone 4 约 2 分钟，iPod 9 秒（3.x 不需要开机建 keybag）。语言和键盘默认取 Mac 的（en-AU）。
+Time taken: 3GS 237 seconds (including three one-off boots), iPhone 4 about 2 minutes, iPod 9 seconds (3.x does not need a boot to create the keybag). Language and keyboard default to the Mac's (en-AU).
 
-### 9. 首次设置，得到「黄金状态」
+### 9. First-time setup, producing the "golden state"
 
 ```bash
 python3 tools/m0/bench.py setup --device work/devices/n88ap-10B500 --golden work/states/n88ap-10B500
@@ -275,66 +275,66 @@ python3 tools/m0/bench.py setup --device work/devices/n90ap-11D257 --golden work
 python3 tools/m0/bench.py setup --device work/devices/n72ap-7E18  --golden work/states/n72ap-7E18
 ```
 
-用 JIT 版开机，OCR 识别每一页，照 SetupPlan 的规则点（英文、美国、跳过 Wi-Fi、关定位、设为新 iPhone、同意条款、不设密码、不发送诊断），到主屏后截图、`system_powerdown` 关机。留下的 `state/`（可写 NOR 加 NAND 覆盖层）就是之后每轮测速的起点，每轮先 APFS 克隆一份。
+Boot with the JIT build, OCR each page, and tap according to SetupPlan's rules (English, United States, skip Wi-Fi, location off, set up as new iPhone, agree to the terms, no passcode, don't send diagnostics); on reaching the home screen, take a screenshot and power off with `system_powerdown`. The resulting `state/` (writable NOR plus NAND overlay) is the starting point for every later benchmark run; each run first makes an APFS clone of it.
 
-iPod touch 2 代（绕路 4，本会话加的）：
+iPod touch 2nd gen (workaround 4, added in this session):
 
-- 启动链：照 `BootRecipe.iPod` 拼参数，`-M iPod-Touch,boot-args=...,direct-iboot=<底包>/iBoot.bin,bootrom=<SecureROM>,nand=<覆盖层>/nand,nor=...,nor-rw=...,wifi=on,gid-blobs=...`，加 `-m 128M` 和环境变量 `IT_TVOUT_READY=1`（上游注释：3.1.3 没有它不开机）。
-- 它的 NAND 是「镜像库」格式（`nand-xor-blank-v2`），模拟器直接写，所以要像 `PreparedDeviceBoot.liveNAND` 那样把底包的四个 chip 文件 clonefile 到 `overlay/nand/` 再改成可写，不能像 3GS 那样用 `nand-overlay`。
-- Home 键：这台机型没有 `button-home` 属性，按键走键盘 Command+Shift+H（`ipod_touch_kbd_button`），电源键是 Command+L。
-- SecureROM：机型初始化无条件加载 `bootrom=` 指向的文件（`ipod_touch_load_bootrom`，失败即退出）。真 ROM（`bootrom_240_4`）不在 IPSW 里，Light Touch 是把它打包在 App 的 `Resources/Device/` 里发的，我们没有也不能拿。冷启动走 direct-iboot 时 ROM 只被放进内存、并不执行，所以用一个 4 字节占位文件（ARM 指令 `b .`，`work/m0-placeholder/bootrom_240_4`）就能开机。代价见「踩过的坑」：深度睡眠后无法唤醒。
-- 3.x 没有设置助理（激活在制作时写好了），开机就是锁屏，滑开即主屏。
+- Boot chain: build the arguments following `BootRecipe.iPod`, `-M iPod-Touch,boot-args=...,direct-iboot=<base>/iBoot.bin,bootrom=<SecureROM>,nand=<overlay>/nand,nor=...,nor-rw=...,wifi=on,gid-blobs=...`, plus `-m 128M` and the environment variable `IT_TVOUT_READY=1` (upstream comment: 3.1.3 does not boot without it).
+- Its NAND is in "image store" format (`nand-xor-blank-v2`), which the emulator writes directly, so, as `PreparedDeviceBoot.liveNAND` does, the base's four chip files have to be clonefiled into `overlay/nand/` and then made writable; `nand-overlay` cannot be used as on the 3GS.
+- Home button: this machine type has no `button-home` property; the button goes through the keyboard as Command+Shift+H (`ipod_touch_kbd_button`), and the power button is Command+L.
+- SecureROM: machine init unconditionally loads the file that `bootrom=` points to (`ipod_touch_load_bootrom`, exiting on failure). The real ROM (`bootrom_240_4`) is not in the IPSW; Light Touch ships it bundled in the app's `Resources/Device/`, and we neither have it nor may take it. When cold booting via direct-iboot the ROM is only placed in memory and never executed, so a 4-byte placeholder file (ARM instruction `b .`, `work/m0-placeholder/bootrom_240_4`) is enough to boot. For the cost, see "Pitfalls": it cannot wake from deep sleep.
+- 3.x has no Setup Assistant (activation is written in when the device is made); it boots straight to the lock screen, and sliding it open gives the home screen.
 
-### 10. 测速
+### 10. Benchmarks
 
 ```bash
-tools/m0/run-queue.sh n88-jit-1:n88ap-10B500:jit n88-tci-1:n88ap-10B500:tci ...   # 一轮接一轮，绝不并行
+tools/m0/run-queue.sh n88-jit-1:n88ap-10B500:jit n88-tci-1:n88ap-10B500:tci ...   # one run after another, never in parallel
 ```
 
-每轮（`bench.py run`）：克隆黄金状态，冷启动到锁屏；等到某个 10 秒窗口 CPU 低于 60% 算「安定」；解锁，主屏静置 40 秒；主屏来回翻页 5 次（约 20 秒）；用 guest agent 依次启动「设置」和「时钟」，各计 10 秒；回主屏，`stop` 加 `migrate file:` 存快照；退出；在快照对应状态的克隆上用 `-incoming file:` 恢复两次，每次截图、OCR 找到「设置」图标点开（验证恢复后触摸可用），再静置 30 秒。所有 CPU 数字都是 QEMU 进程（全部线程）用户加系统时间除以墙钟时间，「% 单核」= CPU 秒 / 墙钟秒 × 100；另记各线程分项（`CPU 0/TCG` 是客体主核）。每轮前后记 `uptime`，每个窗口开始时记 load average，另有 `work/runs/load.log` 每 15 秒一条。
+Each run (`bench.py run`): clone the golden state and cold boot to the lock screen; wait until some 10-second window has CPU below 60%, which counts as "settled"; unlock and idle on the home screen for 40 seconds; page back and forth on the home screen 5 times (about 20 seconds); launch Settings and then Clock with the guest agent, 10 seconds each; return to the home screen and save a snapshot with `stop` plus `migrate file:`; quit; restore twice with `-incoming file:` on a clone of the snapshot's matching state, each time taking a screenshot, using OCR to find the Settings icon and tapping it (to verify touch works after restore), then idling for 30 seconds. All CPU numbers are the QEMU process's (all threads) user plus system time divided by wall clock time, and "% of one core" = CPU seconds / wall clock seconds × 100; per-thread breakdowns are also recorded (`CPU 0/TCG` is the guest main core). `uptime` is recorded before and after each run and load average at the start of each window, plus `work/runs/load.log` with one entry every 15 seconds.
 
-帧率（`bench.py fps`，本会话加的）：从某轮的快照恢复，`--mode drag` 在主屏按住手指左右来回拖动 20 秒（每次 2 秒一个来回），`--mode lock` 看锁屏「滑动解锁」的微光动画，同时以最多 120 Hz 连续截屏（ppm）并比对，前后两张不同就算屏幕上出了一帧新画面，得到「可见帧率」（上限 = 采样率）。本来想用 GL 桥自带的 `IT_GLES_PROF` 帧统计，但 6.x 的 CoreAnimation 合成走的路径不更新那个计数器，读不到。
+Frame rate (`bench.py fps`, added in this session): restore from a run's snapshot; `--mode drag` holds a finger on the home screen and drags left and right for 20 seconds (one round trip every 2 seconds), `--mode lock` watches the "slide to unlock" shimmer animation on the lock screen; meanwhile, screenshots (ppm) are taken continuously at up to 120 Hz and compared, and each time two consecutive ones differ counts as one new frame on screen, giving the "visible frame rate" (upper limit = sampling rate). The original plan was to use the GL bridge's built-in `IT_GLES_PROF` frame statistics, but the path 6.x CoreAnimation compositing takes does not update that counter, so it could not be read.
 
-睡眠测试（`tools/m0/sleep-test.py`）：从 iPod 的快照恢复，Command+L 锁屏，等两分钟，按 Home，看 agent 和 CPU 寄存器。
+Sleep test (`tools/m0/sleep-test.py`): restore from the iPod's snapshot, lock with Command+L, wait two minutes, press Home, and check the agent and CPU registers.
 
-命令（帧率探针和睡眠测试都基于某一轮存下的快照，几十秒一个）：
+Commands (the frame rate probes and the sleep test all start from a snapshot saved by some run, a few tens of seconds each):
 
 ```bash
 python3 tools/m0/bench.py fps --mode drag --device work/devices/n88ap-10B500 --run work/runs/n88-jit-1 --build jit --out work/runs/fps-n88-jit-1
 python3 tools/m0/bench.py fps --mode lock --seconds 4 --wake-wait 0.5 --device work/devices/n90ap-11D257 --run work/runs/n90-tci-3 --build tci --out work/runs/fpslock-n90-tci-3
 python3 tools/m0/sleep-test.py work/runs/n72-jit-1 work/runs/sleep-test-n72 120
-python3 tools/m0/summarize.py > work/runs/summary.md     # 第 2、4 节的表都由它生成
+python3 tools/m0/summarize.py > work/runs/summary.md     # generates all the tables in sections 2 and 4
 ```
 
-锁屏模式会先按电源键锁屏、按 Home 唤醒，轮询到屏幕亮起再采样（TCI 下 iOS 7 要 5 到 6 秒才亮）。
+Lock mode first presses the power button to lock and Home to wake, and polls until the screen turns on before sampling (under TCI, iOS 7 takes 5 to 6 seconds to light up).
 
-## 7. 踩过的坑
+## 7. Pitfalls
 
-| 坑 | 现象 | 处理 |
+| Pitfall | Symptom | Handling |
 |---|---|---|
-| iOS 7 弹「Cannot Use Device / QEMU USB Keyboard」 | 测速脚本照 `BootRecipe.iPad` 给有 USB 主机口的机型（iPhone 4）挂 `-device usb-kbd`（Light Touch 用它做键盘输入）。iOS 7 解锁后立刻弹这个模态提示，挡住所有触摸和 Home 键：iPhone 4 前三轮的「翻页」其实没翻成，开「时钟」后 Home 回不到主屏，快照停在「时钟」里，iPhone 4 的拖动帧率探针也是在这个状态下测的 | 这几轮整体作废，挪到 `work/runs/invalid-usbkbd/`（开机数字在提示出现之前，仍可参考）。脚本改为解锁后截屏 OCR，看到提示就点「OK」（`dismiss_alerts`），iPhone 4 重测四轮。没删 usb-kbd，保持和 Light Touch 的参数一致。3GS 和 iPod 没有 USB 主机口，不受影响 |
-| iOS 7 锁屏的微光动画让 TCI 永远「安定」不下来 | 「滑动解锁」文字的微光一直在播，TCI 下光锁屏就占约 93% 单核（客体主核 68% + 主线程 25%），脚本的「10 秒窗口低于 60%」永远不满足，跑满 18 分钟上限 | 安定上限改成 JIT 180 秒、TCI 300 秒（3GS 和 iPod 的 TCI 都在 30 到 120 秒内自然安定，不受这个改动影响） |
-| M1 会话同时编译、Spotlight 建索引，负载冲到 20 到 63 | 3GS TCI 第二轮的静置窗口开始时负载 20.8，静置测成 57.7%（第一轮 41.5%）；iPhone 4 JIT 第二轮开机 59 秒（第一轮 41 秒）。负载高时 CPU 占比会虚高，推测是进程被挤到能效核上，同样的活要更多 CPU 时间 | 每个窗口开始时记 load average，另有 `work/runs/load*.log` 每 15 秒一条。汇总时窗口开始负载超过 8 的轮次不计入交互类均值（表里标 ⚠），3GS 补测 TCI 第三轮。`work/` 不在 Spotlight 排除列表里（改系统设置要用户点头，没动），新生成的几百 MB 快照和设备会触发 mds_stores 占 300% 的 CPU |
-| iPhone 4 7.1.2 关不了机 | 首次设置后 `system_powerdown` 在 iOS 7 上只弹出「滑动来关机」，没人滑，120 秒后脚本用 QMP `quit` 退出（退出时 NAND 已同步）。黄金状态等于拔电池，但 HFS+ 有日志，之后每轮都正常开到锁屏 | 记录在案。要更干净可以在 setup 里补一步 OCR 找「slide to power off」再滑 |
-| iPod touch 2 代要 SecureROM | 机型初始化无条件读 `bootrom=`，文件不在 IPSW 里，Light Touch 是打包在 App 里发的 | 4 字节占位文件（`b .`），冷启动可用；但深度睡眠后唤醒会卡死，见下一行 |
-| iPod 用占位 ROM 时睡下去就醒不来 | 实测（`tools/m0/sleep-test.py`）：恢复快照后 Command+L 锁屏，约 30 秒后 PMU 关掉 AP 供电（agent 失联、CPU 几乎不走）；按 Home 后 CPU 复位到地址 0（R15=0），也就是占位 ROM 的死循环，再也回不来。只亮暗屏（不到深度睡眠）时按 Home 能叫醒，M1 在手机上也看到了这一点 | 根治办法见「对后续阶段的影响」：照 3GS 机型的 `s5l8920_resume` 给 iPod 2 代补一段唤醒的高层模拟，就完全不需要 SecureROM。在那之前，App 要避免让 iPod 进深度睡眠（例如把自动锁定设为永不、锁屏键只关屏） |
-| iOS 6 的帧计数器读不到 | 想用 GL 桥的 `IT_GLES_PROF` 统计帧率，但 6.x 的 CoreAnimation 合成走的路径不更新那个计数器 | 改成连续截屏比对（与渲染路径无关） |
-| 锁屏动画帧率在 3.x 和 6.x 上没意义 | 3.x、6.x 的锁屏微光本身就是 10 到 15 帧（JIT 和 TCI 一样），量不出差别；只有 iOS 7 的微光是 60 帧的连续动画 | 3.x、6.x 用主屏拖动的帧率，iOS 7 两种都给 |
-| TCI 下「点开 App 到前台」的秒数粒度粗 | 这个时间靠反复问 guest agent 谁在前台，TCI 下 agent 自己回答也慢，iPod TCI 两轮分别测到 0.9 秒和 2.9 秒 | 只当量级参考；CPU 占比和开机时间更可靠 |
-| `pgrep`/`pkill` 按名字杀进程 | 这台 Mac 上有别的会话也在跑模拟器 | 只按自己启动的 PID 停进程（中途停 iPhone 4 TCI 第二轮就是这样做的） |
+| iOS 7 pops up "Cannot Use Device / QEMU USB Keyboard" | Following `BootRecipe.iPad`, the benchmark script attaches `-device usb-kbd` to machine types with a USB host port (iPhone 4) (Light Touch uses it for keyboard input). iOS 7 shows this modal alert right after unlock, blocking all touches and the Home button: in the first three iPhone 4 runs, "paging" never actually paged, Home could not get back to the home screen after opening Clock, the snapshot was left inside Clock, and the iPhone 4 drag frame rate probe was also measured in this state | These runs were discarded as a whole and moved to `work/runs/invalid-usbkbd/` (the boot numbers come before the alert appears and are still usable as a reference). The script now takes a screenshot and runs OCR after unlocking, and taps "OK" when it sees the alert (`dismiss_alerts`); the iPhone 4 was rerun four times. usb-kbd was not removed, to stay consistent with Light Touch's parameters. The 3GS and iPod have no USB host port and are unaffected |
+| The iOS 7 lock screen shimmer means TCI never "settles" | The shimmer on the "slide to unlock" text plays continuously; under TCI the lock screen alone takes about 93% of one core (guest main core 68% + main thread 25%), so the script's "10-second window below 60%" is never met and it runs to the 18-minute limit | Settle limit changed to 180 seconds for JIT and 300 seconds for TCI (3GS and iPod TCI both settle naturally within 30 to 120 seconds and are unaffected by this change) |
+| The M1 session compiling at the same time and Spotlight indexing pushed the load to 20 to 63 | At the start of the idle window of the second 3GS TCI run the load was 20.8, and idle measured 57.7% (first run 41.5%); the second iPhone 4 JIT run booted in 59 seconds (first run 41 seconds). Under high load, CPU share is inflated, presumably because the process gets pushed onto efficiency cores, where the same work takes more CPU time | Load average is recorded at the start of each window, plus `work/runs/load*.log` with one entry every 15 seconds. In the summary, runs whose window-start load exceeded 8 are excluded from the interaction means (marked ⚠ in the tables), and a third 3GS TCI run was added. `work/` is not on Spotlight's exclusion list (changing system settings needs the user's approval, so it was left alone), and the newly generated snapshots and devices of several hundred MB trigger mds_stores at 300% CPU |
+| iPhone 4 7.1.2 cannot power off | After first-time setup, `system_powerdown` on iOS 7 only brings up "slide to power off"; nobody slides it, so after 120 seconds the script exits with QMP `quit` (NAND is synced at exit). The golden state is equivalent to pulling the battery, but HFS+ is journaled, and every later run booted to the lock screen normally | Recorded. For a cleaner result, setup could add a step that uses OCR to find "slide to power off" and then slides it |
+| iPod touch 2nd gen needs the SecureROM | Machine init unconditionally reads `bootrom=`; the file is not in the IPSW, and Light Touch ships it bundled in the app | A 4-byte placeholder file (`b .`) works for cold boot; but waking from deep sleep hangs, see the next row |
+| With the placeholder ROM, the iPod never wakes once asleep | Measured (`tools/m0/sleep-test.py`): after restoring a snapshot and locking with Command+L, about 30 seconds later the PMU cuts power to the AP (the agent goes silent, the CPU barely moves); after pressing Home the CPU resets to address 0 (R15=0), which is the placeholder ROM's infinite loop, and it never comes back. When the screen is only dimmed (not yet in deep sleep), pressing Home wakes it; M1 saw this on the phone too | For the real fix see "Impact on later stages": add a high-level emulation of wake for the iPod 2nd gen modeled on the 3GS machine's `s5l8920_resume`, and the SecureROM is no longer needed at all. Until then, the app should keep the iPod out of deep sleep (for example set Auto-Lock to Never, and have the lock button only turn off the screen) |
+| The iOS 6 frame counter cannot be read | Tried to count frames with the GL bridge's `IT_GLES_PROF`, but the path 6.x CoreAnimation compositing takes does not update that counter | Switched to continuous screenshot comparison (independent of the rendering path) |
+| Lock screen animation frame rate is meaningless on 3.x and 6.x | The lock screen shimmer on 3.x and 6.x is itself 10 to 15 fps (the same under JIT and TCI), so no difference can be measured; only the iOS 7 shimmer is a continuous 60 fps animation | For 3.x and 6.x use the home screen drag frame rate; for iOS 7 both are given |
+| Under TCI, "tap app to foreground" seconds have coarse granularity | This time relies on repeatedly asking the guest agent what is in the foreground, and under TCI the agent itself is slow to answer; the two iPod TCI runs measured 0.9 seconds and 2.9 seconds | Use only as an order-of-magnitude reference; CPU share and boot time are more reliable |
+| `pgrep`/`pkill` kill processes by name | Other sessions on this Mac are also running emulators | Only stop processes by the PIDs we started ourselves (that is how the second iPhone 4 TCI run was stopped midway) |
 
-## 8. 对后续阶段的影响和建议
+## 8. Impact on later stages and recommendations
 
-- **JIT 仍是必需的，至少对 iOS 6 以后。** iPhone OS 3 在解释器下能用，可以作为「没开 JIT 时」的保底；iOS 6 勉强；iOS 7 不行。App 带两个 dylib、按有无调试器选一个的方案（M1 调研）站得住，没开 JIT 时可以只开放 1 到 3 代的系统，或者明确提示「慢」。
-- **快照要排进 M2 的最前面**：手机上 EAGL 后端禁止存快照（第 3 节），而没有快照就意味着每次冷启动，解释器下 iOS 6 是 2 分钟、iOS 7 是近 7 分钟以上。移植 CGL 的读回和重建到 EAGL 是「快照秒切」的前提。
-- **iPod 2 代的唤醒补丁**：照 `hw/arm/s5l8920.c` 的 `s5l8920_resume` 给 `hw/arm/ipod_touch_2g.c` 补唤醒的高层模拟，iPhone OS 2 和 3 就不再需要苹果的 SecureROM。补丁应放 `patches/`。iPhone OS 1 用的 S5L8900 机型（初代 iPhone、iPod touch 1 代）同样要 SecureROM（`bootrom_s5l8900`，FirmwareKit 的 N45 配方把它当作启动输入），这次没测，需要单独看能不能照此处理。
-- **iOS 7 的待机开销**：主屏每秒重绘 30 次，JIT 下也要 25% 单核（iOS 6 只有 10%），手机上耗电会明显。值得在 M2 试「减少动态效果」或在 App 进后台时暂停虚拟机（M1 报告也提了后者）。
-- **iOS 7 的 USB 键盘提示**：App 如果照 Light Touch 挂 usb-kbd，iOS 7 会弹「Cannot Use Device」挡住触摸。App 里要么不挂，要么在制作设备时预置「已提示过」，要么首次开机自动点掉。
-- **iPhone 4 主屏拖动只有 15 帧（JIT 下也是）**，瓶颈不在 CPU，M2 做「能玩」时要查触摸上报和 640×960 显示路径。
-- **测速脚本可以直接搬到手机上用**：`bench.py` 的测量口径（进程 CPU 秒 / 墙钟、guest agent 判前台、截屏比对帧率）不依赖 Mac。M1 的真机测速和这里口径对齐后，第 4 节的推算就能换成实测。
+- **JIT is still required, at least for iOS 6 and later.** iPhone OS 3 is usable under the interpreter and can serve as the fallback "when JIT is not enabled"; iOS 6 barely; iOS 7 not at all. The plan of shipping two dylibs in the app and picking one depending on whether a debugger is attached (M1's research) holds up; without JIT the app could offer only generations 1 to 3 of the system, or clearly warn "slow".
+- **Snapshots should go at the very front of M2**: on the phone the EAGL backend forbids saving snapshots (section 3), and no snapshots means a cold boot every time: 2 minutes for iOS 6 and nearly 7 minutes or more for iOS 7 under the interpreter. Porting CGL's readback and rebuild to EAGL is the prerequisite for "instant switching via snapshots".
+- **iPod 2nd gen wake patch**: add a high-level emulation of wake to `hw/arm/ipod_touch_2g.c` modeled on `s5l8920_resume` in `hw/arm/s5l8920.c`, and iPhone OS 2 and 3 no longer need Apple's SecureROM. The patch should go in `patches/`. The S5L8900 machine types used by iPhone OS 1 (original iPhone, iPod touch 1st gen) also need a SecureROM (`bootrom_s5l8900`, which FirmwareKit's N45 recipe treats as a boot input); not tested this time, and it needs a separate look at whether it can be handled the same way.
+- **iOS 7 idle cost**: the home screen redraws 30 times per second, taking 25% of one core even under JIT (iOS 6 only 10%), so battery drain on the phone will be noticeable. Worth trying "Reduce Motion" in M2, or pausing the VM when the app goes to the background (the M1 report also suggested the latter).
+- **iOS 7 USB keyboard alert**: if the app attaches usb-kbd like Light Touch, iOS 7 pops up "Cannot Use Device" and blocks touches. The app should either not attach it, preset "already alerted" when making the device, or dismiss it automatically on first boot.
+- **iPhone 4 home screen drag is only 15 fps (even under JIT)**; the bottleneck is not the CPU, so when M2 works on making it "playable" it needs to look at touch reporting and the 640×960 display path.
+- **The benchmark script can be moved to the phone as is**: `bench.py`'s measurement method (process CPU seconds / wall clock, the guest agent to determine the foreground, screenshot comparison for frame rate) does not depend on the Mac. Once M1's real-device benchmarks use the same method as here, the extrapolations in section 4 can be replaced with measurements.
 
-## 9. 文件清单
+## 9. File list
 
-- 本报告：`docs/reports/m0-mac-benchmark.md`；截图在 `docs/reports/img/`：`n72ap-7E18-home-after-setup.png`、`n88ap-10B500-home-after-setup.png`、`n90ap-11D257-home-after-setup.png`（三个版本的主屏），`m0-n90ap-11D257-usbkbd-alert.png`（iOS 7 的 USB 键盘提示）。
-- 脚本（`tools/m0/`）：`bench.py`（setup、run、fps 三个子命令）、`run-queue.sh`（顺序跑）、`summarize.py`（出表）、`sleep-test.py`（iPod 睡眠唤醒）、`make-substitute-sdk.py`、`build-ffmpeg.sh`、`helper-shim/`、`ocr.swift`。
-- 数据（`work/`，不进仓库）：`work/runs/<设备>-<模式>-<序号>/result.json` 和每轮的截图、快照、CPU 采样；`work/runs/fps-*`、`fpslock-*` 帧率探针；`work/runs/swaps-n90-jit-3`；`work/runs/sleep-test-n72*`；`work/runs/summary.json`、`summary.md`；`work/runs/load.log`、`load2.log`；作废的 iPhone 4 轮次在 `work/runs/invalid-usbkbd/`。黄金状态在 `work/states/`，设备在 `work/devices/`，占位 SecureROM 在 `work/m0-placeholder/`。
+- This report: `docs/reports/m0-mac-benchmark.md`; screenshots in `docs/reports/img/`: `n72ap-7E18-home-after-setup.png`, `n88ap-10B500-home-after-setup.png`, `n90ap-11D257-home-after-setup.png` (home screens of the three versions), `m0-n90ap-11D257-usbkbd-alert.png` (the iOS 7 USB keyboard alert).
+- Scripts (`tools/m0/`): `bench.py` (three subcommands: setup, run, fps), `run-queue.sh` (sequential runs), `summarize.py` (tables), `sleep-test.py` (iPod sleep and wake), `make-substitute-sdk.py`, `build-ffmpeg.sh`, `helper-shim/`, `ocr.swift`.
+- Data (`work/`, not in the repository): `work/runs/<device>-<mode>-<n>/result.json` plus each run's screenshots, snapshots and CPU samples; `work/runs/fps-*`, `fpslock-*` frame rate probes; `work/runs/swaps-n90-jit-3`; `work/runs/sleep-test-n72*`; `work/runs/summary.json`, `summary.md`; `work/runs/load.log`, `load2.log`; the discarded iPhone 4 runs are in `work/runs/invalid-usbkbd/`. Golden states are in `work/states/`, devices in `work/devices/`, the placeholder SecureROM in `work/m0-placeholder/`.

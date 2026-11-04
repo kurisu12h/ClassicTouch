@@ -1,0 +1,4 @@
+* text=auto eol=lf
+*.png binary
+# Patches carry other files' whitespace verbatim; don't flag it as an error in diffs.
+*.patch -whitespace

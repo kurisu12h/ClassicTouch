@@ -1,48 +1,80 @@
-# Classic Touch（暂名）
+# Classic Touch (working title)
 
-在 iPhone 上运行原版的 iPhone OS 1 到 iOS 10，给老玩家一个回味经典 iOS 的入口。
+Run stock iPhone OS 1 through iOS 10 on an iPhone, for anyone who wants to revisit classic iOS.
 
-> 开发中，尚未发布。
+> Work in progress. Nothing has been released and there is no build to download.
 
-## 现状（2026-11）
+<p>
+  <img src="docs/reports/img/ios14pro-935-window.png" width="200" alt="iOS 9.3.5 running in the app on an iPhone 14 Pro">
+  <img src="docs/reports/img/a6-1034-wallpaper-lock.png" width="200" alt="iOS 10.3.4 lock screen on the emulated iPhone 5">
+  <img src="docs/reports/img/m2gl-device-n90ap-7.1.2-stikdebug-jit256-home.png" width="200" alt="iOS 7.1.2 running in the app on an iPhone 18 Pro">
+</p>
 
-在 iPhone 18 Pro（iOS 27.2）上已经开到主屏、能点能用：
+## Status (2026-11-04)
 
-| 模拟的机型 | 系统 | 到主屏 |
-|---|---|---|
-| iPod touch（第 2 代） | iPhone OS 3.1.3 | 约 18 秒 |
-| iPhone 3GS | iOS 6.1.6 | 约 23 秒 |
-| iPhone 4 | iOS 7.1.2 | 约 37 秒 |
+| Year | Emulated device | Chip | OS | Mac | App in the iOS Simulator | App on an iPhone |
+|---|---|---|---|---|---|---|
+| 2007 | iPhone (original) | S5L8900 | iPhone OS 1.0 | Home screen | Home screen | Not tried |
+| 2008 | iPod touch (2nd gen) | S5L8720 | iPhone OS 2.2.1 | Home screen | Home screen | Not tried |
+| 2009 | iPod touch (2nd gen) | S5L8720 | iPhone OS 3.1.3 | Home screen | Home screen | 18 Pro, about 18 s |
+| 2010 | iPhone 4 | A4 | iOS 4.3.5 | Lock screen | Home screen | Not tried |
+| 2011 | iPhone 4 | A4 | iOS 5.1.1 | Through Setup Assistant | Home screen | Not tried |
+| 2012 | iPhone 3GS | S5L8920 | iOS 6.1.6 | Home screen | Home screen | 18 Pro, about 23 s |
+| 2013 | iPhone 4 | A4 | iOS 7.1.2 | Home screen | Home screen | 18 Pro, about 37 s |
+| 2013 | iPod touch (5th gen) | **A5** (new machine) | iOS 7.1.2 | Home screen | Settings | 14 Pro, 142 s |
+| 2015 | iPod touch (5th gen) | **A5** (new machine) | iOS 9.3.5 | Settings | Settings | 14 Pro, 141 s |
+| 2016 | iPhone 5 | **A6** (new machine) | iOS 10.3.4 | Settings, with wallpaper; wakes from screen off | Settings | 14 Pro, 146 s |
 
-- JIT 由手机上的 [StikDebug](https://github.com/StikDebug/StikDebug) 提供，不需要连电脑。
-- 图形走手机自己的 GPU（OpenGL ES）。
-- App 打开是系统列表，点一个就开机；换系统时 App 会重新启动。
+- Times are from boot to the home screen. On the iPhone 18 Pro, JIT comes from [StikDebug](https://github.com/StikDebug/StikDebug) on the phone, with no computer needed. On the iPhone 14 Pro, JIT currently comes from a Mac over a cable, and over 40 s of each boot goes to preparing the code buffer across that cable.
+- A5 and A6 are machines this project added to qemu-ios. As far as we know, no public emulator went past iOS 7.1.2 on the A4 before. See [`docs/reports/a5-step1.md`](docs/reports/a5-step1.md), [`docs/reports/a6-step1.md`](docs/reports/a6-step1.md), [`docs/reports/a6-app.md`](docs/reports/a6-app.md) and [`docs/reports/ios-device-14pro.md`](docs/reports/ios-device-14pro.md).
+- Graphics run on the phone's own GPU (OpenGL ES). The app opens on a timeline of systems; tap one to boot it. Switching systems restarts the app.
 
-**iOS 9：** 我们给 qemu-ios 加了 A5 芯片的 iPod touch（第 5 代）机型，iOS 9.3.5 和 7.1.2 已在 Mac 和 iOS 模拟器的 App 里开到主屏、打开「设置」（模拟器里 9.3.5 约 66 到 73 秒锁屏，7.1.2 约 37 秒），还没上真机。见 `docs/reports/a5-step1.md`、`docs/reports/a5-app.md`。
+**Not done yet:** iOS 8; sound; multi-touch; downloading firmware and building devices on the phone itself; JIT without a computer on iOS 27.0.1. **Known issues:** touch on the A5 is off by about 100 pixels vertically; iOS 10 shows the wrong battery level.
 
-**iOS 10：** 新加 A6 芯片的 iPhone 5 机型，iOS 10.3.4 在 Mac 上每次开机都进锁屏、主屏，有默认壁纸，能点开「设置」（约 100 秒锁屏），熄屏后按 Home 能叫醒，图形走 GL 前端。见 `docs/reports/a6-step1.md`。
+## How it works
 
-还没做的：iPhone OS 1、2 和 iOS 4、5 还没在手机上试过；iPod touch（第 5 代）还没在手机上试过，触摸纵向有约 100 像素的偏差；声音；多点触控；在手机上直接下载固件、制作设备。iOS 8 还没做；iOS 10 的电池显示不对。
+The engine is [samhenrigold/qemu-ios](https://github.com/samhenrigold/qemu-ios) (a QEMU fork, GPL-2.0), which already runs iPhone OS 1 through iOS 7.1.2 on a Mac (the Mac app is [Light Touch](https://github.com/samhenrigold/LightTouchMac)). This repository adds two things: the iPhone app, and the new A5 and A6 machines.
 
-## 怎么做到的
+| Directory | Contents |
+|---|---|
+| `app/` | The iOS app (XcodeGen project) |
+| `patches/` | Patches to qemu-ios and FirmwareKit: the iOS build, the JIT protocol for iOS 26 and later, OpenGL ES 2.0 on EAGL, the A5/A6 machines |
+| `scripts/ios/` | Cross-compiling the dependencies and QEMU, packing devices, test scripts for phones and the simulator |
+| `tools/` | Mac tools for booting, unpacking firmware, disk fix-ups and analysis (A5/A6 ones are in `tools/a5/`) |
+| `docs/` | The roadmap (`plan.md`), research and per-stage reports |
 
-引擎是 [samhenrigold/qemu-ios](https://github.com/samhenrigold/qemu-ios)（QEMU 的分支，GPL-2.0），它在 Mac 上已经能跑 iPhone OS 1 到 iOS 7.1.2（Mac 应用是 [Light Touch](https://github.com/samhenrigold/LightTouchMac)）。本仓库做的是 iPhone 这一端：
+## Building from source
 
-- `app/`：iOS App（XcodeGen 工程）
-- `patches/`：对 qemu-ios 的补丁（iOS 构建开关、iOS 26 以后的 JIT 协议、EAGL 的 OpenGL ES 2.0 支持）
-- `scripts/ios/`：交叉编译依赖和 QEMU、打包设备、真机和模拟器测试脚本
-- `docs/`：路线（`plan.md`）、调研和各阶段报告
+You need macOS, Xcode and [XcodeGen](https://github.com/yonaskolb/XcodeGen). In outline:
 
-## 苹果固件
+1. Clone upstream qemu-ios (pinned at `b225694505`) into `upstream/` and set up the work tree as described under "Setup" in [`tools/a5/README.md`](tools/a5/README.md).
+2. Run `scripts/ios/fetch-sources.sh` to download the source packages of the cross-compiled dependencies (checked against the sha256 sums in `scripts/ios/sources.tsv`).
+3. Run `scripts/ios/build-deps.sh iphoneos`, then `scripts/ios/build-qemu.sh iphoneos` and `scripts/ios/make-dylib.sh iphoneos` once with `TCG=jit` and once with `TCG=interp`. For the simulator, use `iphonesimulator` instead of `iphoneos`.
+4. Run `cd app && xcodegen generate` and build in Xcode, signing with your own developer account.
+5. Download firmware from Apple's servers yourself. Building and packing devices is described in the report for each machine in `docs/reports/`.
 
-本仓库和 App 都不包含任何苹果固件。固件由用户自己从苹果的服务器下载。
+The details of every step, and the problems hit along the way, are in `docs/reports/`.
 
-## 许可证
+## Apple firmware
 
-GPL-2.0-or-later，见 `LICENSE`。
+Neither this repository nor the app contains any Apple firmware, keys or Apple binaries. You download firmware from Apple's servers yourself, and the devices you build stay on your own computer and phone.
 
-本项目与 Apple Inc. 无关。iPhone、iPod touch、iOS 是 Apple Inc. 的商标。
+## Contributing
 
----
+Issues and pull requests are welcome; please read [CONTRIBUTING.md](CONTRIBUTING.md) first. By taking part you agree to the [Code of Conduct](CODE_OF_CONDUCT.md). Report security issues privately as described in [SECURITY.md](SECURITY.md). Changes are recorded in [CHANGELOG.md](CHANGELOG.md).
 
-**English:** Classic Touch (working title) aims to run stock iPhone OS 1 through iOS 10 on an iPhone. It builds on [qemu-ios](https://github.com/samhenrigold/qemu-ios). iPhone OS 3.1.3, iOS 6.1.6 and iOS 7.1.2 already boot to the home screen on an iPhone 18 Pro, with JIT from StikDebug and GPU-accelerated graphics. iOS 9.3.5 boots to the home screen on an emulated iPod touch (5th generation, a new A5 machine) on a Mac and in the iOS Simulator, not yet on a phone. iOS 10.3.4 on an emulated iPhone 5 (A6) reaches the lock screen, home screen (with its default wallpaper) and Settings on a Mac. Work in progress; no Apple firmware is included. Licensed GPL-2.0-or-later. Not affiliated with Apple.
+## License
+
+Code and documentation written for this repository: GPL-2.0-or-later, see [`LICENSE`](LICENSE).
+
+- The patches in `patches/` change files of QEMU and FirmwareKit, and each keeps the license of the files it changes (QEMU as a whole is GPL-2.0, and some of its files are GPL-2.0-only).
+- The app embeds QEMU, so the app as built is distributed under GPL-2.0. The third-party software in the app and the full text of its licenses are in [`app/ClassicTouch/ThirdPartyLicenses.txt`](app/ClassicTouch/ThirdPartyLicenses.txt).
+- StikDebug (AGPL-3.0) is a separate app and is not part of this app.
+
+This project is not affiliated with Apple Inc. iPhone, iPod touch and iOS are trademarks of Apple Inc. The system interfaces shown in screenshots are copyright Apple Inc.
+
+## Acknowledgements
+
+- [devos50/qemu-ios](https://github.com/devos50/qemu-ios) first ran iPhone OS in QEMU, and [samhenrigold/qemu-ios](https://github.com/samhenrigold/qemu-ios) with [Light Touch](https://github.com/samhenrigold/LightTouchMac) took it to iOS 7.1.2.
+- [StikDebug](https://github.com/StikDebug/StikDebug) gives sideloaded apps JIT on an iPhone.
+- [QEMU](https://www.qemu.org/) and every open-source library the app uses.

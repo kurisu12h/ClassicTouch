@@ -1,6 +1,7 @@
-# The iOS app bridge (contrib/ios-app/qemu-ios-ui.c) for the iPod touch 5G: its buttons, its DSI panel for
-# display_sleeping, its row in the machine table. Applies after patches/ios-*.patch and a5-n78-skeleton.patch
-# (scripts/ios/build-qemu.sh). git apply ignores these lines.
+# The iOS app bridge (contrib/ios-app/qemu-ios-ui.c) for the iPod touch 5G and the iPhone 5: their buttons, their DSI
+# panel for display_sleeping, their rows in the machine table (the iPhone 5 machine is a subtype of the iPod touch 5G
+# one). Applies after patches/ios-*.patch and a5-n78-skeleton.patch (scripts/ios/build-qemu.sh). git apply ignores
+# these lines.
 --- a/contrib/ios-app/qemu-ios-ui.c
 +++ b/contrib/ios-app/qemu-ios-ui.c
 @@ -70,7 +70,7 @@
@@ -8,7 +9,7 @@
  /* Which machine is running, latched on the QEMU thread when the VM starts. */
  static int ios_is_ipad1;
 -static int ios_dsi_panel;       /* the panel is powered over DSI: the iPad's and the S5L8920 boards' */
-+static int ios_dsi_panel;       /* the panel is powered over DSI: the iPad's, the S5L8920 boards', the iPod touch 5G's */
++static int ios_dsi_panel;       /* the panel is powered over DSI: the iPad's, the S5L8920 boards', the iPod touch 5G's and iPhone 5's */
  
  static struct {
      DisplayChangeListener dcl;
@@ -22,16 +23,19 @@
      for (i = 0; i < INPUT_EVENT_SLOTS_MAX; i++) {
          ios.slots[i].tracking_id = -1;
      }
-@@ -468,6 +469,8 @@
+@@ -468,6 +469,11 @@
      { "ipad1",         "k48ap", 1024,  768, 1, 1, false, true,  true,  true,  A4_PANEL },
      { "iPod-Touch-4G", "n81ap",  640,  960, 2, 0, false, true,  false, false, A4_PANEL },
      { "iPhone-4",      "n90ap",  640,  960, 2, 0, true,  true,  true,  false, A4_PANEL },
 +    /* the A5's H4P pipe (s5l8930_display h4p=on), the A4's limits; the root disk is a usb-storage on ehci.0 */
 +    { "iPod-Touch-5G", "n78ap",  640, 1136, 2, 0, false, true,  false, false, A4_PANEL },
++    /* the iPhone 5 (A6) is a subtype of the iPod touch 5G machine, so its buttons and DSI panel come with it; its
++     * baseband stays hidden in the boot bundle */
++    { "iPhone-5",      "n41ap",  640, 1136, 2, 0, false, true,  false, false, A4_PANEL },
  };
  
  const QemuIosDeviceInfo *qemu_ios_device_info(const char *machine)
-@@ -664,6 +667,7 @@
+@@ -664,6 +670,7 @@
      ipad1_press_button(button, down);
      ipod_touch_1g_press_button(button, down);
      s5l8920_press_button(button, down);

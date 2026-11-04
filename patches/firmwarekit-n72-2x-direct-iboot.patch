@@ -1,22 +1,25 @@
-firmwarekit-n72-2x-direct-iboot.patch：让 iPod touch 2 代的 iPhone OS 2.x 不靠苹果的 SecureROM 开到主屏（docs/reports/m2-timeline.md）。
+firmwarekit-n72-2x-direct-iboot.patch: boot iPhone OS 2.x on the iPod touch (2nd gen) to the home screen without Apple's SecureROM (docs/reports/m2-timeline.md).
 
-问题有两层：
-  1. FirmwareKit 的 N72 配方给 2.x 做的是 SecureROM → NOR 里的 LLB → iBoot 整条链（boot_strategy bootrom），
-     不出 iBoot.bin。苹果的 SecureROM（bootrom_240_4）不在 IPSW 里，我们只有一条「b .」的占位文件，于是 CPU
-     复位后停在地址 0（实测 R15=0，黑屏、串口没有输出）。
-  2. 直接进 iBoot 以后能开到 SpringBoard，但停在「连接 iTunes」：2.x 的 lockdownd 第一次开机打开 BrickState，
-     iPod 上只有配对过的主机经 USB 设一次时间（iTunes 连上时做的事）才会关掉（qemu-ios docs/ipod/from-ipsw.md
-     「2.1.1 home screen: lockdownd's brick state」）。我们没有 USB 主机一侧（usbmuxd 的 qemu 分支、libimobiledevice）。
+There are two problems:
+  1. FirmwareKit's N72 recipe builds the whole SecureROM -> LLB in NOR -> iBoot chain for 2.x (boot_strategy bootrom)
+     and writes no iBoot.bin. Apple's SecureROM (bootrom_240_4) is not in the IPSW and we only have a "b ." placeholder,
+     so after reset the CPU sits at address 0 (measured: R15=0, black screen, nothing on the serial port).
+  2. Entering iBoot directly reaches SpringBoard, but it stops at "Connect to iTunes": on first boot 2.x's lockdownd
+     turns on BrickState, which on an iPod only clears once a paired host sets the time over USB (what iTunes does on
+     connecting) (qemu-ios docs/ipod/from-ipsw.md, "2.1.1 home screen: lockdownd's brick state"). We have no USB host
+     side (the qemu branch of usbmuxd, libimobiledevice).
 
-改动（只动 N72Recipe.swift）：
-  - 2.x 也写出 iBoot.bin（IPSW 里解密过的 iBoot），lock 记 boot_strategy iboot、direct_iboot true，和 3.x 一样直接进
-    iBoot。实测 iBoot-385.49 照常从 NOR 读 DeviceTree、加载内核，NOR 的 SHSH 包装不用改。
-  - 2.x 在卷上预写 private/var/root/Library/Lockdown/data_ark.plist 的 -BrickState = false（属主 root），和 N45Recipe
-    给 1.x 做的一样，不需要 USB 主机。
-3.x 及以后不变。深睡唤醒仍要走 ROM，和 3.x 一样会卡（iPod touch 2 代的已知问题）。
+Changes (N72Recipe.swift only):
+  - 2.x also writes iBoot.bin (the decrypted iBoot from the IPSW) and the lock records boot_strategy iboot and
+    direct_iboot true, entering iBoot directly as 3.x does. Measured: iBoot-385.49 reads the DeviceTree from NOR and
+    loads the kernel as usual; the SHSH wrapping in NOR needs no change.
+  - 2.x pre-writes -BrickState = false into private/var/root/Library/Lockdown/data_ark.plist on the volume (owned by
+    root), as N45Recipe does for 1.x, so no USB host is needed.
+3.x and later are unchanged. Waking from deep sleep still goes through the ROM and hangs as on 3.x (a known iPod touch
+(2nd gen) issue).
 
-用法：照 LightTouchMac b06012fa4c 克隆一份源码（不改 upstream/），打这个补丁，swift build FirmwareKit。
-基于 samhenrigold/LightTouchMac b06012fa4c。
+Usage: clone the LightTouchMac sources at b06012fa4c (do not change upstream/), apply this patch, swift build FirmwareKit.
+Based on samhenrigold/LightTouchMac b06012fa4c.
 diff --git a/Packages/FirmwareKit/Sources/FirmwareKit/N72/N72Recipe.swift b/Packages/FirmwareKit/Sources/FirmwareKit/N72/N72Recipe.swift
 index bcc6da42..f1327d72 100644
 --- a/Packages/FirmwareKit/Sources/FirmwareKit/N72/N72Recipe.swift

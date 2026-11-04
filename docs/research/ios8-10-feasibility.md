@@ -1,334 +1,334 @@
-# iOS 8 到 10 可行性调研：在 iPhone 上模拟 A5/A6 机型
+# iOS 8 to 10 feasibility study: emulating A5/A6 machines on iPhone
 
-- 日期：2026-11-02
-- 作者：ios8-10-research 执行会话。纯调研，没写模拟器代码；除本文件外没改仓库里的任何文件。
-- 方法：读本仓库 `docs/`，`upstream/qemu-ios`（b225694505）和 `upstream/LightTouchMac`（b06012fa）的源码与文档；`gh api` 读 apple-oss-distributions/xnu（xnu-4570.1.46，第一个带 32 位 ARM 代码的开源版本）、apple-oss-distributions/dyld（239.4、353.2.1、360.22、421.2、433.5）、tihmstar/fwkeydb、rzxvx/Project-Cascadia、c12n/nexttouch、blake-lucas/LightTouch、axi0mX/ipwndfu 等仓库；ipsw.me 公开接口（只读密钥和固件包元数据）；网页搜索。没有往 `work/research/` 克隆任何仓库（用不着）；没下载任何苹果固件；临时目录里只放了 ipsw.me 的密钥 JSON 和 LLVM 的一个 `ARM.td`。
-- 标注：**【已核实】** 我直接读到了源码、仓库内容、官方页面或公开数据；**【作者自述】** 项目作者自己说的，我没法独立验证；**【推测】** 我的推断，或只有间接、第三方证据。
-- 机型代号：A5 = S5L8940X（45 nm）/ S5L8942X（32 nm），A5X = S5L8945X，A6 = S5L8950X，A6X = S5L8955X；A4 = S5L8930X（上游现有最新的一代）。
-
----
-
-## 0. 结论摘要
-
-1. **做得成，目前没找到硬性阻断。**
-   - 固件都能解：iOS 5 到 9 的 A5/A6 固件密钥都公开（fwkeydb 一直列到 iPhone 4S 9.3.6、iPhone 5 9.3.5）；**iOS 10 在 A6 上的固件镜像根本没加密**（iPhone 5 和 iPad 4 的 10.0 到 10.3.4，每个版本 16 个镜像都没有 KBAG）。【已核实】
-   - 32 位机型没有 SEP、没有 KPP，一直用 IMG3，内核可以照现在 A4 的办法由 FirmwareKit 的 KBoot 直接引导，不用模拟 iBoot。【KBoot 部分已核实；SEP、KPP 为第三方资料加推测】
-   - QEMU 有 Cortex-A9，ARM 客体支持多线程 TCG；A6 的 Swift（ARMv7s）在指令集上只是 ARMv7 加 VFPv4 和硬件除法，可以照 Cortex-A15 定一个新型号。【已核实】
-   - GPU 不用模拟：A5/A6 上 iOS 8 到 10 的界面仍是 OpenGL ES 2.0（Metal 要 A7），可以沿用现在「在客体里换掉 OpenGLES、把调用转给宿主」的做法。【推测；iOS 10 有一个装载上的坎，见 3.4】
-2. **但这是一次全新 SoC 移植，不是改配置。** A5 换成了苹果自己的中断控制器 AIC（A4 是 4 个 PL192），系统定时器在 AIC 里，双核，闪存换成 PPN 而且仍由 IOP 协处理器驱动，内存从 0x40000000 挪到 0x80000000。**公开世界里没有任何人模拟过 A5/A6，也没有人在模拟器里跑起过 32 位 iOS 8 到 10。** nexttouch 目前只有选单和目录，作者自己写「no new emulation yet」。【已核实，截至 2026-11-02 的 GitHub 和网页检索】
-3. **第一台建议 iPod touch 5（n78ap，A5 32 nm，S5L8942X）。** 同芯片的 iPad mini 1 有 Project Cascadia（GPL-2.0，在 A5 上跑主线 Linux）留下的大量实机硬件笔记；没有基带；屏幕 640×1136 是手机形状；系统 6.0 到 9.3.5，可以先用 6.1、7.1.2 这些在 A4 上已经调通用户态的版本验证新机型，再爬 8.4.1、9.3.5。iOS 10 只能等第二台 iPhone 5（A6）。备选是 iPhone 4S（屏幕和 iPhone 4 一样、能跑 iOS 5，但有高通基带、同芯片资料少）。
-4. **工作量（一个人加 AI 会话）【推测】：** A5 开到 iOS 9 主屏，乐观 4 到 6 周，中位 2.5 到 4 个月；做到「能玩」再加半个月到 2 个月；在此基础上 iPhone 5 跑 iOS 10 再加 1 到 3 个月。对照：上游作者从零做 A4 到 iOS 7 只用了约 10 天，但他有 iPod/3GS 的现成代码、openiBoot 和 iEmu 留下的 A4 寄存器资料，还有一台随便折腾的真 iPad；A5 这三样我们都缺或只有一部分。
-5. **性能【推测】：** 有 JIT 时，iPhone 18 Pro 上 iOS 9 约 45 到 90 秒到锁屏，主屏静止约半个到大半个核，拖动翻页和现在 iOS 7 同档（30 到 60 帧）；体验大致相当于当年真机跑 iOS 9/10，本来就偏卡。没有 JIT 不能用。
-6. **最大的三个风险：**
-   ① **存储**：PPN 闪存加 IOP 协处理器加苹果的 Swiss PPN FTL 格式，上游没有现成模型，FirmwareKit 的 NAND 生成器只会 A4 的 YAFTL 格式；
-   ② **没有真机参照**：上游做 A4 靠真 iPad 读寄存器、拿 NAND 镜像和串口日志；
-   ③ **iOS 9/10 的代码签名和 GL 装载**：iOS 10 的 dyld 只在「开发版共享缓存」上才允许文件覆盖缓存里的库，我们现在装 GL 前端的方式在 iOS 10 上失效，要换方案；AMFI 在 iOS 8 到 10 是否还认放宽签名的启动参数也没核实。
-7. **建议的第一步：** 派一个会话做「第 0 步」：下载 iPod touch 5 的 9.3.5（1.61 GB）和 7.1.2（1.29 GB）固件（要用户批准），用公开密钥解出内核和设备树，清点全部设备节点、内核扩展和版本，回答 6.4 节的 6 个待查问题，不写模拟器代码。之后在 Mac 上做新机型骨架，目标是「内核在串口打印，停在 Waiting for root device」。
-8. **要用户拍板的事：** 第 0 步的下载；要不要买一台二手 A5（iPod touch 5 或 iPad mini 1，外加一块树莓派 Pico 做 checkm8）或 A6（iPhone 5，Mac 直接 checkm8）当参照机；接受长期维护一套上游不会收的机型代码。
+- Date: 2026-11-02
+- Author: the ios8-10-research execution session. Pure research, no emulator code written; no file in the repository was changed except this one.
+- Method: read this repository's `docs/`, and the source and docs of `upstream/qemu-ios` (b225694505) and `upstream/LightTouchMac` (b06012fa); used `gh api` to read apple-oss-distributions/xnu (xnu-4570.1.46, the first open-source release with 32-bit ARM code), apple-oss-distributions/dyld (239.4, 353.2.1, 360.22, 421.2, 433.5), tihmstar/fwkeydb, rzxvx/Project-Cascadia, c12n/nexttouch, blake-lucas/LightTouch, axi0mX/ipwndfu and other repositories; the ipsw.me public API (read-only, keys and firmware metadata only); web search. No repository was cloned into `work/research/` (not needed); no Apple firmware was downloaded; the temporary directory holds only the ipsw.me key JSON and one LLVM `ARM.td`.
+- Labels: **[verified]** I read the source, repository content, official page or public data directly; **[author's claim]** said by the project's own author, which I cannot verify independently; **[inferred]** my inference, or only indirect or third-party evidence.
+- Chip codenames: A5 = S5L8940X (45 nm) / S5L8942X (32 nm), A5X = S5L8945X, A6 = S5L8950X, A6X = S5L8955X; A4 = S5L8930X (the newest generation upstream has today).
 
 ---
 
-## 1. 哪台机型先做
+## 0. Summary of conclusions
 
-### 1.1 候选
+1. **It can be done; no hard blocker found so far.**
+   - All the firmware can be decrypted: the A5/A6 firmware keys for iOS 5 to 9 are all public (fwkeydb lists them up to iPhone 4S 9.3.6 and iPhone 5 9.3.5); **the iOS 10 firmware images for A6 are not encrypted at all** (iPhone 5 and iPad 4, 10.0 to 10.3.4: none of the 16 images in each version has a KBAG). **[verified]**
+   - 32-bit devices have no SEP and no KPP and always use IMG3, so the kernel can be booted directly by FirmwareKit's KBoot the same way as on A4 today, with no need to emulate iBoot. **[KBoot part verified; SEP and KPP from third-party sources plus inference]**
+   - QEMU has Cortex-A9, and ARM guests support multithreaded TCG; A6's Swift (ARMv7s) is, at the instruction set level, just ARMv7 plus VFPv4 and hardware divide, so a new model can be defined after Cortex-A15. **[verified]**
+   - The GPU does not need emulating: on A5/A6 the iOS 8 to 10 UI still uses OpenGL ES 2.0 (Metal needs A7), so the current approach of "replace OpenGLES in the guest and forward the calls to the host" can be kept. **[inferred; iOS 10 has a loading hurdle, see 3.4]**
+2. **But this is a whole new SoC port, not a configuration change.** A5 switched to Apple's own interrupt controller AIC (A4 has 4 PL192s), the system timer is inside AIC, it is dual-core, flash changed to PPN and is still driven by the IOP coprocessor, and memory moved from 0x40000000 to 0x80000000. **Nobody in the public world has emulated A5/A6, and nobody has booted 32-bit iOS 8 to 10 in an emulator.** nexttouch currently has only menus and a catalog; its author writes "no new emulation yet". **[verified, GitHub and web searches as of 2026-11-02]**
+3. **Suggested first machine: iPod touch 5 (n78ap, A5 32 nm, S5L8942X).** The iPad mini 1, which has the same chip, has a large body of real-device hardware notes left by Project Cascadia (GPL-2.0, runs mainline Linux on A5); no baseband; the 640×1136 screen is phone-shaped; system versions 6.0 to 9.3.5, so the new machine can first be validated with versions such as 6.1 and 7.1.2 whose user space already works on A4, before climbing to 8.4.1 and 9.3.5. iOS 10 has to wait for the second machine, iPhone 5 (A6). The alternative is iPhone 4S (same screen as iPhone 4, can run iOS 5, but has a Qualcomm baseband and little documentation for its chip).
+4. **Workload (one person plus AI sessions) [inferred]:** A5 to the iOS 9 home screen: optimistic 4 to 6 weeks, median 2.5 to 4 months; reaching "playable" adds half a month to 2 months; on top of that, iPhone 5 running iOS 10 adds 1 to 3 months. For comparison: the upstream author took only about 10 days to go from nothing to A4 running iOS 7, but he had existing iPod/3GS code, the A4 register documentation left by openiBoot and iEmu, and a real iPad he could tinker with freely; for A5 we lack all three, or have only part of them.
+5. **Performance [inferred]:** with JIT, on iPhone 18 Pro, iOS 9 takes about 45 to 90 seconds to the lock screen, the idle home screen takes about half to most of one core, and dragging and paging are in the same class as iOS 7 today (30 to 60 fps); the experience is roughly like real devices running iOS 9/10 back then, which were sluggish anyway. Without JIT it is unusable.
+6. **The three biggest risks:**
+   ① **Storage**: PPN flash plus the IOP coprocessor plus Apple's Swiss PPN FTL format; upstream has no existing model, and FirmwareKit's NAND generator only knows A4's YAFTL format;
+   ② **No real device for reference**: upstream did A4 by reading registers and taking NAND images and serial logs from a real iPad;
+   ③ **Code signing and GL loading on iOS 9/10**: iOS 10's dyld only lets files override libraries in the cache when the shared cache is a "development shared cache", so our current way of installing the GL front end fails on iOS 10 and needs a different plan; whether AMFI on iOS 8 to 10 still honors the boot-args that relax signing is also unverified.
+7. **Suggested first step:** send a session to do "step 0": download the iPod touch 5 9.3.5 (1.61 GB) and 7.1.2 (1.29 GB) firmware (requires user approval), decrypt the kernel and device tree with the public keys, inventory all device nodes, kexts and versions, answer the 6 open questions in section 6.4, and write no emulator code. After that, build the new machine skeleton on the Mac, with the target "the kernel prints on serial and stops at Waiting for root device".
+8. **Things for the user to decide:** the step 0 download; whether to buy a used A5 device (iPod touch 5 or iPad mini 1, plus a Raspberry Pi Pico for checkm8) or A6 device (iPhone 5, checkm8 directly from the Mac) as a reference device; accepting long-term maintenance of machine code that upstream will not accept.
 
-| 机型（板号） | 芯片 | CPU | GPU | 内存 | 屏幕 | 系统范围 | 基带 | 现成硬件资料 |
+---
+
+## 1. Which machine first
+
+### 1.1 Candidates
+
+| Machine (board) | Chip | CPU | GPU | RAM | Screen | System range | Baseband | Existing hardware documentation |
 |---|---|---|---|---|---|---|---|---|
-| iPhone 4S（n94ap） | A5 S5L8940X | 2×Cortex-A9 800 MHz | SGX543MP2 | 512 MB | 640×960 | 5.0 到 9.3.6 | 高通 MDM6610 | 无专门资料 |
-| iPad 2（k93ap 等） | A5 S5L8940X（iPad2,4 是 8942） | 2×A9 1 GHz | SGX543MP2 | 512 MB | 1024×768 | 4.3 到 9.3.5 / 9.3.6 | Wi-Fi 款无 | 无专门资料 |
-| **iPod touch 5（n78ap）** | **A5 S5L8942X** | 2×A9 800 MHz | SGX543MP2 | 512 MB | **640×1136** | **6.0 到 9.3.5** | **无** | Cascadia（同芯片） |
-| iPad mini 1（p105ap 等） | A5 S5L8942X | 2×A9 1 GHz | SGX543MP2 | 512 MB | 1024×768 | 6.0 到 9.3.5 / 9.3.6 | Wi-Fi 款无 | Cascadia 就是这台 |
-| iPad 3（j1/j2） | A5X S5L8945X | 2×A9 1 GHz | SGX543MP4 | 1 GB | 2048×1536 | 5.1 到 9.3.5 / 9.3.6 | 部分有 | 少 |
-| iPhone 5（n41ap/n42ap） | A6 S5L8950X | 2×Swift 1.3 GHz | SGX543MP3 | 1 GB | 640×1136 | 6.0 到 10.3.4 | 高通 MDM9615 | 只有 A6X 的设备树地图 |
-| iPhone 5c（n48/n49） | A6 S5L8950X | 同上 | 同上 | 1 GB | 640×1136 | 7.0 到 10.3.3 | 有 | 同上 |
-| iPad 4（p101 到 p103） | A6X S5L8955X | 2×Swift | SGX554MP4 | 1 GB | 2048×1536 | 6.0 到 10.3.3 / 10.3.4 | 部分有 | Cascadia issue #6 的完整地图 |
+| iPhone 4S (n94ap) | A5 S5L8940X | 2×Cortex-A9 800 MHz | SGX543MP2 | 512 MB | 640×960 | 5.0 to 9.3.6 | Qualcomm MDM6610 | No dedicated documentation |
+| iPad 2 (k93ap etc.) | A5 S5L8940X (iPad2,4 is 8942) | 2×A9 1 GHz | SGX543MP2 | 512 MB | 1024×768 | 4.3 to 9.3.5 / 9.3.6 | None on Wi-Fi models | No dedicated documentation |
+| **iPod touch 5 (n78ap)** | **A5 S5L8942X** | 2×A9 800 MHz | SGX543MP2 | 512 MB | **640×1136** | **6.0 to 9.3.5** | **None** | Cascadia (same chip) |
+| iPad mini 1 (p105ap etc.) | A5 S5L8942X | 2×A9 1 GHz | SGX543MP2 | 512 MB | 1024×768 | 6.0 to 9.3.5 / 9.3.6 | None on Wi-Fi models | Cascadia is this very device |
+| iPad 3 (j1/j2) | A5X S5L8945X | 2×A9 1 GHz | SGX543MP4 | 1 GB | 2048×1536 | 5.1 to 9.3.5 / 9.3.6 | Some models | Little |
+| iPhone 5 (n41ap/n42ap) | A6 S5L8950X | 2×Swift 1.3 GHz | SGX543MP3 | 1 GB | 640×1136 | 6.0 to 10.3.4 | Qualcomm MDM9615 | Only the A6X device tree map |
+| iPhone 5c (n48/n49) | A6 S5L8950X | Same as above | Same as above | 1 GB | 640×1136 | 7.0 to 10.3.3 | Yes | Same as above |
+| iPad 4 (p101 to p103) | A6X S5L8955X | 2×Swift | SGX554MP4 | 1 GB | 2048×1536 | 6.0 to 10.3.3 / 10.3.4 | Some models | Full map in Cascadia issue #6 |
 
-- 芯片、GPU、内存、频率：维基百科 Apple A5 / Apple A6 条目【已核实】。
-- 系统范围：fwkeydb 里 iPhone4,1（9A334 到 13G37）、iPad2,1（8F191 到 13G36）、iPod5,1（10A406 到 13G36）、iPhone5,2（10A405 到 14G61）、iPad3,4（10A407 到 14G61）的版本目录【已核实】；iPad mini 1、iPad 3、iPhone 5c 的范围按公开常识【推测】。
-- A6X 的 CPU 是 Swift、触摸挂在 spi3、GPU 是 SGX554MP4、Wi-Fi 是 HSIC 上的 BCM4334：Cascadia issue #6，一位贡献者从越狱的 iPad 4（iOS 10.3.4）上读的【作者自述】。
+- Chip, GPU, RAM, clock speed: the Wikipedia entries Apple A5 / Apple A6 **[verified]**.
+- System range: the version directories in fwkeydb for iPhone4,1 (9A334 to 13G37), iPad2,1 (8F191 to 13G36), iPod5,1 (10A406 to 13G36), iPhone5,2 (10A405 to 14G61), iPad3,4 (10A407 to 14G61) **[verified]**; the ranges for iPad mini 1, iPad 3 and iPhone 5c are from public common knowledge **[inferred]**.
+- A6X's CPU is Swift, touch is on spi3, the GPU is SGX554MP4, Wi-Fi is BCM4334 on HSIC: Cascadia issue #6, read by a contributor from a jailbroken iPad 4 (iOS 10.3.4) **[author's claim]**.
 
-### 1.2 推荐 iPod touch 5，理由
+### 1.2 Why iPod touch 5 is recommended
 
-1. **资料最多。** Cascadia 在同芯片的 iPad mini 1 实机上摸清了：AIC1 中断控制器和它的定时器、第二个核怎么放出复位（PMGR `+0x1214`、`+0x1220`，核从物理地址 0 起跑）、PL310 L2、PMGR 门控（`0x3F101008 + id×4`）、PMGR 看门狗块里唯一的 24 MHz 自由计数器、H2FMI 加 PPN 闪存的整条读路径、Z2 触摸上电、I2C/SPI/GPIO、扬声器、PMU、电池电量计、SGX543 上电序列，还写了从苹果设备树（ADT）转 Linux DTS 的工具。【作者自述；仓库里对应的文档和驱动文件已核实存在】
-2. **没有基带。** 上游的基带模型是英飞凌 SPI 协议（iPhone 3GS/4 用），iPhone 4S/5 的高通基带完全不同；iPod 不用处理基带激活，也不用藏 CommCenter。【推测】
-3. **屏幕形状。** 640×1136 在现代 iPhone 上留黑边最少；平板（1024×768）在手机上会缩得很小。
-4. **版本阶梯能把问题分开。** iPod touch 5 最早是 6.0，6.1.x 和 7.1.2 的用户态（GL 前端、激活、客体工具包、只读根分区）上游已在 A4 的 iPod touch 4 和 iPhone 4 上打通。先用这两个版本把「机器模型的问题」和「新系统的问题」分开，再爬 8.4.1、9.3.5。
+1. **The most documentation.** On a real iPad mini 1 with the same chip, Cascadia worked out: the AIC1 interrupt controller and its timer, how the second core is released from reset (PMGR `+0x1214`, `+0x1220`; the core starts running at physical address 0), the PL310 L2, PMGR gating (`0x3F101008 + id×4`), the only 24 MHz free-running counter (in the PMGR watchdog block), the whole H2FMI plus PPN flash read path, Z2 touch power-up, I2C/SPI/GPIO, speaker, PMU, battery fuel gauge and the SGX543 power-up sequence, and also wrote a tool that converts Apple device trees (ADT) to Linux DTS. **[author's claim; the corresponding docs and driver files in the repository verified to exist]**
+2. **No baseband.** Upstream's baseband model speaks the Infineon SPI protocol (used by iPhone 3GS/4), and the Qualcomm baseband of iPhone 4S/5 is completely different; an iPod needs no baseband activation and no hiding of CommCenter. **[inferred]**
+3. **Screen shape.** 640×1136 leaves the smallest black bars on a modern iPhone; a tablet (1024×768) would be shrunk very small on a phone.
+4. **The version ladder separates the problems.** iPod touch 5 starts at 6.0, and upstream has already got the 6.1.x and 7.1.2 user space (GL front end, activation, guest tool kit, read-only root partition) working on the A4 iPod touch 4 and iPhone 4. Use these two versions first to separate "machine model problems" from "new system problems", then climb to 8.4.1 and 9.3.5.
 
-缺点：最高 9.3.5（9.3.6 只是 GPS 修复，无所谓）；板级外设（屏幕面板、PMU、音频编解码器）和 iPad mini 不完全一样，要按 iPod 5 自己的设备树来。iPad mini 1 可以当「同芯双胞胎」，遇到 SoC 级问题直接查 Cascadia。
+Drawbacks: it tops out at 9.3.5 (9.3.6 is only a GPS fix, which does not matter); the board-level peripherals (screen panel, PMU, audio codec) are not exactly the same as on the iPad mini, so the iPod 5's own device tree must be followed. The iPad mini 1 can serve as a "same-chip twin": for SoC-level problems, go straight to Cascadia.
 
-**备选 iPhone 4S。** 如果用户更想要「iPhone」和 iOS 5：屏幕和 iPhone 4 一样，App 现成；5.1.1 到 7.1.2 可以和现有 n90 逐版对照。代价是要关掉高通基带并处理 iPhone 的激活；S5L8940X 没有直接资料（它和 8942 是同一设计的 45 nm / 32 nm 版本，寄存器大概率一样【推测】）。nexttouch 选的就是 4S 加 iPad 2 Wi-Fi 当调试双胞胎【作者自述】。
+**Alternative: iPhone 4S.** If the user would rather have an "iPhone" and iOS 5: the screen is the same as iPhone 4, and the app is ready for it; 5.1.1 to 7.1.2 can be compared version by version with the existing n90. The cost is turning off the Qualcomm baseband and handling iPhone activation; there is no direct documentation for S5L8940X (it is the 45 nm / 32 nm version of the same design as 8942, so the registers are most likely the same **[inferred]**). nexttouch picked exactly the 4S plus an iPad 2 Wi-Fi as its debugging twins **[author's claim]**.
 
-**iOS 10 只有 A6/A6X 能跑。** iPhone 5 是第二台。从 A5 到 A6：CPU 要换 Swift 型号（好做）；外设有一批变化（L2 不再是外置 PL310、触摸从 spi1 挪到 spi3 等）；按「半个新 SoC」估。
+**Only A6/A6X can run iOS 10.** iPhone 5 is the second machine. From A5 to A6: the CPU needs a Swift model (easy); a batch of peripherals change (L2 is no longer an external PL310, touch moved from spi1 to spi3, etc.); estimate it as "half a new SoC".
 
 ---
 
-## 2. 要补哪些硬件
+## 2. What hardware needs adding
 
-### 2.1 地址布局：换了基址，偏移有不少没变
+### 2.1 Address layout: the base changed, many offsets did not
 
-| 块 | A4（`include/hw/arm/s5l8930.h`）【已核实】 | A5 iPad mini 1（Cascadia `ADDRESSES.md`）【作者自述】 |
+| Block | A4 (`include/hw/arm/s5l8930.h`) **[verified]** | A5 iPad mini 1 (Cascadia `ADDRESSES.md`) **[author's claim]** |
 |---|---|---|
 | DRAM | 0x40000000 | 0x80000000 |
-| 中断控制器 | VIC0 0xBF200000（4 个 PL192） | AIC 0x3F200000 |
+| Interrupt controller | VIC0 0xBF200000 (4 PL192s) | AIC 0x3F200000 |
 | PMGR | 0xBF100000 | 0x3F100000 |
 | GPIO | 0xBFA00000 | 0x3FA00000 |
 | UART0 | 0x82500000 | 0x32500000 |
 
-PMGR、GPIO、UART0、中断控制器的低 28 位都一样，三星血统的块（UART、SPI、I2C、GPIO、PMGR 布局）看起来是跟着总线整体挪了，而不是重新设计【推测】。A6X 的 AIC 也在 0x3F200000【作者自述】。iPhone 4S 实机的 ioreg 里 AIC 在 arm-io 内 0xF200000，兼容串 `aic,1`【第三方实机数据（GitHub gist）】。
+The low 28 bits of PMGR, GPIO, UART0 and the interrupt controller are all the same; the blocks of Samsung lineage (UART, SPI, I2C, GPIO, the PMGR layout) seem to have moved along with the bus as a whole rather than being redesigned **[inferred]**. The A6X AIC is also at 0x3F200000 **[author's claim]**. In the ioreg of a real iPhone 4S, AIC is at 0xF200000 within arm-io, compatible string `aic,1` **[third-party real-device data (GitHub gist)]**.
 
-### 2.2 逐项
+### 2.2 Item by item
 
-难度：低 = 几天以内，中 = 一到几周，高 = 几周以上而且有未知数。
+Difficulty: low = a few days at most, medium = one to several weeks, high = several weeks or more, with unknowns.
 
-| 部件 | A4 现在怎么做（qemu-ios） | A5/A6 要做什么 | 资料 | 难度 | 能先放空吗 |
+| Component | What A4 does now (qemu-ios) | What A5/A6 needs | Sources | Difficulty | Can it be left empty at first? |
 |---|---|---|---|---|---|
-| CPU | `cortex-a8` 单核 | A5：QEMU 现成 `cortex-a9`（xnu 认作 CPUFAMILY_ARM_14）。A6：新建 Swift 型号，指令特性照 A15（VFPv4、ARM/Thumb 硬件除法、多核扩展），MIDR 厂商 0x61、部件号 0x0 | xnu `osfmk/arm/cpuid.h`、`cpuid.c`；LLVM `ARM.td` 的 `swift` 定义【已核实】 | 低 | 否 |
-| 双核 | 机型已有 AP 加 IOP 两个 CPU，`max_cpus = 2` | A5 有 SCU；第二核由 PMGR 放出复位，从物理 0 起跑；核间中断走 AIC。QEMU 的 ARM 客体 `mttcg_supported = true`，两个 vCPU 各占一个宿主线程 | Cascadia `p105-smp-bringup.md`；`target/arm/cpu.c`【已核实】 | 中 | 可以：设备树只留 cpu0，先单核开机【推测】 |
-| 中断控制器 | 4 个 PL192 菊链 | 新写 AIC 模型：xnu 开源的 `AIC.h` 给了全部寄存器名和偏移（Rev、Cap0、GlbCfg、MainTim、WhoAmI、Iack 及向量类型、IPI 置位清除、Tmr 配置计数），每条线的屏蔽和目标核按 Cascadia 的 AIC1 驱动 | xnu `pexpert/pexpert/arm/AIC.h`【已核实】；Cascadia `irq-apple-aic1.c`【作者自述】 | 中 | 否 |
-| 系统定时器 | PMGR 里的三星定时器 | iOS 在 A5 上不用 Cortex-A9 的全局定时器，用 AIC 的计时和「共享时间戳」（内核扩展 AppleInterruptController 处理 `kAICIackVecTypeTimer`）；PMGR 看门狗块里有 24 MHz 计数器 | Cascadia `p105-xnu-timer-re.md`【作者自述】 | 中 | 否 |
-| PMGR、时钟、电源域、调频 | `s5l8930_pmgr.c` | 新 PMGR：门控寄存器、时钟表、性能状态；KBoot 的 clock-frequencies 表要按 A5 重填 | Cascadia `p105-pmgr-gates.md`、`p105-xnu-pmgr-extract.md`；设备树 | 中 | 多数可以「写了就当成功」 |
-| 芯片 ID、安全信息 | chipid 模型 | chip-id 0x8942/0x8950、board-id、安全纪元；kboot 下只需内核读到的那些 | 设备树 | 低 | 否 |
-| UART、SPI、I2C、GPIO、PWM | 三星血统，A4 都有 | 地址换了，寄存器大概率相近；iOS 5 起兼容串改成 `*-1,samsung`，上游在 A4 的 iOS 5 到 7 上已经适配过 | Cascadia 的 `i2c-s5l8940x.c`、`spi-s5l8940x.c`、`pinctrl-s5l8940x-gpio.c` | 低到中 | 否 |
-| PMU（电源管理芯片，I2C） | D1815 等 | iPad mini 的 PMU 在 I2C0 的 0x3c；iPod 5 的具体型号待查 | Cascadia（背光、充电、关机都经它）；设备树 | 中 | 多数可以桩 |
-| 显示 | `s5l8930_display.c`（DisplayPipe、CLCD、RGBOUT、DSIM、DART2） | 新一代显示管线，iPod 5 是 640×1136 的 MIPI 面板（A6X 是 eDP）；QuartzCore 按显示驱动的类名挑渲染服务器，类名变了 GL 前端的显示通路要跟 | Cascadia `p105-fb.md`；设备树 | 中到高 | 否，但可以先简化成固定帧缓冲 |
-| GPU | 不模拟 SGX535：客体里换掉 OpenGLES，调用转宿主（`contrib/gles-public` 加 `hw/arm/gles-host*.c`） | 同样不模拟 SGX543/554。要做：设备树的 sgx 节点处理；GL 前端认 8.x 到 10.x 的 OpenGLES 和派发表（7.1.2 是 1035 槽，已能按 @encode 自动推导）；能力上限按 SGX543 报；iOS 10 换装载方式（3.4） | gles-public README【已核实】；dyld 源码【已核实】 | 中，iOS 10 高 | 否：iOS 7 起没有宿主 GL 时 SpringBoard 一建上下文就崩（我们 M1 第四步实测） |
-| **存储** | H2FMI 原始 NAND 加 IOP（默认跑真 IOP 固件），FirmwareKit 离线生成 YAFTL/VSVFL 格式的闪存镜像 | A5 是 PPN 闪存（芯片内带控制器，自报「PPN」1.5.5）。iOS 的栈：`fmi,s5l8920x` → AppleIOPFMI（IOP 协处理器）→ AppleSwissPPNFTL → disk0 → LwVM → HFS+。要：IOP 侧的新协议或新 IOP 模型、PPN 命令集、Swiss PPN FTL 格式的离线生成器（或让内核自格式化后再灌系统） | Cascadia `p105-nand.md`（读路径全套、命令序列）【作者自述】；上游 `gap-nand-genesis-decision.md` 的生成器思路【已核实】 | **高（最大一项）** | 早期可以用内存盘开机（KBoot 已支持 md0），但 iOS 9 系统分区约 1.5 GB，放不进 512 MB 内存，只能用裁过的系统【推测】 |
-| 加密引擎、数据保护 | CDMA 的 AES 过滤、SHA1、PKE；伪造 UID 派生键 | A5 的 AES/SHA 块位置和协议待查；iOS 8 起数据分区逐文件加密，keybag 一次性制作（`it_keybag`）要跟到 8 到 10 | 设备树、内核 | 中到高 | 否：/private/var 挂不上就到不了 SpringBoard |
-| 触摸 | Zephyr2（`ipod_touch_multitouch.c`） | 仍是 Z2（iPad mini 在 spi1，A6X 在 spi3，`AppleMultitouchSPIZ2F13`）；固件从 IPSW 取 | Cascadia `p105-z2-boot.md` | 低到中 | 否 |
-| 音频 | CS42L61、Mikey、I2S、CDMA | 换编解码器和 I2S/DMA 代际 | Cascadia `p105-audio.md` | 中 | 可以先没声音 |
-| USB | DWC OTG（usbmux/AFC）、EHCI/OHCI | 同是 Synopsys dwc2；我们 App 不靠 usbmux | Cascadia | 低 | 可以 |
-| Wi-Fi、蓝牙 | BCM4329，走 IOP 的 SDIO 环 | A5 是 BCM4334，iPad mini 上走 HSIC 挂在 EHCI 上，不是 SDIO | Cascadia | 高 | 可以（App 里先没网） |
-| 基带 | 英飞凌 SPI 模型（n90） | iPhone 4S/5 是高通，模型不能用；iPod、iPad Wi-Fi 款没有 | | 高 | 可以：设备树里把节点兼容串改成 none，n90 现在就这么做 |
-| 传感器 | 加速度计、指南针、光感 | iPad mini 的加速度计是 LIS3DSH；陀螺仪是新的 | Cascadia `p105-sensors.md` | 低到中 | 可以先固定朝向 |
-| L2 缓存 | 无 | A5 有 PL310（QEMU 有 l2x0 模型）加苹果自己的 CIF 小块；A6 集成在内存子系统里 | Cascadia | 低 | 否（驱动会配它） |
-| 相机、ISP、JPEG、视频解码 | 部分有 | 放空 | | | 可以 |
+| CPU | `cortex-a8`, single-core | A5: QEMU's existing `cortex-a9` (xnu identifies it as CPUFAMILY_ARM_14). A6: a new Swift model, instruction features after A15 (VFPv4, ARM/Thumb hardware divide, multiprocessing extensions), MIDR implementer 0x61, part number 0x0 | xnu `osfmk/arm/cpuid.h`, `cpuid.c`; the `swift` definition in LLVM `ARM.td` **[verified]** | Low | No |
+| Dual-core | The machine already has two CPUs, AP plus IOP, `max_cpus = 2` | A5 has an SCU; the second core is released from reset by PMGR and starts running at physical 0; inter-core interrupts go through AIC. QEMU's ARM guest has `mttcg_supported = true`, and the two vCPUs each take one host thread | Cascadia `p105-smp-bringup.md`; `target/arm/cpu.c` **[verified]** | Medium | Yes: keep only cpu0 in the device tree and boot single-core first **[inferred]** |
+| Interrupt controller | 4 daisy-chained PL192s | Write a new AIC model: xnu's open-source `AIC.h` gives all register names and offsets (Rev, Cap0, GlbCfg, MainTim, WhoAmI, Iack and its vector types, IPI set and clear, Tmr config and count); per-line masking and target core follow Cascadia's AIC1 driver | xnu `pexpert/pexpert/arm/AIC.h` **[verified]**; Cascadia `irq-apple-aic1.c` **[author's claim]** | Medium | No |
+| System timer | Samsung timer in PMGR | On A5, iOS does not use the Cortex-A9 global timer; it uses the AIC timekeeping and the "shared timestamp" (the AppleInterruptController kext handles `kAICIackVecTypeTimer`); the PMGR watchdog block has a 24 MHz counter | Cascadia `p105-xnu-timer-re.md` **[author's claim]** | Medium | No |
+| PMGR, clocks, power domains, frequency scaling | `s5l8930_pmgr.c` | A new PMGR: gating registers, clock table, performance states; KBoot's clock-frequencies table must be refilled for A5 | Cascadia `p105-pmgr-gates.md`, `p105-xnu-pmgr-extract.md`; device tree | Medium | Mostly yes: "treat every write as a success" |
+| Chip ID, security info | chipid model | chip-id 0x8942/0x8950, board-id, security epoch; under kboot only what the kernel reads is needed | Device tree | Low | No |
+| UART, SPI, I2C, GPIO, PWM | Samsung lineage, A4 has all of them | Addresses changed, registers most likely similar; from iOS 5 on the compatible strings changed to `*-1,samsung`, which upstream already adapted to on A4 for iOS 5 to 7 | Cascadia's `i2c-s5l8940x.c`, `spi-s5l8940x.c`, `pinctrl-s5l8940x-gpio.c` | Low to medium | No |
+| PMU (power management chip, on I2C) | D1815 etc. | The iPad mini PMU is at 0x3c on I2C0; the exact iPod 5 model is still to be checked | Cascadia (backlight, charging and shutdown all go through it); device tree | Medium | Mostly can be stubbed |
+| Display | `s5l8930_display.c` (DisplayPipe, CLCD, RGBOUT, DSIM, DART2) | A new-generation display pipeline; iPod 5 has a 640×1136 MIPI panel (A6X is eDP); QuartzCore picks the render server by the display driver's class name, so if the class name changes, the GL front end's display path must follow | Cascadia `p105-fb.md`; device tree | Medium to high | No, but it can first be simplified to a fixed framebuffer |
+| GPU | SGX535 is not emulated: OpenGLES is replaced in the guest and calls are forwarded to the host (`contrib/gles-public` plus `hw/arm/gles-host*.c`) | Likewise do not emulate SGX543/554. To do: handle the sgx node in the device tree; the GL front end must recognize the OpenGLES and dispatch table of 8.x to 10.x (7.1.2 has 1035 slots, already derived automatically from @encode); report capability limits as SGX543; change the loading method for iOS 10 (3.4) | gles-public README **[verified]**; dyld source **[verified]** | Medium, high for iOS 10 | No: from iOS 7 on, without host GL SpringBoard crashes as soon as it creates a context (measured in step 4 of our M1) |
+| **Storage** | H2FMI raw NAND plus IOP (runs the real IOP firmware by default); FirmwareKit generates YAFTL/VSVFL format flash images offline | A5 uses PPN flash (the controller is inside the chip, which reports itself as "PPN" 1.5.5). The iOS stack: `fmi,s5l8920x` → AppleIOPFMI (IOP coprocessor) → AppleSwissPPNFTL → disk0 → LwVM → HFS+. Needs: a new protocol on the IOP side or a new IOP model, the PPN command set, an offline generator for the Swiss PPN FTL format (or let the kernel self-format and then load the system) | Cascadia `p105-nand.md` (the full read path, command sequences) **[author's claim]**; the generator approach in upstream's `gap-nand-genesis-decision.md` **[verified]** | **High (the largest item)** | Early on a ramdisk can be used to boot (KBoot already supports md0), but the iOS 9 system partition is about 1.5 GB and does not fit in 512 MB of RAM, so only a trimmed system would work **[inferred]** |
+| Crypto engine, data protection | CDMA's AES filter, SHA1, PKE; faked UID-derived keys | Location and protocol of the A5 AES/SHA blocks still to be checked; from iOS 8 on the data partition is encrypted per file, and the one-time keybag creation (`it_keybag`) must be brought along to 8 to 10 | Device tree, kernel | Medium to high | No: if /private/var cannot be mounted, SpringBoard is never reached |
+| Touch | Zephyr2 (`ipod_touch_multitouch.c`) | Still Z2 (on spi1 on iPad mini, on spi3 on A6X, `AppleMultitouchSPIZ2F13`); firmware taken from the IPSW | Cascadia `p105-z2-boot.md` | Low to medium | No |
+| Audio | CS42L61, Mikey, I2S, CDMA | A new codec and a new generation of I2S/DMA | Cascadia `p105-audio.md` | Medium | Yes, silent at first |
+| USB | DWC OTG (usbmux/AFC), EHCI/OHCI | Also Synopsys dwc2; our app does not rely on usbmux | Cascadia | Low | Yes |
+| Wi-Fi, Bluetooth | BCM4329, over the IOP SDIO ring | A5 has BCM4334, which on iPad mini goes over HSIC attached to EHCI, not SDIO | Cascadia | High | Yes (no network in the app at first) |
+| Baseband | Infineon SPI model (n90) | iPhone 4S/5 use Qualcomm, so the model is unusable; iPod and the iPad Wi-Fi models have none | | High | Yes: change the node's compatible string to none in the device tree, as n90 does now |
+| Sensors | Accelerometer, compass, light sensor | The iPad mini accelerometer is LIS3DSH; the gyroscope is new | Cascadia `p105-sensors.md` | Low to medium | Yes, with a fixed orientation at first |
+| L2 cache | None | A5 has a PL310 (QEMU has an l2x0 model) plus Apple's own small CIF block; on A6 it is integrated into the memory subsystem | Cascadia | Low | No (the driver configures it) |
+| Camera, ISP, JPEG, video decode | Partly | Leave empty | | | Yes |
 
-### 2.3 资料来源的分量
+### 2.3 How much weight each source carries
 
-- **xnu 开源代码**（xnu-4570 起带 32 位 ARM）：给了 AIC 寄存器、CPU 识别、comm page 怎么填，但 S5L8940X/8950X 的板级配置被删掉了，只剩 Apple Watch 的 S7002/T8002。【已核实】
-- **Project Cascadia**：A5 最有价值的公开资料，来自实机，GPL-2.0，可以直接参考它的驱动写模型。注意它的很多寄存器序列是从用户自己解密的 iBEC 二进制里反汇编读出来的，不是泄露源码；我们照它写模型属于参考公开项目的 GPL 代码和文档。泄露的 iBoot 源码按简报不碰。【已核实仓库内容，结论为作者自述】
-- **设备树和内核扩展本身**：IPSW 里的 DeviceTree、kernelcache（密钥公开）是每台机器的「真相」，上游做 A4 的每一步也都是从这里读的。第 0 步就是把它们清点出来。
-- **theiphonewiki / theapplewiki**：本次两个站点都没取到（403、504），用 fwkeydb 和 ipsw.me 代替。
+- **xnu open source** (32-bit ARM included from xnu-4570 on): gives the AIC registers, CPU identification and how the comm page is filled, but the S5L8940X/8950X board configurations were removed, leaving only the Apple Watch S7002/T8002. **[verified]**
+- **Project Cascadia**: the most valuable public material for A5, from real hardware, GPL-2.0; its drivers can be referred to directly when writing models. Note that many of its register sequences were read by disassembling iBEC binaries that its users decrypted themselves, not from leaked source; our writing models from it counts as referring to the GPL code and documentation of a public project. Per the brief, the leaked iBoot source is not touched. **[repository contents verified; the conclusion is the author's claim]**
+- **The device trees and kexts themselves**: the DeviceTree and kernelcache in the IPSW (keys are public) are the "ground truth" for each machine, and every step of upstream's A4 work was also read from them. Step 0 is about inventorying them.
+- **theiphonewiki / theapplewiki**: neither site could be fetched this time (403, 504); fwkeydb and ipsw.me were used instead.
 
 ---
 
-## 3. 启动链和系统
+## 3. Boot chain and system
 
-### 3.1 qemu-ios 现在怎么开机【已核实】
+### 3.1 How qemu-ios boots today **[verified]**
 
-两条路：
+Two routes:
 
-1. **真启动链**：SecureROM → LLB → iBoot → 内核。iPod touch 2 代要苹果的 bootrom（我们用 4 字节占位绕过了冷启动）；iPad 1 也能走真 iBoot-817（上游 M8）。
-2. **kboot**：FirmwareKit 的 `KBoot.swift` 替 iBoot 做跳内核前的事：解密内核缓存；按 iBoot 的方式填设备树（内存图、chosen、时钟表、身份信息、MAC 地址、`nvram-proxy-data`）；造 boot_args（版本号从内核自己的检查里读出，iOS 4.3 起是 3）。机器把这个包放进内存，关着 MMU 跳到内核入口。iPhone 4、iPod touch 4 只走 kboot。iOS 6/7 上的几个坑（Epoch Mismatch、内核要映射物理地址 0、NVRAM 代理数据全零导致死循环）都已在 kboot 里解决（`docs/n90/README.md`）。
+1. **Real boot chain**: SecureROM → LLB → iBoot → kernel. The iPod touch 2nd generation needs Apple's bootrom (we got around the cold boot with a 4-byte placeholder); the iPad 1 can also go through the real iBoot-817 (upstream M8).
+2. **kboot**: FirmwareKit's `KBoot.swift` does what iBoot does before jumping to the kernel: it decrypts the kernelcache; fills in the device tree the way iBoot does (memory map, chosen, clock table, identity information, MAC addresses, `nvram-proxy-data`); and builds boot_args (the version number is read from the kernel's own check; it is 3 from iOS 4.3 on). The machine puts this bundle into memory and jumps to the kernel entry with the MMU off. iPhone 4 and iPod touch 4 only use kboot. The pitfalls on iOS 6/7 (Epoch Mismatch, the kernel needing physical address 0 mapped, an endless loop caused by all-zero NVRAM proxy data) have all been solved in kboot (`docs/n90/README.md`).
 
-kboot 会把 chosen 里的 `debug-enabled`、`production-cert`、`secure-boot` 等设成 1（真机是 0），再配上启动参数 `amfi_allow_any_signature=1 cs_enforcement_disable=1`，这样内核才肯放宽代码签名，客体里的 GL 前端和 agent 才能跑（`KBoot.swift` 第 40、416 行）。
+kboot sets `debug-enabled`, `production-cert`, `secure-boot` and others in chosen to 1 (0 on real devices), and pairs that with the boot-args `amfi_allow_any_signature=1 cs_enforcement_disable=1`; only then will the kernel relax code signing, so that the GL front end and the agent in the guest can run (`KBoot.swift` lines 40 and 416).
 
-### 3.2 A5/A6 能不能照做：能，只走 kboot
+### 3.2 Can A5/A6 do the same: yes, via kboot only
 
-iBoot 路线要模拟 DRAM 控制器、精确的 PMGR、签名和安全纪元检查。上游在 A4 上试 iBoot-1219（iOS 5）就卡在 `miu_init: Epoch Mismatch` 和 PMU 关机路径（`docs/ipad1/ios5.md`）【已核实】。kboot 按 A5 要改的：内存基址 0x80000000、内存大小（512 MB / 1 GB）、时钟表、板号和芯片号、显示参数、设备树的 NOR/NVRAM 处理。【推测】
+The iBoot route needs emulation of the DRAM controller, an accurate PMGR, and the signature and security epoch checks. When upstream tried iBoot-1219 (iOS 5) on A4, it got stuck at `miu_init: Epoch Mismatch` and in the PMU shutdown path (`docs/ipad1/ios5.md`) **[verified]**. What kboot must change for A5: memory base 0x80000000, memory size (512 MB / 1 GB), clock table, board ID and chip ID, display parameters, and the NOR/NVRAM handling in the device tree. **[inferred]**
 
-### 3.3 32 位 iOS 8 到 10 有没有挡模拟器的东西
+### 3.3 Is there anything in 32-bit iOS 8 to 10 that blocks an emulator
 
-| 东西 | 情况 | 标注 |
+| Item | Situation | Label |
 |---|---|---|
-| SEP（安全隔区） | A7 才有，A5/A6 没有 | 【推测（公认常识）】 |
-| KPP（内核补丁保护） | iOS 9 引入，只在 arm64 设备上；32 位内核可以随便改，最差由模拟器在启动时改内核内存 | 【第三方资料：iOSRE wiki、Promon】 |
-| 个性化签名（IMG4、APTicket 绑定） | 32 位一直是 IMG3；kboot 不经过 iBoot 验签 | 【已核实：fwkeydb 里 A6 的 10.3.4 镜像文件名仍是 `.img3`】 |
-| 代码签名 | A4 的 3.2 到 5.1.1 内核里，AMFI 的四个放宽参数只在 debug-enabled 非零时生效，5.1.1 还在读（`docs/ipad1/ios5.md` 的表）；kboot 已设 debug-enabled | 3.2 到 5.1.1【已核实】；8 到 10 是否还读【推测：开发熔丝的真机要用，大概率还在】；不行就像越狱那样在内核里改 AMFI |
-| 专门的模拟器检测 | 没找到。真正的风险是「驱动等不到硬件就 panic 或卡死」，这是模型保真度问题，A4 上一样遇到过 | 【推测】 |
-| 文件系统 | 32 位设备升 10.3 不转 APFS，仍是 HFS+。nexttouch 路线图说 A6 要处理 APFS，我认为不对 | 【第三方报道（MacStories）加推测】 |
-| 分区 | iOS 5 起用 LwVM，上游在 A4 的 5 到 7 已处理 | 【已核实】 |
-| launchd | iOS 8 换了新 launchd，守护进程和环境变量的加载方式可能变；上游现在靠往 LaunchDaemons 放 plist、改 SpringBoard 的环境变量来装客体工具，8 到 10 上要重新确认 | 【推测，第 0 步查】 |
-| 激活 | iPod 不需要基带；上游对 7.1.2 用预先烤好的激活状态（FactoryActivated），8 到 10 要重试 | 【推测】 |
+| SEP (Secure Enclave) | Only from A7 on; A5/A6 have none | **[inferred (common knowledge)]** |
+| KPP (Kernel Patch Protection) | Introduced in iOS 9, only on arm64 devices; the 32-bit kernel can be modified freely, at worst by having the emulator patch kernel memory at boot | **[third-party sources: iOSRE wiki, Promon]** |
+| Personalized signing (IMG4, APTicket binding) | 32-bit always uses IMG3; kboot does not go through iBoot's signature check | **[verified: the A6 10.3.4 image file names in fwkeydb are still `.img3`]** |
+| Code signing | In the A4 kernels 3.2 to 5.1.1, AMFI's four relaxing arguments only take effect when debug-enabled is nonzero, and 5.1.1 still reads them (the table in `docs/ipad1/ios5.md`); kboot already sets debug-enabled | 3.2 to 5.1.1 **[verified]**; whether 8 to 10 still read them **[inferred: real devices with development fuses need this, so most likely still there]**; if not, patch AMFI in the kernel the way jailbreaks do |
+| Dedicated emulator detection | None found. The real risk is "a driver panics or hangs waiting for hardware", which is a model fidelity problem that also came up on A4 | **[inferred]** |
+| File system | 32-bit devices upgrading to 10.3 do not convert to APFS and stay on HFS+. nexttouch's roadmap says A6 has to handle APFS; I think that is wrong | **[third-party report (MacStories) plus inference]** |
+| Partitions | LwVM from iOS 5 on, already handled by upstream on A4 for 5 to 7 | **[verified]** |
+| launchd | iOS 8 switched to a new launchd, and the way daemons and environment variables are loaded may have changed; upstream currently installs the guest tools by dropping plists into LaunchDaemons and changing SpringBoard's environment variables, which must be re-checked on 8 to 10 | **[inferred, to check in step 0]** |
+| Activation | iPod needs no baseband; for 7.1.2 upstream uses a pre-baked activation state (FactoryActivated), which must be tried again on 8 to 10 | **[inferred]** |
 
-### 3.4 GL 前端在 iOS 8 到 10 上怎么装进去【dyld 源码已核实，出路为推测】
+### 3.4 How the GL front end gets installed on iOS 8 to 10 **[dyld source verified, ways out inferred]**
 
-现在的做法：把 gles-public 编出来的 OpenGLES 放到系统原来的位置，再放一个 `/System/Library/Caches/com.apple.dyld/enable-dylibs-to-override-cache` 文件，dyld 就用文件里的库代替共享缓存里的那份（gles-public README）。
+Current approach: put the OpenGLES built by gles-public in the system's original location, and add a `/System/Library/Caches/com.apple.dyld/enable-dylibs-to-override-cache` file; dyld then uses the library on disk instead of the copy in the shared cache (gles-public README).
 
-dyld 源码里这个开关的条件：
+The conditions for this switch in the dyld source:
 
-| dyld 版本 | 对应系统 | 条件 |
+| dyld version | System | Condition |
 |---|---|---|
-| 239.4 | iOS 7 | 文件存在 |
-| 353.2.1 | iOS 8 | 文件存在，且小于 `ENABLE_DYLIBS_TO_OVERRIDE_CACHE_SIZE` |
-| 360.22 | iOS 9 | 同上 |
-| 421.2、433.5 | iOS 10 | 改成 `dylibsCanOverrideCache()`：comm page 的 `_COMM_PAGE_DEV_FIRM` 第 0 位为 1，**并且**共享缓存类型是 development |
+| 239.4 | iOS 7 | The file exists |
+| 353.2.1 | iOS 8 | The file exists and is smaller than `ENABLE_DYLIBS_TO_OVERRIDE_CACHE_SIZE` |
+| 360.22 | iOS 9 | Same as above |
+| 421.2, 433.5 | iOS 10 | Changed to `dylibsCanOverrideCache()`: bit 0 of the comm page `_COMM_PAGE_DEV_FIRM` is 1, **and** the shared cache type is development |
 
-**更正（2026-11-02，第 0 步）：** iPod touch 5 的 9.3.5 实际带的是 dyld-390.7，已经有下面 iOS 10 这条检查，共享缓存头 `cacheType` = 1，所以覆盖开关在 9.3.x 上就已失效，不是 iOS 10 才开始。详见 `docs/research/ios8-10-step0.md` 4.3 节。
+**Correction (2026-11-02, step 0):** the iPod touch 5 9.3.5 actually ships dyld-390.7, which already has the iOS 10 check below, and its shared cache header has `cacheType` = 1, so the override switch already fails on 9.3.x; it does not start with iOS 10. See section 4.3 of `docs/research/ios8-10-step0.md`.
 
-`_COMM_PAGE_DEV_FIRM` 由内核填成 `PE_i_can_has_debugger(NULL)`（xnu `osfmk/arm/commpage/commpage.c` 第 104 行），kboot 设了 debug-enabled，这一条能满足。但正式 IPSW 带的是生产版共享缓存，**所以 iOS 10 上覆盖不生效，iOS 8、9 照旧可以**。
+`_COMM_PAGE_DEV_FIRM` is filled in by the kernel with `PE_i_can_has_debugger(NULL)` (xnu `osfmk/arm/commpage/commpage.c` line 104), and kboot sets debug-enabled, so this condition can be met. But the official IPSW ships a production shared cache, **so the override does not take effect on iOS 10, while iOS 8 and 9 still work**.
 
-iOS 10 的出路（都没试过）：
+Ways out for iOS 10 (none tried):
 
-1. 用 `DYLD_INSERT_LIBRARIES` 插一个带 interpose 的库，把 GL 入口接过来。要确认 AMFI 不剥掉系统进程的 DYLD 环境变量，以及 App 进程也能注入。
-2. 改共享缓存头里的类型字段。缓存带代码签名，要配合 AMFI 放宽，或者由模拟器在缓存映射后改客体内存。
-3. 在更低一层接，例如换掉 SGX 的 gld 驱动包。iOS 5 起 GLEngine 和 SGX 驱动都已进了共享缓存（`docs/ipad1/ios5.md`：「bundle dirs empty on disk」），这条大概走不通。
+1. Use `DYLD_INSERT_LIBRARIES` to insert a library that uses interposing and take over the GL entry points. Need to confirm that AMFI does not strip the DYLD environment variables of system processes, and that app processes can be injected too.
+2. Change the type field in the shared cache header. The cache carries a code signature, so this must go together with relaxed AMFI, or the emulator changes guest memory after the cache is mapped.
+3. Hook in at a lower layer, for example by replacing SGX's gld driver bundle. From iOS 5 on, GLEngine and the SGX driver are both in the shared cache (`docs/ipad1/ios5.md`: "bundle dirs empty on disk"), so this probably does not work.
 
-估计 iOS 10 单独这块要 1 到 2 周【推测】。
+Estimate for the iOS 10 piece alone: 1 to 2 weeks **[inferred]**.
 
-### 3.5 固件密钥公开到什么程度
+### 3.5 How public the firmware keys are
 
-| 系统 | A5（4S、iPad 2、iPod 5、iPad mini） | A6（iPhone 5）、A6X（iPad 4） | 来源 |
+| System | A5 (4S, iPad 2, iPod 5, iPad mini) | A6 (iPhone 5), A6X (iPad 4) | Source |
 |---|---|---|---|
-| iOS 5 到 7 | 每个版本都有 | 6 到 7 每个版本都有 | fwkeydb 版本目录【已核实】 |
-| iOS 8.4.1（12H321） | 内核、设备树、iBoot 有密钥；ipsw.me 没有根文件系统密钥 | 同左 | ipsw.me、fwkeydb【已核实】 |
-| iOS 9.3.5（13G36） | 16 个镜像都有 KBAG 和密钥；根文件系统密钥 ipsw.me 对 4S、iPad 2、iPod 5、iPad mini 有 | 镜像密钥有；iPhone 5、iPad 3 没有根文件系统密钥 | 同上【已核实】 |
-| iPhone 4S 9.3.6（13G37） | fwkeydb 有 | | 【已核实】 |
-| iOS 10.0 到 10.3.4 | 不适用 | **16 个镜像全部没有 KBAG，即没加密**（14A403、14G61，iPad3,4 的 14G61 都查了）；ipsw.me 对 14G61 没有条目，对 14A403 到 14G60 列了条目但密钥是空的，原因同此 | fwkeydb、ipsw.me【已核实】 |
+| iOS 5 to 7 | Every version | Every version from 6 to 7 | fwkeydb version directories **[verified]** |
+| iOS 8.4.1 (12H321) | Kernel, device tree and iBoot have keys; ipsw.me has no root filesystem key | Same as left | ipsw.me, fwkeydb **[verified]** |
+| iOS 9.3.5 (13G36) | All 16 images have KBAGs and keys; ipsw.me has root filesystem keys for 4S, iPad 2, iPod 5, iPad mini | Image keys exist; no root filesystem keys for iPhone 5 and iPad 3 | Same as above **[verified]** |
+| iPhone 4S 9.3.6 (13G37) | fwkeydb has them | | **[verified]** |
+| iOS 10.0 to 10.3.4 | Not applicable | **None of the 16 images has a KBAG, i.e. they are not encrypted** (14A403, 14G61, and iPad3,4's 14G61 all checked); ipsw.me has no entry for 14G61, and lists entries for 14A403 to 14G60 but with empty keys, for the same reason | fwkeydb, ipsw.me **[verified]** |
 
-- 缺根文件系统密钥的几个：iOS 8/9 的根文件系统密钥历来能用公开工具（genpass）从解密后的恢复内存盘算出来【推测，第 0 步验证】；iOS 10 的根文件系统不加密【推测】。
-- nexttouch 路线图把「A6 的 iOS 10 没有公开密钥」列为待定问题、说可能要用 checkm8 从真机提取【作者自述】。按 fwkeydb 的数据，这件事已经有答案：根本不用密钥。
-- 和现在一样，App 只存密钥和苹果的下载地址，在手机上下载后自己解，我们不分发任何苹果的东西（Light Touch 的固件表就带 `keys` 字段）【已核实】。
-- 真机 checkm8：A6/A6X 可以直接用 ipwndfu（支持 s5l8950x、s5l8955x）；A5/A5X 在 ipwndfu 的「未来支持」里，实际要用 checkm8-a5，配 Arduino 加 USB Host Shield 或树莓派 Pico（Cascadia 用的是 Pico）【已核实：ipwndfu README、Legacy-iOS-Kit wiki】。只在要从真机读寄存器、拿 NAND 镜像时才需要。
+- The few missing root filesystem keys: the iOS 8/9 root filesystem keys have historically been computable from the decrypted restore ramdisk with a public tool (genpass) **[inferred, to verify in step 0]**; the iOS 10 root filesystem is not encrypted **[inferred]**.
+- nexttouch's roadmap lists "no public keys for iOS 10 on A6" as an open question and says they may have to be extracted from a real device with checkm8 **[author's claim]**. Per the fwkeydb data, this already has an answer: no keys are needed at all.
+- As now, the app stores only keys and Apple's download URLs, downloads and decrypts on the phone itself, and we distribute nothing of Apple's (Light Touch's firmware table has a `keys` field) **[verified]**.
+- Real-device checkm8: A6/A6X can use ipwndfu directly (it supports s5l8950x and s5l8955x); A5/A5X are on ipwndfu's "future support" list, and in practice need checkm8-a5 with an Arduino plus a USB Host Shield or a Raspberry Pi Pico (Cascadia uses the Pico) **[verified: ipwndfu README, Legacy-iOS-Kit wiki]**. Only needed when reading registers or taking NAND images from a real device.
 
 ---
 
-## 4. 前人做过多少
+## 4. How much has been done before
 
-| 项目 | 做了什么 | 和 A5/A6、32 位 iOS 8 到 10 的关系 | 标注 |
+| Project | What it did | Relation to A5/A6 and 32-bit iOS 8 to 10 | Label |
 |---|---|---|---|
-| c12n/nexttouch | 2026-11-01 建仓，当天发 v0.1.0：Rust 写的目录、选单、设置，Windows/Android/iOS 三个壳；iOS 8/9/10 条目全部标「Not booting yet」 | 只有路线图（4S 9.3.5、iPhone 5 10.3.4、六个开机里程碑），仓库里没有任何引擎代码；作者明说「no new emulation yet」「qemu-ios engine implements no SoC newer than the A4」 | 仓库内容【已核实】；计划【作者自述】 |
-| samhenrigold/qemu-ios、LightTouchMac | 8 种机型，最高 A4 和 iOS 7.1.2 | README 明说不做比列表更新的机型、不做 iOS 版；固件表 329 条全在这 8 个板号上，没有 A5/A6 的条目或「coming_soon」 | 【已核实】 |
-| blake-lucas/LightTouch、blake-lucas/qemu-ios | Light Touch 的分支，跑在 Android、Linux、Windows、macOS；做了不少引擎提速（上游最近几次提交就是从这里移植的） | 只到 iOS 7，没有 iOS 版 App，没有 A5 | 【已核实（README）】 |
-| mada-02/iOS-Emulator | 「An iOS 1-7 emulator」 | 无 | 【已核实（仓库描述）】 |
-| devos50/qemu-ios | iPod touch 1、2 代，qemu-ios 的源头 | 无 | 【已核实（之前的调研）；没搜到 A5 相关】 |
-| rzxvx/Project-Cascadia | 在 A5 的 iPad mini 1 上跑主线 Linux 6.12：双核、中断、定时器、触摸、Wi-Fi、蓝牙、音频、XFCE、NAND 只读、SGX543 的内核驱动加 Mesa；另有 A13；issue #6 有 A6X 的硬件地图 | 不是模拟器，但是 A5 硬件最好的公开资料 | 仓库内容【已核实】；功能【作者自述】 |
-| winocm/xnu（2013 到 2017） | 把开源 Darwin 内核移植到 ARMv7/ARMv6/AArch64，能在 QEMU 的开发板上跑 | 只有开源内核，不是 iOS 的内核缓存和系统 | 【已核实（仓库描述）】 |
-| Corellium（商业） | 虚拟 iPhone | 最老机型 iPhone 6，最低 iOS 10，没有 32 位 | 【已核实（官方支持页）】 |
-| QEMUAppleSilicon、qemu-t8030、Inferno-iOS、alephsecurity xnu-qemu-arm64 | iPhone 6s/X/11 等 64 位机型 | 64 位，和我们无关；qemu-t8030 是直接在内核里补 AMFI，不靠启动参数 | 【已核实（之前的调研和 qemu-t8030 wiki）】 |
-| iEmu、QEMU-s5l89xx-port（2012） | 早年模拟 S5L89xx 的尝试 | 失败，没到 A5 | 【第三方（Emulation General Wiki）】 |
+| c12n/nexttouch | Repository created 2026-11-01, v0.1.0 released the same day: a catalog, menus and settings written in Rust, with three shells for Windows/Android/iOS; all iOS 8/9/10 entries marked "Not booting yet" | Only a roadmap (4S 9.3.5, iPhone 5 10.3.4, six boot milestones), no engine code in the repository; the author says plainly "no new emulation yet" and "qemu-ios engine implements no SoC newer than the A4" | Repository contents **[verified]**; plans **[author's claim]** |
+| samhenrigold/qemu-ios, LightTouchMac | 8 machines, up to A4 and iOS 7.1.2 | The README states plainly that there will be no machines newer than those listed and no iOS version; all 329 firmware table entries are for these 8 boards, with no A5/A6 entries and no "coming_soon" | **[verified]** |
+| blake-lucas/LightTouch, blake-lucas/qemu-ios | A fork of Light Touch that runs on Android, Linux, Windows and macOS; did many engine speedups (the most recent upstream commits were ported from here) | Only up to iOS 7, no iOS app, no A5 | **[verified (README)]** |
+| mada-02/iOS-Emulator | "An iOS 1-7 emulator" | None | **[verified (repository description)]** |
+| devos50/qemu-ios | iPod touch 1st and 2nd generation, the origin of qemu-ios | None | **[verified (earlier research); nothing A5-related found]** |
+| rzxvx/Project-Cascadia | Runs mainline Linux 6.12 on the A5 iPad mini 1: dual-core, interrupts, timers, touch, Wi-Fi, Bluetooth, audio, XFCE, read-only NAND, an SGX543 kernel driver plus Mesa; also A13; issue #6 has an A6X hardware map | Not an emulator, but the best public material on A5 hardware | Repository contents **[verified]**; features **[author's claim]** |
+| winocm/xnu (2013 to 2017) | Ported the open-source Darwin kernel to ARMv7/ARMv6/AArch64; it runs on QEMU development boards | Only the open-source kernel, not iOS kernelcaches or the iOS system | **[verified (repository description)]** |
+| Corellium (commercial) | Virtual iPhones | Oldest model iPhone 6, lowest version iOS 10, no 32-bit | **[verified (official support page)]** |
+| QEMUAppleSilicon, qemu-t8030, Inferno-iOS, alephsecurity xnu-qemu-arm64 | 64-bit models such as iPhone 6s/X/11 | 64-bit, irrelevant to us; qemu-t8030 patches AMFI directly in the kernel rather than relying on boot-args | **[verified (earlier research and the qemu-t8030 wiki)]** |
+| iEmu, QEMU-s5l89xx-port (2012) | Early attempts to emulate S5L89xx | Failed, never reached A5 | **[third-party (Emulation General Wiki)]** |
 
-检索范围：GitHub 代码搜索 `s5l8940`、`s5l8950`（只有越狱工具、bootrom 漏洞工具和资料）；GitHub 仓库搜索；网页搜索「QEMU A5 S5L8940 iPhone 4S」「32 位 iOS 9/10 模拟」等。**没找到任何公开的 A5/A6 模拟器，也没找到 32 位 iOS 8 到 10 在模拟器里开机的公开记录。**
-
----
-
-## 5. 性能
-
-### 5.1 已有数据（iPhone 4，A4 单核，iOS 7.1.2）【已核实】
-
-| 项目 | 数值 | 来源 |
-|---|---|---|
-| Mac M4 Max，JIT，开机到锁屏 | 40 秒（客体主核 35.5 CPU 秒） | `docs/reports/m0-mac-benchmark.md` |
-| Mac，纯解释器（TCI），开机到锁屏 | 407 秒（11.2 倍） | 同上 |
-| iPhone 18 Pro，JIT，到锁屏 / 到主屏 | 29 秒 / 37 秒 | `docs/reports/m2-gl-eagl.md` |
-| 18 Pro，主屏静止 | 41% 一个核（读回约 13%，客体约 20%，合成发帧约 7%） | `docs/reports/m2-ios7-perf.md` |
-| 18 Pro，锁屏拖动 / 主屏按住拖 / 翻页动画 | 60 / 49 / 36 帧 | 同上 |
-| App 内存占用 | 1.03 到 1.11 GB（客体 512 MB） | `docs/reports/m2-gl-eagl.md` |
-
-### 5.2 估算【推测】
-
-假设：
-
-- JIT 下一个客体核大致跑到真机 A4 的速度（18 Pro 上 iOS 7 29 秒到锁屏，和当年真 iPhone 4 同一量级）。
-- iOS 9 开机的总工作量约为 iOS 7 的 1.5 到 2 倍，其中一部分能分到第二个核。
-- 双核时有两个 vCPU 线程，加上 QEMU 主线程、App 主线程；A20 Pro 大概是 2 个性能核加 4 个能效核，会有线程被挤到能效核上；GL 转发也跑在 vCPU 线程上。
-- 读回成本按像素算：640×1136 比 640×960 多 18%。
-
-| | iOS 9.3.5（iPod touch 5，A5 双核） | iOS 10.3.4（iPhone 5，A6 双核，1 GB） |
-|---|---|---|
-| 开机到锁屏 | 45 到 90 秒 | 50 到 100 秒 |
-| 主屏静止 CPU（一个核 = 100%） | 50% 到 80% | 55% 到 90% |
-| 拖动、翻页 | 30 到 60 帧，主要看 GL 读回 | 同左 |
-| 开 App | 2 到 4 秒 | 2 到 5 秒 |
-| App 内存 | 约 1.1 GB | 约 1.6 到 1.8 GB |
-| 没有 JIT | 开机十分钟以上，不能用 | 同左 |
-
-补充：
-
-- 两个 vCPU 线程会分 JIT 代码区，可能要从 256 MB 加到 512 MB；StikDebug 准备时间约从 0.7 秒变 1.5 秒。
-- 也可以只模拟一个核跑（设备树只留 cpu0），线程少、对手机可能更友好，要实测才知道哪个好。
-- iPhone 14 Pro 上大约再慢一倍，iOS 10 的 1 GB 客体内存会比较紧。
-- 真机上 iOS 9 跑在 4S、iOS 10 跑在 iPhone 5 本来就慢，「回味」的预期要和用户说清楚。
+Search scope: GitHub code search for `s5l8940` and `s5l8950` (only jailbreak tools, bootrom exploit tools and documentation); GitHub repository search; web searches for "QEMU A5 S5L8940 iPhone 4S", "32-bit iOS 9/10 emulation" (`32 位 iOS 9/10 模拟`) and so on. **No public A5/A6 emulator was found, and no public record of 32-bit iOS 8 to 10 booting in an emulator.**
 
 ---
 
-## 6. 结论和路线
+## 5. Performance
 
-### 6.1 做不做得成
+### 5.1 Existing data (iPhone 4, A4 single-core, iOS 7.1.2) **[verified]**
 
-能。没有哪一项是「原理上做不到」：固件能解，内核能直接引导，没有 SEP 和 KPP，CPU 现成，GPU 走转发。问题是值不值、要多久。这是一个完整的新 SoC 移植，加上存储这块大活，再加 iOS 10 的 GL 装载问题。
+| Item | Value | Source |
+|---|---|---|
+| Mac M4 Max, JIT, boot to lock screen | 40 seconds (guest main core 35.5 CPU seconds) | `docs/reports/m0-mac-benchmark.md` |
+| Mac, pure interpreter (TCI), boot to lock screen | 407 seconds (11.2 times) | Same as above |
+| iPhone 18 Pro, JIT, to lock screen / to home screen | 29 seconds / 37 seconds | `docs/reports/m2-gl-eagl.md` |
+| 18 Pro, idle home screen | 41% of one core (readback about 13%, guest about 20%, compositing and frame presentation about 7%) | `docs/reports/m2-ios7-perf.md` |
+| 18 Pro, lock screen drag / home screen press and drag / page animation | 60 / 49 / 36 fps | Same as above |
+| App memory footprint | 1.03 to 1.11 GB (guest 512 MB) | `docs/reports/m2-gl-eagl.md` |
 
-### 6.2 工作量【推测】
+### 5.2 Estimates **[inferred]**
 
-| 阶段 | 内容 | 产出 | 乐观 | 中位 |
+Assumptions:
+
+- Under JIT one guest core runs at roughly the speed of a real A4 (on the 18 Pro, iOS 7 reaches the lock screen in 29 seconds, the same order as a real iPhone 4 back then).
+- The total work of booting iOS 9 is about 1.5 to 2 times that of iOS 7, and part of it can go to the second core.
+- With dual-core there are two vCPU threads, plus the QEMU main thread and the app main thread; the A20 Pro probably has 2 performance cores plus 4 efficiency cores, so some threads will be pushed onto efficiency cores; GL forwarding also runs on the vCPU threads.
+- Readback cost scales with pixels: 640×1136 is 18% more than 640×960.
+
+| | iOS 9.3.5 (iPod touch 5, A5 dual-core) | iOS 10.3.4 (iPhone 5, A6 dual-core, 1 GB) |
+|---|---|---|
+| Boot to lock screen | 45 to 90 seconds | 50 to 100 seconds |
+| Idle home screen CPU (one core = 100%) | 50% to 80% | 55% to 90% |
+| Dragging, paging | 30 to 60 fps, mainly limited by GL readback | Same as left |
+| Opening an app | 2 to 4 seconds | 2 to 5 seconds |
+| App memory | About 1.1 GB | About 1.6 to 1.8 GB |
+| Without JIT | Boot takes over ten minutes, unusable | Same as left |
+
+Notes:
+
+- The two vCPU threads will share the JIT code region, which may need to grow from 256 MB to 512 MB; StikDebug's preparation time would go from about 0.7 seconds to 1.5 seconds.
+- It is also possible to emulate just one core (keep only cpu0 in the device tree): fewer threads, possibly friendlier to the phone; only testing will tell which is better.
+- On iPhone 14 Pro it is roughly twice as slow again, and iOS 10's 1 GB of guest memory will be tight.
+- On real hardware, iOS 9 on a 4S and iOS 10 on an iPhone 5 were slow to begin with; expectations for the "nostalgia" experience must be made clear to the user.
+
+---
+
+## 6. Conclusion and roadmap
+
+### 6.1 Can it be done
+
+Yes. No item is "impossible in principle": the firmware can be decrypted, the kernel can be booted directly, there is no SEP and no KPP, the CPU model already exists, and the GPU goes through forwarding. The question is whether it is worth it and how long it takes. This is a complete new SoC port, plus the big job of storage, plus the iOS 10 GL loading problem.
+
+### 6.2 Workload **[inferred]**
+
+| Phase | Content | Deliverable | Optimistic | Median |
 |---|---|---|---|---|
-| 0 | 解包、清点设备树和内核扩展，回答 6.4 节的问题 | 清单文档 | 1 个会话 | 1 到 2 天 |
-| 1 | 机型骨架：单核 A9、AIC 和定时器、PMGR 桩、UART、chipid，kboot 改 A5 | 内核横幅，停在 Waiting for root device | 1 周 | 2 到 3 周 |
-| 2 | 存储：IOP、FMI、PPN 或替代方案，FTL 生成或自格式化，AES 和 keybag，PMU | launchd 跑起来，/private/var 挂上 | 2 到 3 周 | 1 到 2 个月 |
-| 3 | 显示管线，GL 前端从 7.1.2 爬到 8.4.1、9.3.5，触摸，激活，客体工具包 | SpringBoard 出画面，能点 | 1 到 2 周 | 3 到 6 周 |
-| 4 | 双核、声音、按键、睡眠唤醒、稳定性 | 能玩 | 1 到 2 周 | 3 到 6 周 |
-| 5 | 接进 iPhone App：多线程 TCG 加 JIT、内存 | 手机上开 iOS 9 | 几天 | 1 到 2 周 |
-| 6 | A6：Swift 型号、A6 外设差异、iOS 10 的 GL 装载 | iPhone 5 跑 iOS 10 | 3 到 4 周 | 2 到 3 个月 |
+| 0 | Unpack, inventory the device tree and kexts, answer the questions in section 6.4 | Inventory document | 1 session | 1 to 2 days |
+| 1 | Machine skeleton: single-core A9, AIC and timer, PMGR stub, UART, chipid, kboot changed for A5 | Kernel banner, stops at Waiting for root device | 1 week | 2 to 3 weeks |
+| 2 | Storage: IOP, FMI, PPN or an alternative, FTL generation or self-formatting, AES and keybag, PMU | launchd running, /private/var mounted | 2 to 3 weeks | 1 to 2 months |
+| 3 | Display pipeline, GL front end climbing from 7.1.2 to 8.4.1 and 9.3.5, touch, activation, guest tool kit | SpringBoard shows a picture and responds to taps | 1 to 2 weeks | 3 to 6 weeks |
+| 4 | Dual-core, sound, buttons, sleep and wake, stability | Playable | 1 to 2 weeks | 3 to 6 weeks |
+| 5 | Hook into the iPhone app: multithreaded TCG plus JIT, memory | iOS 9 boots on the phone | A few days | 1 to 2 weeks |
+| 6 | A6: Swift model, A6 peripheral differences, iOS 10 GL loading | iPhone 5 runs iOS 10 | 3 to 4 weeks | 2 to 3 months |
 
-合计：A5 到 iOS 9 主屏乐观 4 到 6 周、中位 2.5 到 4 个月；能玩再加半个月到 2 个月；A6 和 iOS 10 再加 1 到 3 个月。按我们现在「一个会话推进一个小里程碑」的节奏，A5 到能玩约 40 到 100 个执行会话。
+Total: A5 to the iOS 9 home screen, optimistic 4 to 6 weeks, median 2.5 to 4 months; playable adds another half month to 2 months; A6 and iOS 10 add another 1 to 3 months. At our current pace of "one session advances one small milestone", A5 to playable is about 40 to 100 execution sessions.
 
-估算的参照：
+Reference points for the estimate:
 
-- **上游 A4**：2026-09-26 新建 `ipad1` 机型，09-27 iOS 3.2 到主屏（那天 329 个提交），10-05 iPhone 4 的 iOS 7.1.2 通过整套检查，约 10 天。前提是现成的 iPod/3GS 代码、openiBoot 和 iEmu 的 A4 寄存器资料，以及一台真 iPad（limera1n 读寄存器、导出 NAND 和系统分区）。【已核实：git log、`docs/archive/ipad1-PLAN.md`】
-- **上游 3GS / iPod touch 3 代机型**：10-04 首次提交，当天内核到 launchd（同一代 SoC 已有资料）。【已核实】
-- **Cascadia**：2026-08-11 建仓，在真机上靠 checkm8 一步步摸，十月初才把 GPU 画出东西。【建仓日期已核实，进度为作者自述】
-- **我们自己**：M0 到 M2 两天走完移植、JIT、EAGL、调优，但那是在现成机型上。
+- **Upstream A4**: the `ipad1` machine was created on 2026-09-26, iOS 3.2 reached the home screen on 09-27 (329 commits that day), and on 10-05 the iPhone 4 on iOS 7.1.2 passed the full set of checks: about 10 days. The preconditions were existing iPod/3GS code, the A4 register documentation from openiBoot and iEmu, and a real iPad (limera1n to read registers and dump NAND and the system partition). **[verified: git log, `docs/archive/ipad1-PLAN.md`]**
+- **Upstream 3GS / iPod touch 3rd generation machines**: first commit on 10-04, kernel to launchd the same day (the same SoC generation already had documentation). **[verified]**
+- **Cascadia**: repository created on 2026-08-11, worked things out step by step on a real device using checkm8, and only got the GPU to draw something in early October. **[creation date verified, progress is the author's claim]**
+- **Ourselves**: M0 to M2 took two days to get through porting, JIT, EAGL and tuning, but that was on an existing machine.
 
-### 6.3 最大的三个风险
+### 6.3 The three biggest risks
 
-1. **存储（最大）。** A4 的路是：H2FMI 原始 NAND，IOP 跑真固件，FirmwareKit 离线生成 YAFTL 格式镜像。A5 换成 PPN 加 Swiss PPN FTL，上游没有模型，Cascadia 只做了只读。要么写 Swiss PPN FTL 的生成器，要么让内核用 `nand-enable-reformat` 自格式化再想办法灌系统，要么找捷径（见 6.4 第 2 问：如果 A5 的内核还带 YAFTL 那套，能否让它把模拟闪存当原始 NAND，直接复用现成生成器）。
-   缓解：早期先用内存盘开到 launchd，存储并行做。
-2. **没有真机参照。** 上游每次卡住都能去真 iPad 上读寄存器值、对日志；我们只有设备树、内核反汇编和 Cascadia 的笔记。
-   缓解：买一台二手 iPod touch 5 或 iPad mini 1（价格没查），加一块树莓派 Pico 做 checkm8-a5（Cascadia 的整套工具可以直接用）；或者买 iPhone 5（Mac 直接 checkm8，顺便为 A6 准备）。这要用户决定。
-3. **代码签名和 GL 装载在 9、10 上变了。** iOS 10 的 dyld 不再让文件覆盖生产版共享缓存（3.4），GL 前端得换装法；AMFI 在 8 到 10 是否认启动参数没核实，不认就要在内核里打补丁（32 位没有 KPP，可以做，但每个版本要找位置，违背上游「不按偏移手改」的原则，得用特征码自动找）。
+1. **Storage (the biggest).** A4's route is: H2FMI raw NAND, the IOP running the real firmware, FirmwareKit generating YAFTL format images offline. A5 switched to PPN plus Swiss PPN FTL; upstream has no model, and Cascadia only did read-only access. Either write a Swiss PPN FTL generator, or let the kernel self-format with `nand-enable-reformat` and then find a way to load the system, or find a shortcut (see question 2 in 6.4: if the A5 kernel still includes the YAFTL stack, could it be made to treat the emulated flash as raw NAND, so the existing generator can be reused directly).
+   Mitigation: early on, boot to launchd with a ramdisk, and work on storage in parallel.
+2. **No real device for reference.** Every time upstream got stuck, it could go to a real iPad to read register values and compare logs; we have only the device trees, kernel disassembly and Cascadia's notes.
+   Mitigation: buy a used iPod touch 5 or iPad mini 1 (price not checked), plus a Raspberry Pi Pico for checkm8-a5 (Cascadia's whole tool set can be used directly); or buy an iPhone 5 (checkm8 directly from the Mac, which also prepares for A6). The user has to decide this.
+3. **Code signing and GL loading changed in 9 and 10.** iOS 10's dyld no longer lets files override a production shared cache (3.4), so the GL front end needs a different install method; whether AMFI honors the boot-args on 8 to 10 is unverified, and if it does not, the kernel has to be patched (32-bit has no KPP, so it is doable, but the location has to be found for each version, which violates upstream's "no hand-patching by offset" principle, so it would have to be found automatically by byte pattern).
 
-其他值得记一笔的：双核在手机上的线程争用（5.2）；我们要长期维护一套上游不收的机型代码（上游 README 的范围声明写得很死）；nexttouch 宣称在做同一件事，目前是空架子。
+Other things worth noting: thread contention from dual-core on the phone (5.2); we would have to maintain, long term, a set of machine code that upstream will not accept (the scope statement in the upstream README is very firm); nexttouch claims to be doing the same thing and is currently an empty shell.
 
-### 6.4 建议的第一步
+### 6.4 Suggested first step
 
-**第 0 步（一个会话，要用户批准下载约 2.9 GB）：** 从苹果服务器下载 iPod touch 5 的 9.3.5（13G36，1.61 GB）和 7.1.2（11D257，1.29 GB），用公开密钥解出内核缓存、设备树、恢复内存盘，回答这 6 个问题：
+**Step 0 (one session, needs user approval to download about 2.9 GB):** download the iPod touch 5 9.3.5 (13G36, 1.61 GB) and 7.1.2 (11D257, 1.29 GB) from Apple's servers, decrypt the kernelcache, device tree and restore ramdisks with the public keys, and answer these 6 questions:
 
-1. 设备树里所有节点的 `compatible`、`reg`、`interrupts`，和 iPhone 4 7.1.2 逐项对照：哪些驱动换了名字、哪些块是新的。
-2. 内核缓存里的 NAND 栈：除了 AppleSwissPPNFTL，是不是还带 AppleNANDFTL（YAFTL/VSVFL）？IOP 固件和邮箱协议是哪一版？如果能让 A5 的内核把模拟闪存当原始 NAND 用，就能直接复用 FirmwareKit 的 A4 生成器，省掉最大的一块。
-3. AMFI 还读不读 `amfi_allow_any_signature`、`cs_enforcement_disable`、`amfi_get_out_of_my_way`（FirmwareKit 的 FitCheck 就是做这个字符串检查的）。
-4. 共享缓存里 OpenGLES 的 `__GLIFunctionDispatchRec` @encode 还在不在；QuartzCore 认哪个显示驱动类名。
-5. iOS 9 的 launchd 怎么加载守护进程和环境变量（决定客体工具怎么装）。
-6. 8.4.1、9.3.5 缺的根文件系统密钥能不能用公开工具从内存盘算出来。
+1. The `compatible`, `reg` and `interrupts` of every node in the device tree, compared item by item with iPhone 4 7.1.2: which drivers were renamed and which blocks are new.
+2. The NAND stack in the kernelcache: besides AppleSwissPPNFTL, does it still include AppleNANDFTL (YAFTL/VSVFL)? Which version are the IOP firmware and the mailbox protocol? If the A5 kernel can be made to use the emulated flash as raw NAND, FirmwareKit's A4 generator can be reused directly, saving the biggest piece of work.
+3. Does AMFI still read `amfi_allow_any_signature`, `cs_enforcement_disable` and `amfi_get_out_of_my_way` (FirmwareKit's FitCheck does exactly this string check).
+4. Is the `__GLIFunctionDispatchRec` @encode of OpenGLES still in the shared cache; which display driver class name does QuartzCore recognize.
+5. How the iOS 9 launchd loads daemons and environment variables (this decides how the guest tools are installed).
+6. Can the root filesystem keys missing for 8.4.1 and 9.3.5 be computed from the ramdisks with public tools.
 
-**第 1 步（Mac 上，1 到 3 周）：** 新建 A5 机型骨架（单核 Cortex-A9、AIC 加定时器、PMGR 桩、UART、chipid），kboot 支持 A5 的内存布局。目标：iPod touch 5 的 9.3.5 和 7.1.2 内核都在串口打印横幅，停在 Waiting for root device。这一步不碰手机、不碰 App。
+**Step 1 (on the Mac, 1 to 3 weeks):** build a new A5 machine skeleton (single-core Cortex-A9, AIC plus timer, PMGR stub, UART, chipid), and make kboot support the A5 memory layout. Target: both the iPod touch 5 9.3.5 and 7.1.2 kernels print a banner on serial and stop at Waiting for root device. This step touches neither the phone nor the app.
 
-### 6.5 需要用户定的事
+### 6.5 Things the user needs to decide
 
-1. 做不做：这是几个月级别的长期轨道，不挡 M2 到 M4。
-2. 第 0 步的下载（约 2.9 GB，苹果服务器）。
-3. 第一台用 iPod touch 5（推荐）还是 iPhone 4S。
-4. 要不要买参照机：二手 iPod touch 5 / iPad mini 1 加树莓派 Pico，或者 iPhone 5。
-5. 代码怎么放：照现在的规矩，A5 机型以补丁形式放在 `patches/`；上游不会收，GPL 下自己维护没有问题。
+1. Whether to do it: this is a long-term track measured in months, and it does not block M2 to M4.
+2. The step 0 download (about 2.9 GB, from Apple's servers).
+3. First machine: iPod touch 5 (recommended) or iPhone 4S.
+4. Whether to buy a reference device: a used iPod touch 5 / iPad mini 1 plus a Raspberry Pi Pico, or an iPhone 5.
+5. Where the code goes: under the current rules, the A5 machine goes into `patches/` as patches; upstream will not accept it, and maintaining it ourselves under the GPL is no problem.
 
 ---
 
-## 7. 来源
+## 7. Sources
 
-本地（只读）：
+Local (read-only):
 
-- `upstream/qemu-ios`：`README.md`、`docs/n90/README.md`、`docs/ipad1/README.md`、`docs/ipad1/ios5.md`、`docs/archive/ipad1-PLAN.md`、`docs/research/ref-a4-soc.md`、`docs/research/web-sgx.md`、`docs/research/gap-unsigned-guest-code-3.2.md`、`docs/research/gap-nand-genesis-decision.md`、`contrib/gles-public/README.md`、`include/hw/arm/s5l8930.h`、`hw/arm/ipad1.c`、`hw/arm/s5l8930_h2fmi.c`、`target/arm/tcg/cpu32.c`、`target/arm/cpu.c`、`accel/tcg/tcg-all.c`，以及 `git log`。
-- `upstream/LightTouchMac`：`README.md`（Scope）、`LightTouchMac/Resources/firmware-catalog.json`、`Packages/FirmwareKit/Sources/FirmwareKit/KBoot/KBoot.swift`。
-- 本仓库：`docs/plan.md`、`docs/research/m1-iphone-feasibility.md`、`docs/reports/m0-mac-benchmark.md`、`docs/reports/m2-gl-eagl.md`、`docs/reports/m2-ios7-perf.md`。
+- `upstream/qemu-ios`: `README.md`, `docs/n90/README.md`, `docs/ipad1/README.md`, `docs/ipad1/ios5.md`, `docs/archive/ipad1-PLAN.md`, `docs/research/ref-a4-soc.md`, `docs/research/web-sgx.md`, `docs/research/gap-unsigned-guest-code-3.2.md`, `docs/research/gap-nand-genesis-decision.md`, `contrib/gles-public/README.md`, `include/hw/arm/s5l8930.h`, `hw/arm/ipad1.c`, `hw/arm/s5l8930_h2fmi.c`, `target/arm/tcg/cpu32.c`, `target/arm/cpu.c`, `accel/tcg/tcg-all.c`, and `git log`.
+- `upstream/LightTouchMac`: `README.md` (Scope), `LightTouchMac/Resources/firmware-catalog.json`, `Packages/FirmwareKit/Sources/FirmwareKit/KBoot/KBoot.swift`.
+- This repository: `docs/plan.md`, `docs/research/m1-iphone-feasibility.md`, `docs/reports/m0-mac-benchmark.md`, `docs/reports/m2-gl-eagl.md`, `docs/reports/m2-ios7-perf.md`.
 
-GitHub（`gh api`）：
+GitHub (`gh api`):
 
-- [apple-oss-distributions/xnu @ xnu-4570.1.46](https://github.com/apple-oss-distributions/xnu/tree/xnu-4570.1.46)：`pexpert/pexpert/arm/AIC.h`、`board_config.h`、`osfmk/arm/cpuid.h`、`cpuid.c`、`osfmk/arm/commpage/commpage.c`、`pexpert/arm/pe_identify_machine.c`
-- [apple-oss-distributions/dyld](https://github.com/apple-oss-distributions/dyld)：`src/dyld.cpp` @ dyld-239.4、353.2.1、360.22、421.2、433.5
-- [tihmstar/fwkeydb](https://github.com/tihmstar/fwkeydb)：`keys/firmware/iPhone5,2/0x8950/*`、`iPhone4,1/0x8940/*`、`iPad2,1/0x8940/*`、`iPod5,1/0x8942/*`、`iPad3,4/0x8955/*`
-- [rzxvx/Project-Cascadia](https://github.com/rzxvx/Project-Cascadia)：README、`docs/research/ADDRESSES.md`、`p105-nand.md`、`p105-xnu-timer-re.md`、[issue #6（A6X 硬件地图）](https://github.com/rzxvx/Project-Cascadia/issues/6)
-- [c12n/nexttouch](https://github.com/c12n/nexttouch)：README、`docs/ROADMAP.md`、文件树
-- [blake-lucas/LightTouch](https://github.com/blake-lucas/LightTouch)、[mada-02/iOS-Emulator](https://github.com/mada-02/iOS-Emulator)、[devos50/qemu-ios](https://github.com/devos50/qemu-ios)、[winocm/xnu](https://github.com/winocm/xnu)
-- [axi0mX/ipwndfu](https://github.com/axi0mX/ipwndfu)：README（checkm8 支持的 SoC）
-- [llvm/llvm-project @ llvmorg-17.0.6 `ARM.td`](https://github.com/llvm/llvm-project/blob/llvmorg-17.0.6/llvm/lib/Target/ARM/ARM.td)：`swift` 处理器定义
+- [apple-oss-distributions/xnu @ xnu-4570.1.46](https://github.com/apple-oss-distributions/xnu/tree/xnu-4570.1.46): `pexpert/pexpert/arm/AIC.h`, `board_config.h`, `osfmk/arm/cpuid.h`, `cpuid.c`, `osfmk/arm/commpage/commpage.c`, `pexpert/arm/pe_identify_machine.c`
+- [apple-oss-distributions/dyld](https://github.com/apple-oss-distributions/dyld): `src/dyld.cpp` @ dyld-239.4, 353.2.1, 360.22, 421.2, 433.5
+- [tihmstar/fwkeydb](https://github.com/tihmstar/fwkeydb): `keys/firmware/iPhone5,2/0x8950/*`, `iPhone4,1/0x8940/*`, `iPad2,1/0x8940/*`, `iPod5,1/0x8942/*`, `iPad3,4/0x8955/*`
+- [rzxvx/Project-Cascadia](https://github.com/rzxvx/Project-Cascadia): README, `docs/research/ADDRESSES.md`, `p105-nand.md`, `p105-xnu-timer-re.md`, [issue #6 (A6X hardware map)](https://github.com/rzxvx/Project-Cascadia/issues/6)
+- [c12n/nexttouch](https://github.com/c12n/nexttouch): README, `docs/ROADMAP.md`, file tree
+- [blake-lucas/LightTouch](https://github.com/blake-lucas/LightTouch), [mada-02/iOS-Emulator](https://github.com/mada-02/iOS-Emulator), [devos50/qemu-ios](https://github.com/devos50/qemu-ios), [winocm/xnu](https://github.com/winocm/xnu)
+- [axi0mX/ipwndfu](https://github.com/axi0mX/ipwndfu): README (SoCs supported by checkm8)
+- [llvm/llvm-project @ llvmorg-17.0.6 `ARM.td`](https://github.com/llvm/llvm-project/blob/llvmorg-17.0.6/llvm/lib/Target/ARM/ARM.td): the `swift` processor definition
 
-网页：
+Web:
 
-- [ipsw.me API](https://api.ipsw.me/v4/keys/ipsw/iPhone5,2/14G61)（密钥和固件包元数据）
-- [Apple A5 - Wikipedia](https://en.wikipedia.org/wiki/Apple_A5)、[Apple A6 - Wikipedia](https://en.wikipedia.org/wiki/Apple_A6)
-- [ioreg from iPhone 4S（gist）](https://gist.github.com/fergy/3844426)
-- [Corellium iOS 支持页](https://support.corellium.com/devices/ios)
-- [qemu-t8030 wiki：Bringing up the emulator](https://github.com/TrungNguyen1909/qemu-t8030/wiki/Bringing-up-the-emulator)
-- [Legacy-iOS-Kit wiki：checkm8-a5](https://github.com/LukeZGD/Legacy-iOS-Kit/wiki/checkm8-a5)
-- [iOSRE wiki：Kernel Patch Protection](https://github.com/kpwn/iOSRE/blob/master/wiki/Kernel-Patch-Protection-(KPP).md)、[Promon 越狱概览](https://promon.co/?p=1338)
-- [iOS 10.3 与 APFS（MacStories 摘录）](https://pxlnv.com/linklog/apple-releases-ios-10-3/)
-- [Emulation General Wiki：iOS emulators](https://emulation.gametechwiki.com/index.php/IOS_emulators)
+- [ipsw.me API](https://api.ipsw.me/v4/keys/ipsw/iPhone5,2/14G61) (keys and firmware metadata)
+- [Apple A5 - Wikipedia](https://en.wikipedia.org/wiki/Apple_A5), [Apple A6 - Wikipedia](https://en.wikipedia.org/wiki/Apple_A6)
+- [ioreg from iPhone 4S (gist)](https://gist.github.com/fergy/3844426)
+- [Corellium iOS support page](https://support.corellium.com/devices/ios)
+- [qemu-t8030 wiki: Bringing up the emulator](https://github.com/TrungNguyen1909/qemu-t8030/wiki/Bringing-up-the-emulator)
+- [Legacy-iOS-Kit wiki: checkm8-a5](https://github.com/LukeZGD/Legacy-iOS-Kit/wiki/checkm8-a5)
+- [iOSRE wiki: Kernel Patch Protection](https://github.com/kpwn/iOSRE/blob/master/wiki/Kernel-Patch-Protection-(KPP).md), [Promon jailbreak overview](https://promon.co/?p=1338)
+- [iOS 10.3 and APFS (MacStories excerpt)](https://pxlnv.com/linklog/apple-releases-ios-10-3/)
+- [Emulation General Wiki: iOS emulators](https://emulation.gametechwiki.com/index.php/IOS_emulators)

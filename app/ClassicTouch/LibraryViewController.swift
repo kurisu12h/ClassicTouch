@@ -293,7 +293,7 @@ final class LibraryViewController: UITableViewController {
             title: Era.names(majors),
             message: old
                 ? String(localized: "iPhone OS 1 只能跑在初代 iPhone 和 iPod touch（第 1 代）上，这两种机型本 App 还没支持，所以暂时开不了。以后支持了，导入后会出现在这里。")
-                : String(localized: "这几个版本要 A5、A6 芯片的机型（iPhone 4S、iPhone 5 等），现在还没有能跑它们的模拟器，所以暂时开不了。以后支持了，导入后会出现在这里。"),
+                : String(localized: "iOS 8 要在 A5、A6 芯片的机型（iPod touch 第 5 代、iPhone 5）上跑，这个版本的设备还没做好，所以暂时开不了。以后支持了，导入后会出现在这里。"),
             preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: String(localized: "好"), style: .default))
         present(alert, animated: true)

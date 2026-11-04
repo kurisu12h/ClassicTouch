@@ -1,4 +1,4 @@
-/* 样稿公共样式：一页就是一屏 iPhone 18 Pro（402 × 874 pt），截图时按 3 倍出 1206 × 2622 */
+/* Shared mockup styles: one page is one iPhone 18 Pro screen (402 × 874 pt), screenshotted at 3x to 1206 × 2622 */
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { width: 402px; height: 874px; overflow: hidden; }
 body {
@@ -8,7 +8,7 @@ body {
 }
 .abs { position: absolute; }
 
-/* 宿主手机的状态栏、灵动岛、Home 指示条（不是 App 画的，只为看着像真截图） */
+/* The host phone's status bar, Dynamic Island and home indicator (not drawn by the App; only so it looks like a real screenshot) */
 .sb { position: absolute; top: 0; left: 0; right: 0; height: 54px; z-index: 50;
       display: flex; align-items: center; justify-content: space-between; padding: 4px 30px 0 52px; }
 .sb .time { font: 600 17px -apple-system, "SF Pro Text"; letter-spacing: -0.2px; }

@@ -1,25 +1,31 @@
-ios-eagl-es2.patch：iOS 宿主的 EAGL 后端补上 OpenGL ES 2.0，每个客体 GL 上下文一个 EAGLContext。
+ios-eagl-es2.patch: add OpenGL ES 2.0 to the iOS host's EAGL backend, one EAGLContext per guest GL context.
 
-原因：上游 gles-host-eagl.c 整个进程只建一个 ES 1.1 上下文，不认客体的上下文和共享组。iOS 4 以后的 CoreAnimation
-（iOS 6、7 在 backboardd 里）建 API 2 的上下文跑着色器，ES 1.1 执行不了；关掉宿主 GL（stub）时 iOS 7.1.2 的
-SpringBoard 一建 GL 上下文就崩、开不到锁屏（docs/reports/m1-stage4-ios7.md）。而且纯 EAGL 构建在现在的主干上已经
-编不过（ES 1.1 头文件里没有 GL_UNPACK_ROW_LENGTH 等，20 个错误），上游 8 月转做 Mac 后只维护了 ANGLE 那一支。
+Why: upstream gles-host-eagl.c creates a single ES 1.1 context for the whole process and ignores the guest's contexts
+and share groups. CoreAnimation from iOS 4 on (in backboardd on iOS 6 and 7) creates API 2 contexts that run shaders,
+which ES 1.1 cannot execute; with host GL off (the stub), iOS 7.1.2's SpringBoard crashes as soon as it creates a GL
+context and never reaches the lock screen (docs/reports/m1-stage4-ios7.md). The pure EAGL build also no longer compiles
+on the current main branch (the ES 1.1 headers lack GL_UNPACK_ROW_LENGTH and others, 20 errors): upstream has only
+maintained the ANGLE branch since moving to the Mac in August.
 
-改法：让 iOS 的 EAGL 构建走 ANGLE 那条「每个客体上下文一个宿主 ES 上下文」的路（上游 10-21 已让 n90ap 11D257 在
-Mac 上全程走 ANGLE 合成），只把上下文的建立、切换、释放换成 EAGL：
-  - gles-host.c：新宏 GLES_HOST_ES_CONTEXTS（ANGLE 和 iOS EAGL 都定义），原来只给 CGL、ANGLE 编的每上下文代码
-    （gles_context_operation、共享组的根上下文、矩形纹理、APPLE_fence、GLSL 原样提交、无快照）都认它；iOS 上同时包含
-    OpenGLES 的 ES1 和 ES3 头文件；整屏帧缓冲和 ANGLE 一样走读回。
-  - 新文件 gles-host-eagl.c.inc：EAGL 上下文结构和生命周期（客体 API 2 建 ES 3.0，API 0、1 建 ES 1.1，同组共享根上下文的
-    EAGLSharegroup），APPLE_fence 自己记（iOS 没有 NV_fence 可借，语义和 ANGLE 版一样：设过的栅栏都算已完成），
-    然后包含 gles-host-angle.c.inc 的 ES 适配。
-  - gles-host-angle.c.inc：EGL 生命周期和 NV_fence 那两段只给 ANGLE 编；BGRA 纹理在 iOS 上用 RGBA 内部格式
-    （APPLE_texture_format_BGRA8888）。ANGLE 构建的行为不变。
-  - gles-host-eagl.c：改成按 API 建上下文、设为当前、释放三个纯 C 函数（仍走 Objective-C 运行时，原因见文件头），
-    每次调用包一层自动释放池；去掉只能给一个上下文用的 IOSurface 颜色附件。
-  - 后台：qemu_ios_set_foreground(false)（App 在 willResignActive 时调）以前只改一个标志，vCPU 线程上正在执行的那次 GL
-    调用会跨过去；现在等它做完才返回（最多 1 秒），回到前台时打出后台期间拒绝了多少次调用。
-基于 samhenrigold/qemu-ios b225694505，要和 ios-host-gles-option.patch 一起用（构建时 -Dhost_gles=enabled）。
+How: the iOS EAGL build takes ANGLE's "one host ES context per guest context" path (on 10-21 upstream made n90ap
+11D257 composite through ANGLE end to end on the Mac), replacing only context creation, switching and release with EAGL:
+  - gles-host.c: a new macro GLES_HOST_ES_CONTEXTS (defined for ANGLE and iOS EAGL). The per-context code that used
+    to be built only for CGL and ANGLE (gles_context_operation, the share group's root context, rectangle textures,
+    APPLE_fence, submitting GLSL as is, no snapshots) all keys on it. On iOS both OpenGLES's ES1 and ES3 headers are
+    included; the full-screen framebuffer goes through readback as with ANGLE.
+  - New file gles-host-eagl.c.inc: the EAGL context structure and life cycle (guest API 2 creates ES 3.0, APIs 0 and
+    1 create ES 1.1, one EAGLSharegroup per group shared from the root context). APPLE_fence is tracked here (iOS has
+    no NV_fence to borrow; same semantics as the ANGLE version: every fence that was set counts as complete). It then
+    includes the ES adaptation in gles-host-angle.c.inc.
+  - gles-host-angle.c.inc: the EGL life cycle and the NV_fence parts are built only for ANGLE; BGRA textures use the
+    RGBA internal format on iOS (APPLE_texture_format_BGRA8888). The ANGLE build behaves as before.
+  - gles-host-eagl.c: now three plain C functions that create a context for an API, make it current and release it
+    (still through the Objective-C runtime, see the file header), each call wrapped in an autorelease pool; drops the
+    IOSurface color attachment that only worked for a single context.
+  - Background: qemu_ios_set_foreground(false) (the app calls it in willResignActive) used to only flip a flag, so a
+    GL call in progress on the vCPU thread could run past it; it now waits for that call to finish before returning
+    (at most 1 second), and on returning to the foreground it prints how many calls were refused in the background.
+Based on samhenrigold/qemu-ios b225694505; use together with ios-host-gles-option.patch (build with -Dhost_gles=enabled).
 
 diff --git a/hw/arm/gles-host-angle.c.inc b/hw/arm/gles-host-angle.c.inc
 index 392367c5ca..6e6f5dde7f 100644

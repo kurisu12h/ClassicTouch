@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8">
-<title>方案 A 年表：首页</title>
+<html lang="en"><head><meta charset="utf-8">
+<title>Proposal A Timeline: home page</title>
 <link rel="stylesheet" href="common.css">
 <style>
-  /* 白纸黑字的年表：大号窄体年份、细线分隔、线描机身；红色只用来标「正在运行」和要注意的事 */
+  /* A Timeline in black on white paper: large condensed years, thin rules, line-drawn device bodies; red only marks "running" and things to watch out for */
   :root { --ink: #111; --mid: #6e6e73; --light: #b9b9be; --rule: #e4e4e7; --red: #d7261e; }
   body { background: #fff; color: var(--ink); }
   .num { font-family: "DIN Condensed", "DIN Alternate", -apple-system; font-weight: bold; }
@@ -41,31 +41,31 @@
 <body>
 <div class="abs app">Classic Touch</div>
 <div class="abs import" data-icon="tray 22 #111 1.9"></div>
-<h1>选择系统</h1>
+<h1>Pick a System</h1>
 <div class="range num">2007–2016</div>
-<div class="abs meta">按年份排 · 已导入 3 个 · 共 5.8 GB</div>
+<div class="abs meta">By year · 3 imported · 5.8 GB total</div>
 <div class="abs bar"></div>
 
 <div class="abs rows">
-  <div class="r ghost" style="height:58px"><div class="y num">2007–08</div><div class="c">iPhone OS 1、2 · 还没导入</div></div>
+  <div class="r ghost" style="height:58px"><div class="y num">2007–08</div><div class="c">iPhone OS 1, 2 · not imported yet</div></div>
   <div class="r" style="height:112px">
     <div class="y num">2009</div>
     <div class="c">
-      <div class="m">iPod touch（第 2 代）</div>
+      <div class="m">iPod touch (2nd gen)</div>
       <div class="v">iPhone OS 3.1.3 · 7E18 · 972 MB</div>
-      <div class="w">实验性：熄屏后可能卡住</div>
+      <div class="w">Experimental: may freeze after screen off</div>
     </div>
     <div class="dev" data-line="ipod2 24 #111"></div>
   </div>
-  <div class="r ghost" style="height:58px"><div class="y num">2010–11</div><div class="c">iOS 4、5 · 还没导入</div></div>
+  <div class="r ghost" style="height:58px"><div class="y num">2010–11</div><div class="c">iOS 4, 5 · not imported yet</div></div>
   <div class="r live" style="height:112px">
     <div class="y num">2012</div>
     <div class="c">
       <div class="m">iPhone 3GS</div>
       <div class="v">iOS 6.1.6 · 10B500 · 2.16 GB</div>
-      <div class="w">● 运行中，已暂停</div>
+      <div class="w">● Running, paused</div>
     </div>
-    <div class="go"><span data-icon="play 14 #fff"></span>继续</div>
+    <div class="go"><span data-icon="play 14 #fff"></span>Resume</div>
   </div>
   <div class="r" style="height:96px">
     <div class="y num">2013</div>
@@ -75,15 +75,15 @@
     </div>
     <div class="dev" data-line="4 23 #111"></div>
   </div>
-  <div class="r ghost later" style="height:58px"><div class="y num">2014–16</div><div class="c">iOS 8、9、10<span class="tag">以后</span></div></div>
+  <div class="r ghost later" style="height:58px"><div class="y num">2014–16</div><div class="c">iOS 8, 9, 10<span class="tag">Later</span></div></div>
 </div>
-<div class="abs foot">一次只能开一个系统，换系统时 App 会重新启动。</div>
+<div class="abs foot">Only one system can run at a time; the App restarts when you switch systems.</div>
 
 <div class="abs jit">
   <div style="margin-top:1px" data-icon="boltOutline 20 #111 1.8"></div>
   <div>
-    <div class="t">JIT 还没开</div>
-    <div class="d">点系统后会跳到 StikDebug 开启，开好自动回来开机。要先打开 LocalDevVPN。</div>
+    <div class="t">JIT is off</div>
+    <div class="d">Tapping a system jumps to StikDebug to enable it, then comes back and boots automatically. Turn on LocalDevVPN first.</div>
   </div>
 </div>
 

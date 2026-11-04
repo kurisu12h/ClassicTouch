@@ -10,7 +10,7 @@ The machine listing is LightTouchMac's tests/fixtures/machines.json (the emulato
 """
 import json, os, re, signal, subprocess, sys, time
 
-ROOT = "/path/to/classic-ios"
+ROOT = os.environ.get("CT_ROOT") or os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
 QEMU = os.environ.get("LTM_SHIM_QEMU", ROOT + "/work/build-jit/qemu-system-arm")
 MACHINES = ROOT + "/upstream/LightTouchMac/tests/fixtures/machines.json"
 

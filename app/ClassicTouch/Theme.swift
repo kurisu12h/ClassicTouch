@@ -47,9 +47,10 @@ enum Theme {
 /// （iPhone OS 1 跑在初代 iPhone 和 iPod touch 1 代上，DeviceProfile 的 s5l8900 开机方式；iOS 9 跑在
 /// iPod touch 5 代上，n78 开机方式，docs/reports/a5-app.md）。其余在年表里标「以后」：iOS 8 的 iPod touch 5 代
 /// 固件还没做，iOS 10 要 A6 以上的机型。
+/// iOS 10 now runs on the emulated iPhone 5 (A6, n41ap, the n78 boot strategy; docs/reports/a6-app.md).
 enum Era {
     static let majors = 1...10
-    static let runnable: Set<Int> = [1, 2, 3, 4, 5, 6, 7, 9]
+    static let runnable: Set<Int> = [1, 2, 3, 4, 5, 6, 7, 9, 10]
 
     static func year(_ major: Int) -> Int? { majors.contains(major) ? 2006 + major : nil }
 
@@ -88,7 +89,7 @@ final class LineDeviceView: UIView {
     static func shape(for board: String) -> Shape {
         switch board {
         case "n45ap", "n72ap", "n18ap": return .pod
-        case "n81ap", "n90ap", "n78ap": return .flat
+        case "n81ap", "n90ap", "n78ap", "n41ap": return .flat
         case "k48ap": return .pad
         default: return .round
         }

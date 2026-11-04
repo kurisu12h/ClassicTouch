@@ -1,62 +1,62 @@
-# 界面设计方案（M2 界面，第一步）
+# UI design proposals (M2 UI, step 1)
 
-- 日期：2026-11-02，执行会话 m2-ui。用户觉得 App 雏形「有点丑」，这里出三套方向明显不同的方案供挑选，选定后再实现。
-- **结果：用户选了 A「年表」（重做后的版本），首页已实现，运行画面的新外观写好、等接入，见 `docs/reports/m2-ui.md` 第二步。**
-- 一眼对比：`docs/reports/img/ui-overview.png`（三套并排，每套两屏加说明）。
-- 单屏原尺寸图（1206 × 2622，和 iPhone 18 Pro 截图一样大）：`docs/reports/img/ui-{a,b,c}-{home,run}.png`，home 是首页，run 是运行中。
-- 样稿源文件：`mockups/*.html`（一页一屏，402 × 874 pt），公共部分在 `mockups/common.css`、`common.js`。改完跑 `docs/design/render.sh` 重出图（要本机装着 Google Chrome，用无头模式截图，不下载任何东西）。
+- Date: 2026-11-02, execution session m2-ui. The user felt the App prototype was "a bit ugly", so here are three proposals in clearly different directions to choose from; the chosen one gets implemented afterwards.
+- **Result: the user chose A "Timeline" (the redone version). The home page is implemented, and the new look of the emulator screen is written and waiting to be wired in; see step 2 in `docs/reports/m2-ui.md`.**
+- Side-by-side comparison at a glance: `docs/reports/img/ui-overview.png` (all three side by side, two screens each plus notes).
+- Single screens at full size (1206 × 2622, the same size as an iPhone 18 Pro screenshot): `docs/reports/img/ui-{a,b,c}-{home,run}.png`; home is the home page, run is the running screen.
+- Mockup sources: `mockups/*.html` (one screen per page, 402 × 874 pt); shared parts are in `mockups/common.css` and `common.js`. After editing, run `docs/design/render.sh` to regenerate the images (it needs Google Chrome installed on this machine, takes screenshots in headless mode, and downloads nothing).
 
-## 三套方案
+## The three proposals
 
-### A 年表（`ui-a-home.png`、`ui-a-run.png`）
+### A Timeline (`ui-a-home.png`, `ui-a-run.png`)
 
-第一版 A（深夜蓝底、琥珀色发光、毛玻璃卡片、年份刻度条）用户看了说「不好看，太 AI 了」，已整个重做，只留下「按年份排」的思路。
+The first version of A (midnight blue background, amber glow, frosted glass cards, a year scale bar) got the user's verdict "not good-looking, too AI". It was redone entirely, keeping only the idea of "ordering by year".
 
-现在是白底黑字，像一本年鉴：每台系统一行，左边是大号窄体的年份（系统自带的 DIN Condensed，iOS 上也有，不用下载），右边是机型、系统版本、构建号、大小，最右边一个线描机身；行与行之间只用细线分隔。红色只用来标两件事：正在运行的那台（年份变红、左边一道红条、旁边一个黑色「继续」键），以及 iPod touch 2 代的「实验性：熄屏后可能卡住」。没导入的年份（2007–08、2010–11）是灰色的一行字；iOS 8 到 10 留了「2014–16 · iOS 8、9、10 [以后]」一行，颜色更浅、带「以后」框，看得出还不能用。JIT 状态放在底部一个黑框里。运行画面换成黑底，免得白边抢客体画面：顶上大号年份「2012」加机型和系统，下面三个方正的大按键（年表、Home、电源），Home 是白底的那个。
+Now it is black text on white, like a yearbook: one row per system, with the year in large condensed type on the left (the system's built-in DIN Condensed, which iOS also has, so nothing to download), the model, system version, build number and size on the right, and a line-drawn device body at the far right; rows are separated only by thin rules. Red is used to mark just two things: the one that is running (the year turns red, a red bar on the left, and a black "Resume" button next to it), and the iPod touch 2nd gen's "Experimental: may freeze after screen off". Years not imported (2007–08, 2010–11) are a single gray line of text; iOS 8 to 10 get a row "2014–16 · iOS 8, 9, 10 [Later]" in an even lighter color with a "Later" box, so it is clear they cannot be used yet. The JIT status sits in a black-outlined box at the bottom. The emulator screen switches to a black background so white edges do not compete with the guest screen: a large year "2012" at the top with the model and system, and below that three large square buttons (Timeline, Home, Power), with Home being the white one.
 
-- 好在哪：时间感靠排版而不是特效，干净又有个性；不发光、不渐变，也不模仿任何一代苹果的界面。
-- 实现量：中等偏小，约 600 行。首页就是普通 `UITableView` 换样式，加一个线描机身的小视图（`UIBezierPath`，三到四种外形）。
-- 要留意：年份按大版本首发年算（3.1.3 记 2009）；灰色和「以后」的行只是提示，点了看导入说明或「以后支持」的说明。
+- Strengths: the sense of time comes from typography rather than effects, clean and with character; no glow, no gradients, and it does not imitate any generation of Apple's interface.
+- Implementation effort: medium to small, about 600 lines. The home page is just a restyled ordinary `UITableView`, plus a small view for the line-drawn device body (`UIBezierPath`, three to four shapes).
+- Watch out for: years are counted by the first release year of the major version (3.1.3 counts as 2009); the gray and "Later" rows are only hints, and tapping them shows the import instructions or the "supported later" note.
 
-### B 怀旧拟物（`ui-b-home.png`、`ui-b-run.png`）
+### B Nostalgic skeuomorphic (`ui-b-home.png`, `ui-b-run.png`)
 
-致敬 iOS 6 以前的质感：蓝灰渐变导航栏、竖条纹背景、白色圆角分组表格、玻璃高光按钮（「继续」是老式绿色按钮，「实验性」是橙色小徽章，大小写在右边的蓝灰色值里）。运行画面是深色亚麻布背景，客体屏幕装进自己画的机身，按原机 1:1 显示（320 × 480 pt）；点机身上的圆键就是 Home，机身顶部的按键就是电源，返回是老式箭头形的「系统」按钮。
+A tribute to the textures before iOS 6: blue-gray gradient navigation bar, vertical pinstripe background, white rounded grouped tables, glossy glass buttons ("Resume" is an old-style green button, "Experimental" is a small orange badge, and the size is written in the blue-gray value on the right). The emulator screen has a dark linen background, and the guest screen sits inside a device body we draw ourselves, shown 1:1 with the original device (320 × 480 pt); tapping the round button on the body is Home, the button on top of the body is Power, and going back is an old-style arrow-shaped "Systems" button.
 
-- 好在哪：老玩家一打开就有「回来了」的感觉，App 和里面的老系统浑然一体。
-- 实现量：最大，约 1000 行以上。条纹、亚麻布、高光、机身全用 Core Graphics 画（不用图片），8 个机型至少 4 种机身，机身上的按键要做按下效果。
-- 要留意：屏幕比现在铺满全宽小约 20%；纹理和高光做糙了反而显得廉价，细节要多调几轮。
+- Strengths: longtime players get a "we're back" feeling as soon as they open it, and the App feels of a piece with the old systems inside it.
+- Implementation effort: the largest, about 1000 lines or more. The pinstripes, linen, gloss and device bodies are all drawn with Core Graphics (no images); 8 models need at least 4 device bodies, and the buttons on the body need a pressed effect.
+- Watch out for: the screen is about 20% smaller than the current full-width layout; rough textures and gloss look cheap instead, so the details need several rounds of tuning.
 
-### C 现代卡片（`ui-c-home.png`、`ui-c-run.png`）
+### C Modern cards (`ui-c-home.png`, `ui-c-run.png`)
 
-跟现在的 iOS 一个路子：大标题「选择系统」，下面横滑的大号机型卡片，每张卡片一个时代的底色、大版本号（「3.1.3」）、机身插图，插图屏幕里放这台上次关机前的画面，底部一个大「开机」键；正在运行的那台像音乐播放器的迷你条一样停在底部。运行画面全黑，客体屏幕铺满全宽（402 × 603 pt，和现在一样大），左上「‹ 列表」，底部一个玻璃胶囊放 Home 和电源。
+The same approach as current iOS: a large title "Pick a System", below it large horizontally swiping model cards, each card with a background color for its era, the major version number ("3.1.3"), and a device illustration whose screen shows this system's last screen before shutdown, with a large "Boot" button at the bottom; the one that is running sits at the bottom like a music player's mini bar. The emulator screen is all black, the guest screen fills the full width (402 × 603 pt, the same size as now), "‹ List" at the top left, and a glass capsule at the bottom holding Home and Power.
 
-- 好在哪：干净，和系统自带 App 一致；屏幕最大最清楚；最快能做完。
-- 实现量：最小，约 500 行。iOS 26 以上用系统的玻璃材质，16 到 25 退回毛玻璃（部署目标是 iOS 16）。
-- 要留意：卡片里的「上次画面」要等这台开过一次才有，之前显示占位（年代底色加版本号）。App 不能自带苹果系统的截图。存这张图要在模拟器画面里加几行，等 iOS 7 优化会话做完再接。
+- Strengths: clean and consistent with the system's built-in Apps; the screen is the largest and clearest; the fastest to finish.
+- Implementation effort: the smallest, about 500 lines. On iOS 26 and later it uses the system's glass material, and on 16 to 25 it falls back to frosted glass (the deployment target is iOS 16).
+- Watch out for: the "last screen" in a card only exists once that system has been booted once; before that it shows a placeholder (the era's background color plus the version number). The App cannot ship screenshots of Apple's systems. Saving this image needs a few lines added in the emulator screen, to be wired in after the iOS 7 optimization session is done.
 
-## 三套都一样的地方
+## What all three share
 
-- 首页每台都显示机型、系统版本、构建号、占用空间；iPod touch 2 代的「实验性：熄屏后可能卡住」和 JIT 状态都保留，只是位置和样式不同。右上角的导入按钮保留，「一次只能开一个系统，换系统时 App 会重新启动」也还在。
-- 运行画面都有返回列表、Home、电源三个控制；运行状态（CPU、占用）收进「⋯」或「i」里，不再常驻在屏幕上方。
-- 机身都是自己用矢量画的简化外形，没有苹果标志、产品照片或商标字样；文案照旧走 `Localizable.xcstrings`。
-- 样稿里屏幕上的客体画面是我们自己跑出来的截图（`mockups/assets/guest-*.png`，取自 `work/ios/runs/`），只用在文档里，不进 App。
-- 目标扩到 iOS 10 以后（2026-11-02 定）：只有 A 按年份列出没导入的年份，所以只有 A 给 iOS 8 到 10 留了「以后」一行；B、C 只列已导入的系统，不显示还不能用的版本。
-- 导入进度、「没有 JIT」「换系统」这些弹窗和提示这次没画，实现时按选定的风格改样式，流程不变。
+- The home page shows the model, system version, build number and storage used for every system; the iPod touch 2nd gen's "Experimental: may freeze after screen off" and the JIT status are kept in all three, only in different positions and styles. The import button at the top right is kept, and "Only one system can run at a time; the App restarts when you switch systems." is still there.
+- The emulator screen always has three controls: back to the list, Home and Power; the run status (CPU, footprint) moves into "⋯" or "i" and no longer sits permanently at the top of the screen.
+- The device bodies are all simplified shapes we draw ourselves as vectors, with no Apple logo, product photos or trademark wording; copy still goes through `Localizable.xcstrings` as before.
+- The guest screens shown in the mockups are screenshots we ran ourselves (`mockups/assets/guest-*.png`, taken from `work/ios/runs/`), used only in the documentation and not shipped in the App.
+- The target was extended to iOS 10 and later (decided 2026-11-02): only A lists not-yet-imported years by year, so only A reserves a "Later" row for iOS 8 to 10; B and C list only imported systems and do not show versions that cannot be used yet.
+- Dialogs and prompts such as import progress, "No JIT" and "Switch systems" were not drawn this time; at implementation time they are restyled to match the chosen style, and the flow stays the same.
 
-## 可以混着用
+## They can be mixed
 
-- 机身外观可以做成运行画面的一个开关：A 或 C 的「⋯」里加「显示机身」，打开就是 B 那种机身（屏幕变小、按键在机身上）。这样 B 的情怀可以晚点再补，不用一开始就全做。
-- B 的首页（分组表格）实现量其实不大，大头在纹理和机身；只要首页的老味道，可以只做 B 首页加 C 的运行画面。
-- 「关于」一节（开源许可、致谢 qemu-ios 和 Light Touch）只在 B 里画了，三套都可以加，GPL 项目最好在 App 里能看到许可和上游。
+- The device body look can become a toggle on the emulator screen: add "Show device body" to A's or C's "⋯", and turning it on gives B's kind of body (smaller screen, buttons on the body). That way B's nostalgia can be added later without building all of it up front.
+- B's home page (grouped tables) is actually not much work; the bulk is the textures and device bodies. If only the old flavor of the home page is wanted, it is possible to build just B's home page plus C's emulator screen.
+- The "About" section (open source license, credits to qemu-ios and Light Touch) is only drawn in B, but all three can add it; for a GPL project, the license and upstreams should preferably be visible in the App.
 
-## App 名候选（供参考，名字由用户定）
+## App name candidates (for reference; the user decides the name)
 
-都避开了 iOS、iPhone、iPod 等苹果商标；定之前要查一下 App 名和 GitHub 上有没有重名。
+All avoid Apple trademarks such as iOS, iPhone and iPod; before deciding, check whether another App or a GitHub project already uses the name.
 
-- **拾光**：拾起旧时光，中文名好记，和「年表」方案呼应。
-- **Pinstripe**：致敬老「设置」页的竖条纹背景，老玩家一看就懂，和拟物方案呼应。
-- **Throwback**：英文里「怀旧回顾」的意思，直白。
+- **Shiguang (拾光)**: "picking up old times"; an easy-to-remember Chinese name that echoes the "Timeline" proposal.
+- **Pinstripe**: a tribute to the vertical pinstripe background of the old Settings pages; longtime players get it at a glance, and it echoes the skeuomorphic proposal.
+- **Throwback**: English for "a nostalgic look back"; straightforward.
 
-## 我的倾向
+## My preference
 
-如果只挑一个，倾向新的 A：读起来最清楚，有自己的样子，工作量也不大。C 是稳妥的保底（最省事、屏幕最大），但和一般的现代 App 差别不大。B 最有情怀但最费工，可以以后作为「显示机身」开关补上。
+If only one is picked, I lean toward the new A: it reads the most clearly, has a look of its own, and is not much work. C is the safe fallback (least effort, largest screen), but it is not very different from a typical modern App. B has the most nostalgia but takes the most work, and can be added later as the "Show device body" toggle.

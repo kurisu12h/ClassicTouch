@@ -1,6 +1,6 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8">
-<title>方案 C 现代卡片：首页</title>
+<html lang="en"><head><meta charset="utf-8">
+<title>Proposal C Modern cards: home page</title>
 <link rel="stylesheet" href="common.css">
 <style>
   body { background: linear-gradient(#f4f4f8, #e8e9ef); color: #111; }
@@ -37,33 +37,33 @@
   .mini .play { width: 42px; height: 42px; border-radius: 21px; background: #111; display: grid; place-items: center; }
 </style></head>
 <body>
-<h1>选择系统</h1>
+<h1>Pick a System</h1>
 <div class="abs import glass" data-icon="tray 21 #222 1.9"></div>
-<div class="abs jit glass"><span data-icon="boltOutline 15 #8a8f9c 1.8"></span>JIT 还没开 · 开机时自动开启</div>
-<div class="abs stat">3 个系统 · 5.8 GB</div>
+<div class="abs jit glass"><span data-icon="boltOutline 15 #8a8f9c 1.8"></span>JIT is off · Turns on at boot</div>
+<div class="abs stat">3 systems · 5.8 GB</div>
 
-<!-- 横向分页卡片，按系统版本排；这里停在第一张 -->
+<!-- Horizontally paged cards, ordered by system version; here it rests on the first one -->
 <div class="card" style="left:42px; background: linear-gradient(165deg, #55575e 0%, #2a2b30 45%, #141417 100%)">
   <div class="glow"></div>
   <div class="yr">2009</div>
   <div class="os">iPhone OS</div>
   <div class="ver">3.1.3</div>
-  <div class="chip">实验性 · 熄屏后可能卡住</div>
+  <div class="chip">Experimental · May freeze after screen off</div>
   <div class="dev" data-device="ipod2 132 assets/guest-ios3.png"></div>
-  <div class="model">iPod touch（第 2 代）</div>
+  <div class="model">iPod touch (2nd gen)</div>
   <div class="meta">7E18 · 972 MB</div>
-  <div class="go">开机</div>
+  <div class="go">Boot</div>
 </div>
 <div class="card" style="left:374px; background: linear-gradient(165deg, #6b93bf 0%, #3a5f8a 45%, #1d3350 100%)"></div>
 
 <div class="abs dots"><i class="on"></i><i></i><i></i></div>
 
-<!-- 正在运行的那台：像播放器的迷你条，点一下回到画面 -->
+<!-- The one that is running: a mini bar like a music player's; tap to return to its screen -->
 <div class="abs mini glass">
   <div data-device="4 24 assets/guest-ios7.png"></div>
   <div style="flex:1">
     <div class="t">iPhone 4 · iOS 7.1.2</div>
-    <div class="s">已暂停 · 点按回到画面</div>
+    <div class="s">Paused · Tap to return</div>
   </div>
   <div class="play" data-icon="play 18 #fff"></div>
 </div>

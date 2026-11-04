@@ -47,7 +47,7 @@ def main(build, out):
     json.dump(entry, open(os.path.join(out, "n78ap-%s.json" % build), "w"), indent=1)
 
     shim = open(os.path.join(ROOT, "tools/m0/helper-shim/shim.py")).read()
-    shim = shim.replace("/path/to/classic-ios", ROOT)
+    shim = "\n".join("ROOT = %r" % ROOT if l.startswith("ROOT = ") else l for l in shim.splitlines()) + "\n"
     shim = "\n".join('MACHINES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "machines.json")'
                      if l.startswith("MACHINES = ") else l for l in shim.splitlines()) + "\n"
     open(os.path.join(out, "helper/shim.py"), "w").write(shim)

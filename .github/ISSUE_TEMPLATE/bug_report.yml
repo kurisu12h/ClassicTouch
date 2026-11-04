@@ -1,0 +1,81 @@
+name: Bug report
+description: A guest that hangs, crashes, draws wrong or ignores input
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before attaching logs or screenshots, remove UDIDs, serial numbers and other personal data. Do not attach Apple firmware or any file extracted from it.
+  - type: input
+    id: guest
+    attributes:
+      label: Emulated device and OS
+      placeholder: e.g. iPod touch (5th gen), iOS 9.3.5 (13G36)
+    validations:
+      required: true
+  - type: dropdown
+    id: host
+    attributes:
+      label: Where it runs
+      options:
+        - Mac (command-line QEMU)
+        - App in the iOS Simulator
+        - App on an iPhone
+    validations:
+      required: true
+  - type: input
+    id: host-detail
+    attributes:
+      label: Host details
+      description: Mac and macOS version, or iPhone model and iOS version; Xcode version
+      placeholder: e.g. iPhone 14 Pro, iOS 27.0.1, Xcode 27.2
+    validations:
+      required: true
+  - type: dropdown
+    id: jit
+    attributes:
+      label: JIT source
+      options:
+        - StikDebug
+        - Tethered Mac (lldb)
+        - No JIT (interpreter)
+        - Not applicable (Mac or Simulator)
+    validations:
+      required: true
+  - type: input
+    id: revision
+    attributes:
+      label: Commit
+      placeholder: output of git rev-parse --short HEAD
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: The relevant parts of the serial log, qemu.log or the app's events.log
+      render: text
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Checks
+      options:
+        - label: I attached no Apple firmware, keys or files extracted from firmware
+          required: true
+        - label: I removed UDIDs, serial numbers and other personal data
+          required: true

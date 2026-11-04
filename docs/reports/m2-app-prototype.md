@@ -1,225 +1,225 @@
-# M2 App 雏形：不靠 Mac，拿起手机就能用
+# M2 app prototype: no Mac needed, just pick up the phone and use it
 
-- 日期：2026-11-02
-- 执行会话：m2-app-proto。范围：系统列表首页、一键开 JIT（`stikjit://`）、返回列表和换系统、后台暂停虚拟机、Finder/「文件」导入设备、保留测试入口。最后一步请用户拔线亲手试（第 7 节，等用户做）。
-- 没做的：没改 `upstream/`，没 commit、没 push，没给上游提 issue 或 PR，没碰 iPhone 14 Pro，没下载任何新东西。界面只做功能，没做机身外观。
+- Date: 2026-11-02
+- Execution session: m2-app-proto. Scope: a system list as the home page, one-tap JIT (`stikjit://`), returning to the list and switching systems, pausing the VM in the background, importing devices via Finder or the Files app, keeping the test entry points. The last step asks the user to unplug the cable and try it by hand (section 7, waiting for the user).
+- Not done: `upstream/` not changed; no commit, no push; no issues or PRs filed upstream; the iPhone 14 Pro not touched; nothing new downloaded. The interface covers function only; no device body styling.
 
-## 0. 结论
+## 0. Conclusions
 
-1. **App 现在是「打开就是系统列表，点一个就开机」**。没有 JIT 时，点系统后 App 记下选了哪台、打开 `stikjit://enable-jit?bundle-id=org.classictouch.app&script-name=universal.js`、自己退出；StikDebug 挂着调试器拉起一个新进程，新进程看到「有 JIT、有待开的那台」直接开机。换系统就是再走一遍，顺带解决了「一个进程只能起一次 QEMU」。
-2. **真机（iPhone 18 Pro，iOS 27.2）上整条链用脚本走通了一遍**（`scripts/ios/device-app-flow.sh`，App 里不开任何测试开关）：
-   - 列表进程 → StikDebug → 新进程用 JIT 开 iOS 6，运行目录在 App 打开后 10 秒出现，准备 256 MB 代码区 0.60 秒；
-   - 后台 17.7 秒（系统「设置」在前台），进程号不变（31485）、运行目录没多出来，回来后主屏照常、帧编号继续涨；
-   - 换系统：QEMU 先正常退出（status 0），再经 StikDebug 起新进程开 iOS 7（准备 0.83 秒），到主屏；
-   - 全程 178 秒，手机上 0 次点击。
-3. **后台**：`sceneWillResignActive` 时清前台标志并暂停虚拟机（QMP stop），回到前台再继续；回到列表时也暂停。模拟器里暂停时本进程 CPU 从 12% 到 19% 降到 1% 到 2%。
-4. **导入不靠脚本**：Finder（文件共享）或「文件」把 `.ctpack` 放进 `Documents/import/`（放文稿根目录也认），首页显示「正在拷入」、进度和结果。真机上用 AFC 上传（Finder 走的就是它）473 MB 用 14 秒，拷完 3 秒后自动导入，0.5 秒解完。先解到暂存目录、完整解完才并进去，截断的包报「导入失败：ctpack 提前结束」，已有设备不受影响。
-5. **测试入口都还在**：`device-boot.sh`（STIK 模式开 iOS 6：锁屏 15 秒、主屏 23 秒、待机 17%，和第三阶段的 14、22 秒、16% 一致）、`sim-boot.sh`（3GS JIT：锁屏 16 秒、主屏 45 秒）都回归通过。
-6. **请用户亲手试**：步骤见第 7 节。我们那份 StikDebug 关掉了外部请求的确认弹窗，所以中间不用点确认；真实用户默认会多点一次「确认」。
-7. 真机脚本测试里有两次 App 失去前台（第 6.2 节）：一次 7 秒、App 自己回来了，原因没弄清；一次像是手机被碰。暂停和恢复都按设计工作。用户手试里那次近 3 分钟的离开，用户确认是自己切出去的。
-8. **用户手试**（第 7.1 节）：流程走通，但 iOS 7 拖动锁屏、翻主屏很卡（每秒 6 到 10 帧，进程占满一个核），「设置」不卡（33 到 57 帧）；iPod 3.1.3 顺（14 到 54 帧）。瓶颈在模拟 CPU 加 GL 转发和读回这一侧，建议单独派性能会话。
+1. **The app is now "open it and you get the system list; tap one and it boots"**. Without JIT, tapping a system makes the app record which device was chosen, open `stikjit://enable-jit?bundle-id=org.classictouch.app&script-name=universal.js`, and exit by itself; StikDebug launches a new process with the debugger attached, and the new process sees "JIT available, a device waiting to boot" and boots it directly. Switching systems is the same path again, which also solves "a process can start QEMU only once".
+2. **On the real device (iPhone 18 Pro, iOS 27.2), the whole chain was run end to end once by script** (`scripts/ios/device-app-flow.sh`, with no test switches enabled in the app):
+   - list process → StikDebug → new process boots iOS 6 with JIT; the run directory appears 10 seconds after the app opens, and preparing the 256 MB code region takes 0.60 seconds;
+   - 17.7 seconds in the background (the phone's Settings app in the foreground): the process ID is unchanged (31485), no extra run directory appears, and after returning the home screen is as before and the frame number keeps increasing;
+   - switching systems: QEMU first exits cleanly (status 0), then a new process started via StikDebug boots iOS 7 (prepare 0.83 seconds) to the home screen;
+   - 178 seconds in total, 0 taps on the phone.
+3. **Background**: on `sceneWillResignActive` the app clears the foreground flag and pauses the VM (QMP stop), and resumes on returning to the foreground; it also pauses when going back to the list. In the simulator, pausing drops this process's CPU from 12% to 19% down to 1% to 2%.
+4. **Import without scripts**: Finder (file sharing) or the Files app puts a `.ctpack` into `Documents/import/` (the root of Documents is recognized too), and the home page shows "Copying in" (`正在拷入`), progress and the result. On the real device an AFC upload (which is what Finder uses) of 473 MB took 14 seconds; import started automatically 3 seconds after copying finished, and unpacking took 0.5 seconds. Packs are unpacked to a staging directory first and merged in only once fully unpacked; a truncated pack reports "Import failed: ctpack ended early" (`导入失败：ctpack 提前结束`), and existing devices are unaffected.
+5. **The test entry points are all still there**: `device-boot.sh` (iOS 6 in STIK mode: lock screen 15 seconds, home screen 23 seconds, idle 17%, consistent with stage 3's 14 and 22 seconds and 16%) and `sim-boot.sh` (3GS JIT: lock screen 16 seconds, home screen 45 seconds) both pass regression.
+6. **Please try it by hand**: steps in section 7. Our copy of StikDebug has the confirmation popup for external requests turned off, so no confirmation tap is needed in between; real users will by default tap "Confirm" one extra time.
+7. In the scripted real-device test the app lost the foreground twice (section 6.2): once for 7 seconds, after which the app came back by itself, cause unclear; once apparently because the phone was touched. Pause and resume both worked as designed. The nearly 3-minute absence in the user's hand test was, the user confirmed, the user switching away.
+8. **User hand test** (section 7.1): the flow works, but on iOS 7 dragging the lock screen and paging the home screen are very laggy (6 to 10 frames per second, the process saturating one core), while Settings is not laggy (33 to 57 fps); iPod 3.1.3 is smooth (14 to 54 fps). The bottleneck is on the side of the emulated CPU plus GL forwarding and readback; recommend dispatching a separate performance session.
 
-## 1. 做了什么
+## 1. What was done
 
-| 简报的项 | 实现 | 主要文件 |
+| Brief item | Implementation | Main files |
 |---|---|---|
-| 1. 系统列表首页 | 扫 `Documents/devices/` 读 `device.lock.json`，按系统版本排序，显示「iPhone 3GS · iOS 6.1.6」（4.0 以前写 iPhone OS）、构建号和占用空间（按已分配块算，后台线程算）；iPod touch 2 代多一行橙色「实验性：熄屏后可能卡住」。上面是「正在运行」（从模拟器画面返回时），中间是导入，下面是 JIT 状态 | `LibraryViewController.swift`、`DeviceProfile.swift` |
-| String Catalog | `Localizable.xcstrings`，源语言中文，67 条，界面文字全走 `String(localized:)`；以后加英文只改这个文件 | `Localizable.xcstrings`、`project.yml` |
-| 2. 一键开 JIT | `csops` 查 `CS_DEBUGGED`，再看调试器是否还挂着（见 2.2）；`canOpenURL` 判断装没装 StikDebug（加了 `LSApplicationQueriesSchemes: [stikjit]`）；没装时说明并允许用解释器开机，iOS 7 提示基本不能用 | `JIT.swift`、`RootViewController.swift` |
-| 3. 换系统 | 模拟器画面左上「‹ 返回列表」；列表里再点别的系统弹确认，有 StikDebug 走 `stikjit://`，没有就请用户关掉 App 再打开（重开后直接用解释器开那台） | `RootViewController.swift`、`EmulatorViewController.swift` |
-| 4. 后台 | 失去前台和回到列表都暂停虚拟机，回来继续 | `Engine.setRunning`、`RootViewController.updateRun` |
-| 5. 导入 | 盯 `Documents/import/` 和文稿根目录，等拷完再解，暂存后合并，进度和结果显示在首页 | `ImportManager.swift`、`DevicePack.swift` |
-| 6. 测试入口 | 启动参数、`autostart.json`、`Documents/control/`、autodrive 照旧；新加 `-select`、`-fakejit`、control 的 `back`/`resume`/`select` | 见第 5 节 |
+| 1. System list as home page | Scans `Documents/devices/`, reads `device.lock.json`, sorts by system version, and shows "iPhone 3GS · iOS 6.1.6" (written as iPhone OS before 4.0), the build number and disk usage (counted by allocated blocks, computed on a background thread); the iPod touch 2nd gen has an extra orange line "Experimental: may hang after the screen turns off" (`实验性：熄屏后可能卡住`). At the top is "Running" (when coming back from the emulator view), in the middle import, at the bottom JIT status | `LibraryViewController.swift`, `DeviceProfile.swift` |
+| String Catalog | `Localizable.xcstrings`, source language Chinese, 67 entries; all interface text goes through `String(localized:)`; adding English later only touches this file | `Localizable.xcstrings`, `project.yml` |
+| 2. One-tap JIT | `csops` checks `CS_DEBUGGED`, then checks whether the debugger is still attached (see 2.2); `canOpenURL` determines whether StikDebug is installed (added `LSApplicationQueriesSchemes: [stikjit]`); if it is not installed, the app explains and allows booting with the interpreter, warning that iOS 7 is basically unusable | `JIT.swift`, `RootViewController.swift` |
+| 3. Switching systems | "‹ Back to list" at the top left of the emulator view; tapping a different system in the list brings up a confirmation; with StikDebug it goes through `stikjit://`, without it the user is asked to close the app and open it again (after reopening, that device boots directly with the interpreter) | `RootViewController.swift`, `EmulatorViewController.swift` |
+| 4. Background | Losing the foreground and returning to the list both pause the VM; coming back resumes it | `Engine.setRunning`, `RootViewController.updateRun` |
+| 5. Import | Watches `Documents/import/` and the Documents root, waits for copying to finish before unpacking, merges after staging, shows progress and results on the home page | `ImportManager.swift`, `DevicePack.swift` |
+| 6. Test entry points | Launch arguments, `autostart.json`, `Documents/control/` and autodrive as before; new `-select`, `-fakejit`, and control commands `back`/`resume`/`select` | See section 5 |
 
-App 名仍是占位的「Classic Touch」（没有苹果商标），列表内容里写机型和系统名（iPhone、iOS）属于指称性使用。
+The app name is still the placeholder "Classic Touch" (no Apple trademarks); naming models and systems (iPhone, iOS) in the list content is nominative use.
 
-## 2. 开 JIT 和换系统怎么走
+## 2. How enabling JIT and switching systems work
 
-### 2.1 流程
+### 2.1 Flow
 
 ```
-用户点一台
-├─ 这个进程起过 QEMU？
-│   ├─ 同一台、还在跑 → 回到画面继续
-│   └─ 别的 → 弹「换成 X？」确认 → 下面的「换进程」
-├─ 有 JIT（CS_DEBUGGED 且调试器还挂着）→ 直接用 JIT 开机
-├─ 装了 StikDebug → 换进程（要 JIT）
-└─ 都没有 → 「没有 JIT」：用解释器开机 / 怎么装 StikDebug / 取消
+User taps a device
+├─ Has this process started QEMU already?
+│   ├─ Same device, still running → back to its screen, continue
+│   └─ A different one → confirm "Switch to X?" → "switch process" below
+├─ JIT available (CS_DEBUGGED and debugger still attached) → boot directly with JIT
+├─ StikDebug installed → switch process (wants JIT)
+└─ Neither → "No JIT": boot with interpreter / how to install StikDebug / cancel
 
-换进程：写 Library/Application Support/pending-boot.json（设备 id、要不要 JIT、时间）
-       → QEMU 在跑就 qmp quit 正常退出（块设备落盘，最多等 2 秒）
-       → 要 JIT：打开 stikjit://…，系统确认 URL 交出去后立刻 exit(0)
-         不要 JIT：exit(0)，用户自己重新打开 App
+Switch process: write Library/Application Support/pending-boot.json (device id, whether JIT is wanted, time)
+       → if QEMU is running, qmp quit for a clean exit (block devices flushed to disk, wait at most 2 seconds)
+       → wants JIT: open stikjit://…, exit(0) as soon as the system confirms the URL was handed off
+         no JIT: exit(0), the user reopens the app themselves
 
-新进程启动：启动参数 / autostart.json 指定设备 → 测试入口，照旧
-          有 pending-boot.json（要 JIT 的 2 分钟内有效，解释器的 10 分钟）→ 等 JIT 最多 5 秒 → 开机
-                                                                       等不到 → 「没拿到 JIT」：再试一次 / 用解释器 / 取消
-          否则 → 列表
+New process starts: launch arguments / autostart.json name a device → test entry point, as before
+          pending-boot.json present (valid 2 minutes if JIT is wanted, 10 minutes for interpreter) → wait for JIT up to 5 seconds → boot
+                                                                       not in time → "Didn't get JIT": try again / use interpreter / cancel
+          otherwise → list
 ```
 
-### 2.2 几个关键点
+### 2.2 Key points
 
-- **App 为什么要自己退出**：StikDebug 3.2.0 处理 `enable-jit` 时用 `process_control_launch_app(…, start_suspended: true, kill_existing: false)`（`JITEnableContext.debugApp`），不杀已有进程。我们的进程还活着的话，它要么启动失败，要么挂到旧进程上，而旧进程起过 QEMU 已经没用了。所以 URL 一交出去就 `exit(0)`。真机实测从 App 打开到新进程建好运行目录 10 秒，中间没有撞车。
-- **判断有没有 JIT**：按简报用 `csops(getpid(), CS_OPS_STATUS)` 查 `CS_DEBUGGED`。但它是「被调试过」的粘性标志，而 iOS 26 起 TXM 只认调试器准备过的代码页：QEMU 分配代码区时调试器必须还挂着，否则 `brk #0xf00d` 没人接，进程直接崩。universal.js 一直挂到 QEMU 发脱离命令，所以真机上要 `CS_DEBUGGED` 和 `P_TRACED` 两样都有才算「有 JIT」。
-- **StikDebug 拉起的进程一起来就有调试器**：它是挂起启动、挂上调试器再放行，新进程第一次检查就看到了 JIT，5 秒的等待没用上。
-- **换系统时先让 QEMU 正常退出**：真机上换系统那次 `qemu_exit status=0` 和 `relaunch` 在同一个 0.1 秒里，客体本身相当于拔电池（确认框里写了），但宿主这边块设备都落了盘。
-- **模拟器里模拟 JIT**：启动参数 `-fakejit on|off|nostik`（只在模拟器生效）。`off` 时点系统只写 pending、退出，宿主再带 `-fakejit on` 启动就相当于 StikDebug 拉起的新进程。
+- **Why the app exits by itself**: when StikDebug 3.2.0 handles `enable-jit` it uses `process_control_launch_app(…, start_suspended: true, kill_existing: false)` (`JITEnableContext.debugApp`), which does not kill an existing process. If our process were still alive, it would either fail to launch or attach to the old process, and the old process, having already started QEMU, is useless. So the app calls `exit(0)` as soon as the URL is handed off. Measured on the real device, it takes 10 seconds from opening the app to the new process creating its run directory, with no collision in between.
+- **Detecting JIT**: per the brief, `csops(getpid(), CS_OPS_STATUS)` checks `CS_DEBUGGED`. But that is a sticky "has been debugged" flag, and since iOS 26 TXM only accepts code pages prepared by the debugger: the debugger must still be attached when QEMU allocates its code region, otherwise nobody catches `brk #0xf00d` and the process crashes outright. universal.js stays attached until QEMU sends the detach command, so on the real device both `CS_DEBUGGED` and `P_TRACED` are required to count as "JIT available".
+- **A process launched by StikDebug has the debugger from the start**: StikDebug launches it suspended, attaches the debugger, then lets it run, so the new process sees JIT on its first check and the 5-second wait was never used.
+- **Let QEMU exit cleanly first when switching systems**: in the real-device switch, `qemu_exit status=0` and `relaunch` happened within the same 0.1 seconds; for the guest itself it is like pulling the battery (the confirmation dialog says so), but on the host side all block devices were flushed to disk.
+- **Faking JIT in the simulator**: launch argument `-fakejit on|off|nostik` (only effective in the simulator). With `off`, tapping a system only writes the pending file and exits; the host then launching the app again with `-fakejit on` is equivalent to the new process StikDebug would launch.
 
-### 2.3 用户多点的那一下
+### 2.3 The user's extra tap
 
-真实用户的 StikDebug 默认开着「外部请求开 JIT 时确认」，所以每次开机或换系统都会在 StikDebug 里多点一次「确认」（我们手机上那份关掉了，见 M1 第三阶段报告）。App 里 JIT 的说明文字已经写了「StikDebug 可能会弹一次确认，点确认即可」。以后内嵌 StikJIT 可以省掉这一跳。
+A real user's StikDebug has "confirm when an external request enables JIT" on by default, so every boot or system switch takes one extra "Confirm" tap in StikDebug (the copy on our phone has it turned off; see the M1 stage 3 report). The app's JIT help text already says "StikDebug may show a confirmation once; just tap Confirm" (`StikDebug 可能会弹一次确认，点确认即可`). Embedding StikJIT later could remove this hop.
 
-## 3. 后台和返回列表
+## 3. Background and returning to the list
 
-- `RootViewController.updateRun`：虚拟机只在「App 在前台」且「正显示模拟器画面」时跑。`Engine.setRunning(false)` 先 `qemu_ios_set_foreground(false)`（GL 立刻停，iOS 会杀后台发 GL 的进程），再 `qemu_ios_ui_pause`（QMP stop，排到 QEMU 主循环上做）；`true` 时 `set_foreground(true)` 再 `qemu_ios_ui_resume`。
-- 注意 `qemu_ios_set_foreground(true)` 本身就会把停着的虚拟机重新跑起来（`qemu-ios-ui.c` 的 `ios_resume_bh`），所以在列表页时 App 回到前台不调它，等用户点「继续」。
-- 每次暂停、继续都记进 `events.log`：`vm_pause reason=background|list`、`vm_resume`。
-- 拉下控制中心、通知中心时 App 也会失去前台，这时画面停住，回来继续。
-- 好处：后台不跑客体，省电；客体的虚拟时钟停着，回来时不会一下跳很多。
+- `RootViewController.updateRun`: the VM runs only when "the app is in the foreground" and "the emulator view is showing". `Engine.setRunning(false)` first calls `qemu_ios_set_foreground(false)` (GL stops immediately; iOS kills background processes that issue GL), then `qemu_ios_ui_pause` (QMP stop, queued onto the QEMU main loop); with `true` it calls `set_foreground(true)` and then `qemu_ios_ui_resume`.
+- Note that `qemu_ios_set_foreground(true)` by itself restarts a stopped VM (`ios_resume_bh` in `qemu-ios-ui.c`), so when the app returns to the foreground while on the list page it does not call it, and waits for the user to tap "Continue".
+- Every pause and resume is logged in `events.log`: `vm_pause reason=background|list`, `vm_resume`.
+- Pulling down Control Center or Notification Center also makes the app lose the foreground; the screen freezes then and continues on return.
+- Benefits: the guest does not run in the background, which saves power; the guest's virtual clock is stopped, so it does not jump far ahead on return.
 
-## 4. 导入
+## 4. Import
 
-- 盯着 `Documents/import/` 和 `Documents/` 两个目录（目录事件），App 回到前台时也扫一次。包的修改时间 3 秒没变才认为拷完；还在拷的显示「正在拷入」，每秒再看一次。
-- 解到 `import/.staging-<包名>/`，完整解完再把文件逐个挪进 `Documents` 的同一位置（同名替换，设备原有的 `state/` 不动，重新导入同一台不丢用户数据），最后删包。上次被杀留下的暂存启动时清掉。
-- 解包前看剩余空间，不够（包大小加 500 MB）就报错。包里的系统正在运行时先不并进来，等下次打开 App。失败的包大小和时间不变就不重试；拷到一半被读到而失败的，接着拷完大小一变会自动重试。
-- 结果追加到 `logs/import.log`，格式和以前一样（`device-boot.sh` 会取回）。
-- Info.plist 里 `UIFileSharingEnabled`、`LSSupportsOpeningDocumentsInPlace` 原来就开着。
+- Watches two directories, `Documents/import/` and `Documents/` (directory events), and also scans once when the app returns to the foreground. A pack counts as fully copied only when its modification time has not changed for 3 seconds; one still being copied shows "Copying in" and is checked again every second.
+- Unpacks into `import/.staging-<pack name>/`, and once fully unpacked moves the files one by one into the same location under `Documents` (replacing files with the same name, leaving the device's existing `state/` alone, so reimporting the same device does not lose user data), then deletes the pack. Staging left over from a previous kill is cleaned up at launch.
+- Checks free space before unpacking and reports an error if it is insufficient (pack size plus 500 MB). If the system in the pack is currently running, it is not merged in yet and waits until the app is next opened. A failed pack is not retried while its size and time are unchanged; one that failed because it was read halfway through copying is retried automatically once the copy finishes and its size changes.
+- Results are appended to `logs/import.log` in the same format as before (`device-boot.sh` fetches it).
+- `UIFileSharingEnabled` and `LSSupportsOpeningDocumentsInPlace` in Info.plist were already on.
 
-## 5. 测试入口（都保留）
+## 5. Test entry points (all kept)
 
-| 入口 | 变化 |
+| Entry point | Change |
 |---|---|
-| 启动参数 `-device` 等 | 照旧，走 `RootViewController` 的测试入口分支，等导入完再开机 |
-| `Documents/autostart.json` | **改成只用一次**：读过就改名为 `autostart.used.json`。不然用户以后自己打开 App 也会直接开那台、看不到列表。`device-boot.sh` 每次拉起前都重写它，不受影响 |
-| `Documents/control/` | 原有 `unlock`、`home`、`quit`；新加 `back`（返回列表）、`resume`（回到画面）、`select`（文件内容写设备 id，像用户点了它，换系统时不弹确认） |
-| autodrive、opensettings | 照旧，只有启动参数或 autostart.json 打开时才开。真实用户从列表开机时全关 |
-| 新 `-select <id>` | 像用户在列表里点了这一台，走完整流程（包括去 StikDebug），`device-app-flow.sh` 用它 |
-| 新 `-fakejit on\|off\|nostik` | 只在模拟器里，见 2.2 |
-| 存图 | 测试入口照旧（客体画面默认每 5 秒、窗口每 15 秒）；从列表开机默认不存，免得用户手机上越攒越多 |
-| 运行目录 | 只留最近 30 个 |
-| 自动锁屏 | 原来整个 App 都不让手机自动锁屏，现在只在模拟器画面开着时 |
+| Launch arguments such as `-device` | As before; goes through `RootViewController`'s test entry branch and boots after import finishes |
+| `Documents/autostart.json` | **Now single use**: renamed to `autostart.used.json` once read. Otherwise, whenever the user later opens the app themselves, it would boot that device directly and never show the list. `device-boot.sh` rewrites it before every launch, so it is unaffected |
+| `Documents/control/` | Existing `unlock`, `home`, `quit`; new `back` (return to list), `resume` (return to the screen), `select` (file content is a device id; acts as if the user tapped it, with no confirmation when switching systems) |
+| autodrive, opensettings | As before; enabled only when the app is opened via launch arguments or autostart.json. All off when a real user boots from the list |
+| New `-select <id>` | Acts as if the user tapped this device in the list and goes through the full flow (including the trip to StikDebug); `device-app-flow.sh` uses it |
+| New `-fakejit on\|off\|nostik` | Simulator only, see 2.2 |
+| Saving screenshots | Test entry points as before (guest screen every 5 seconds by default, window every 15 seconds); booting from the list saves none by default, so they don't keep piling up on the user's phone |
+| Run directories | Only the latest 30 are kept |
+| Auto-lock | Previously the whole app prevented the phone from auto-locking; now only while the emulator view is open |
 
-`scripts/ios/device-boot.sh`、`sim-boot.sh` 没改，回归都通过（第 6 节）。
+`scripts/ios/device-boot.sh` and `sim-boot.sh` are unchanged, and both pass regression (section 6).
 
-## 6. 验证
+## 6. Verification
 
-### 6.1 iOS 模拟器（ClassicTouch iPhone 18 Pro，iOS 27.2）
+### 6.1 iOS Simulator (ClassicTouch iPhone 18 Pro, iOS 27.2)
 
-用模拟器工具点屏幕，`-fakejit` 模拟 JIT 和 StikDebug。
+Taps on the screen are done with the simulator tools; `-fakejit` fakes JIT and StikDebug.
 
-| 步骤 | 结果 |
+| Step | Result |
 |---|---|
-| `-fakejit off` 打开 | 列表三台、占用、iPod 的实验性提示、JIT「还没开」（`m2app-sim-1-list-nojit.png`） |
-| 点 iPhone 3GS | 写下 `{"device":"n88ap-10B500","wantJIT":true}`，进程退出 |
-| 带 `-fakejit on` 再启动（相当于 StikDebug 拉起） | 新进程 `boot config=list … backend=jit`，到锁屏（`m2app-sim-2-booted-after-fakejit.png`） |
-| 返回列表 | `vm_pause reason=list`，CPU 降到 1% 到 2%；列表顶部「正在运行 · 已暂停」，3GS 标「运行中」，JIT「当前系统在用 JIT」（`m2app-sim-3-back-to-list-paused.png`） |
-| 点「继续」 | `vm_resume`，CPU 回到 12% 左右 |
-| 系统「设置」切到前台 8 秒再切回 | 同一进程（PID 14802），`vm_pause reason=background`、`vm_resume` |
-| 点 iPhone 4 | 弹「换成 iPhone 4 · iOS 7.1.2？」（`m2app-sim-4-switch-confirm.png`），点「换系统」：`relaunch` 和 `qemu_exit status=0`，进程退出；再带 `-fakejit on` 启动，直接开 iOS 7 |
-| `-fakejit nostik` 点 iPod | 弹「没有 JIT」三个按钮（`m2app-sim-5-nostik-alert.png`），选解释器开机正常 |
-| 解释器运行中点 3GS | 弹「关闭 App」那种说明（`m2app-sim-6-switch-nostik.png`），关掉再打开，直接用解释器开 3GS |
-| 慢慢拷入 iPod 的包（每秒 40 MB，模拟 Finder） | 「正在拷入」（`m2app-sim-7-import-copying.png`），拷完自动导入，列表多出 iPod（`m2app-sim-8-import-done.png`） |
-| 文稿根目录放一个截断的包 | 「导入失败：ctpack 提前结束」，暂存清掉，已有设备没动 |
-| `sim-boot.sh n88ap-10B500 jit` 回归 | 锁屏 16 秒、主屏 45 秒、待机 13%，正常退出 |
+| Open with `-fakejit off` | List with three devices, disk usage, the iPod's experimental note, JIT "not enabled yet" (`JIT 还没开`) (`m2app-sim-1-list-nojit.png`) |
+| Tap iPhone 3GS | Writes `{"device":"n88ap-10B500","wantJIT":true}`, process exits |
+| Launch again with `-fakejit on` (equivalent to StikDebug launching it) | New process `boot config=list … backend=jit`, reaches the lock screen (`m2app-sim-2-booted-after-fakejit.png`) |
+| Back to list | `vm_pause reason=list`, CPU drops to 1% to 2%; the top of the list shows "Running · Paused", the 3GS is marked "Running", JIT shows "The current system is using JIT" (`当前系统在用 JIT`) (`m2app-sim-3-back-to-list-paused.png`) |
+| Tap "Continue" | `vm_resume`, CPU back to about 12% |
+| Switch the system Settings app to the foreground for 8 seconds, then back | Same process (PID 14802), `vm_pause reason=background`, `vm_resume` |
+| Tap iPhone 4 | Shows "Switch to iPhone 4 · iOS 7.1.2?" (`换成 iPhone 4 · iOS 7.1.2？`) (`m2app-sim-4-switch-confirm.png`); tap "Switch system": `relaunch` and `qemu_exit status=0`, process exits; launch again with `-fakejit on` and it boots iOS 7 directly |
+| Tap iPod with `-fakejit nostik` | Shows "No JIT" (`没有 JIT`) with three buttons (`m2app-sim-5-nostik-alert.png`); choosing the interpreter boots normally |
+| Tap 3GS while the interpreter is running | Shows the "Close App" kind of explanation (`m2app-sim-6-switch-nostik.png`); after closing and reopening, the 3GS boots directly with the interpreter |
+| Slowly copy in the iPod pack (40 MB per second, imitating Finder) | "Copying in" (`m2app-sim-7-import-copying.png`), imported automatically once copied, the iPod appears in the list (`m2app-sim-8-import-done.png`) |
+| Put a truncated pack in the Documents root | "Import failed: ctpack ended early", staging cleaned up, existing devices untouched |
+| `sim-boot.sh n88ap-10B500 jit` regression | Lock screen 16 seconds, home screen 45 seconds, idle 13%, clean exit |
 
-模拟器里发现并修好一个问题：从列表开机时，Root 在把模拟器画面登记为「当前显示」之前就收到「引擎已启动」，于是当成「不在显示」清了前台标志（iOS 6、7 的 GL 会被拒）。改成先登记再加视图，开机后再补一次判断。
+A problem was found and fixed in the simulator: when booting from the list, Root received "engine started" before it had registered the emulator view as "currently showing", so it treated it as "not showing" and cleared the foreground flag (GL for iOS 6 and 7 would then be refused). Changed to register first and then add the view, with one more check after boot.
 
-另外，iOS 7 到锁屏几秒后客体会自己熄屏（背光从 1971 降到 456，之后全黑），按画面下方的 Home 才亮。这是客体自己的行为，真 iPhone 也一样，但第一次看到全黑会以为坏了，给用户的说明里写了。
+Also, a few seconds after reaching the lock screen the iOS 7 guest turns off its own screen (backlight from 1971 down to 456, then fully black), and it lights up only after pressing Home below the screen. This is the guest's own behavior, the same as on a real iPhone, but a fully black screen the first time makes it look broken, so the instructions for the user mention it.
 
-### 6.2 iPhone 18 Pro 真机（iOS 27.2，USB，LocalDevVPN 开着）
+### 6.2 iPhone 18 Pro real device (iOS 27.2, USB, LocalDevVPN on)
 
-**首页**：`m2app-device-1-list.png`。JIT 一行显示「还没开」，说明 `canOpenURL(stikjit://)` 认出了 StikDebug。
+**Home page**: `m2app-device-1-list.png`. The JIT row shows "not enabled yet", which means `canOpenURL(stikjit://)` recognized StikDebug.
 
-**整条用户流程**（`scripts/ios/device-app-flow.sh`，记录在 `work/ios/runs/device/flow-20261102-002055/`）：
+**The whole user flow** (`scripts/ios/device-app-flow.sh`, records in `work/ios/runs/device/flow-20261102-002055/`):
 
-| 时间（脚本起算） | 事件 |
+| Time (from script start) | Event |
 |---|---|
-| 0 秒 | 结束 App，带 `-select n88ap-10B500` 打开（列表进程 PID 31480） |
-| 10 秒 | 新运行目录出现，开机进程 PID 31485，`backend=jit debugger=true`，准备 256 MB 0.60 秒 |
-| 64 秒 | 认出 iOS 6 主屏（`m2app-device-2-ios6-home-via-stikdebug.png`）。脚本每 15 秒看一次，第 20、39 秒（App 内时间）各发了一次解锁 |
-| 64 到 97 秒 | **后台测试**：系统「设置」切到前台，回来。App 内第 56.3 秒 `vm_pause reason=background`，第 57 秒后被系统挂起，第 73.5 秒恢复，74.0 秒 `vm_resume`（离开 17.7 秒）。进程号前后都是 31485，运行目录 1 个，帧编号 275 → 278，回来后主屏照常（`m2app-device-3-ios6-after-background.png`），CPU 回到 10% 到 13% |
-| 103 秒 | 往 `control/select` 写 n90ap-11D257 |
-| 115 秒 | 旧进程 `relaunch`、`qemu_exit status=0`；新进程 PID 31505，`backend=jit debugger=true`，准备 0.83 秒 |
-| 165 秒 | 认出 iOS 7 主屏（`m2app-device-4-ios7-home-after-switch.png`） |
-| 178 秒 | `control/quit`，结束 App |
+| 0 s | Kill the app, open it with `-select n88ap-10B500` (list process PID 31480) |
+| 10 s | New run directory appears, boot process PID 31485, `backend=jit debugger=true`, preparing 256 MB takes 0.60 seconds |
+| 64 s | iOS 6 home screen recognized (`m2app-device-2-ios6-home-via-stikdebug.png`). The script checks every 15 seconds; it sent one unlock each at 20 and 39 seconds (in-app time) |
+| 64 to 97 s | **Background test**: the system Settings app switched to the foreground, then back. At in-app 56.3 seconds `vm_pause reason=background`, suspended by the system after 57 seconds, resumed at 73.5 seconds, `vm_resume` at 74.0 seconds (away 17.7 seconds). Process ID 31485 before and after, 1 run directory, frame number 275 → 278, home screen as before after returning (`m2app-device-3-ios6-after-background.png`), CPU back to 10% to 13% |
+| 103 s | Write n90ap-11D257 to `control/select` |
+| 115 s | Old process `relaunch`, `qemu_exit status=0`; new process PID 31505, `backend=jit debugger=true`, prepare 0.83 seconds |
+| 165 s | iOS 7 home screen recognized (`m2app-device-4-ios7-home-after-switch.png`) |
+| 178 s | `control/quit`, app ends |
 
-后台那段没有出现 `foreground again: N GL calls refused`：虚拟机先停了，后台根本没有 GL 调用。
+`foreground again: N GL calls refused` did not appear during the background part: the VM had stopped first, so there were no GL calls at all in the background.
 
-**`device-boot.sh` 回归**（`STIK=1 IDLE=40 … n88ap-10B500 jit`）：锁屏 15 秒、主屏 23 秒、待机 17%（25 秒）、准备 0.81 秒、正常退出。`autostart.json` 读完已改名为 `autostart.used.json`，之后正常打开 App 显示的是列表。
+**`device-boot.sh` regression** (`STIK=1 IDLE=40 … n88ap-10B500 jit`): lock screen 15 seconds, home screen 23 seconds, idle 17% (25 seconds), prepare 0.81 seconds, clean exit. `autostart.json` was renamed to `autostart.used.json` after being read, and opening the app normally afterwards shows the list.
 
-**导入**（AFC 上传，Finder 文件共享走的就是它）：App 开着列表时上传 iPod 的包，473 MB 用 14 秒，期间首页「正在拷入」（`m2app-device-5-import-copying.png`），拷完自动导入，0.5 秒，覆盖已有的同一台（`m2app-device-6-import-done.png`）。
+**Import** (AFC upload, which is what Finder file sharing uses): uploading the iPod pack while the app showed the list, 473 MB took 14 seconds, during which the home page showed "Copying in" (`m2app-device-5-import-copying.png`); it imported automatically once copied, in 0.5 seconds, overwriting the existing copy of the same device (`m2app-device-6-import-done.png`).
 
-**没弄清的两次失去前台**：
-- 流程测试里 iOS 6 开机第 2.8 到 9.9 秒，App 失去前台 7 秒（第二次开机没有）。可能是装完第一次被 StikDebug 拉起时的系统提示，也可能是 StikDebug 那边短暂到前台。这段时间虚拟机按设计停着，所以 QEMU 亮屏记成 22.6 秒（第三阶段 12.2 秒，扣掉 7.1 秒基本对上）。
-- `device-boot.sh` 回归第 50 秒 App 被切到后台，第 52 秒被挂起，第 94.8 秒才回来，回来时待机时间已到、按计划退出。脚本这段只在经 AFC 取文件，不会切 App，像是手机被人碰了。待机 CPU 只算了前 25 秒，锁屏、主屏数字不受影响，按约定不补测。
+**Two unexplained losses of foreground**:
+- In the flow test, from 2.8 to 9.9 seconds into the iOS 6 boot, the app lost the foreground for 7 seconds (not during the second boot). It may have been a system prompt the first time the app was launched by StikDebug after install, or StikDebug briefly coming to the foreground. During this time the VM was stopped by design, so QEMU's screen-on time was recorded as 22.6 seconds (stage 3: 12.2 seconds; subtracting the 7.1 seconds roughly matches).
+- In the `device-boot.sh` regression, the app was switched to the background at 50 seconds, suspended at 52 seconds, and only came back at 94.8 seconds, by which time the idle period was over and it exited as planned. During this part the script only fetches files over AFC and does not switch apps, so it looks like someone touched the phone. Idle CPU covers only the first 25 seconds; the lock screen and home screen numbers are unaffected, and as agreed there was no remeasurement.
 
-请用户手试时留意有没有弹窗（第 7 节）。
+During the hand test, please watch for any popups (section 7).
 
-## 7. 请用户亲手试（这一步停下，等用户做）
+## 7. Please try it by hand (this step stops here and waits for the user)
 
-前提：手机上装着最新的 App（已装好）和我们编的 StikDebug；三台设备都在。
+Prerequisites: the phone has the latest app (already installed) and our build of StikDebug; all three devices are present.
 
-1. 拔掉数据线。
-2. 确认 LocalDevVPN 开着（不是别的 VPN）。
-3. 打开 Classic Touch。首页是系统列表，有三台；最下面 JIT 一行写着「还没开」。
-4. 点「iPhone 3GS · iOS 6.1.6」。App 会跳到 StikDebug，几秒后自动回到 Classic Touch 开始开机。我们这份 StikDebug 关了确认弹窗，中间不用点；真实用户这里会在 StikDebug 里多点一次「确认」。
-5. 约 15 秒到锁屏。锁屏几秒不碰会熄屏变黑，点画面下方的「Home」叫醒，然后在模拟的屏幕上从左往右滑解锁，看到 iOS 6 主屏。
-6. 点左上「‹ 返回列表」。列表最上面是「正在运行 · 已暂停」。点「iPhone 4 · iOS 7.1.2」，弹出「换成 iPhone 4 · iOS 7.1.2？」，点「换系统」。
-7. App 再跳一次 StikDebug，自动回来开 iOS 7，约 30 秒到锁屏，同样 Home 叫醒、滑动解锁到主屏。
-8. 试完从多任务里划掉 App。
+1. Unplug the cable.
+2. Make sure LocalDevVPN is on (not some other VPN).
+3. Open Classic Touch. The home page is the system list, with three devices; the JIT row at the bottom says "not enabled yet".
+4. Tap "iPhone 3GS · iOS 6.1.6". The app jumps to StikDebug, and a few seconds later automatically returns to Classic Touch and starts booting. Our copy of StikDebug has the confirmation popup turned off, so nothing needs tapping in between; a real user would tap "Confirm" once more in StikDebug here.
+5. The lock screen appears in about 15 seconds. Left untouched for a few seconds, the lock screen turns off and goes black; tap "Home" below the screen to wake it, then swipe left to right on the emulated screen to unlock, and you see the iOS 6 home screen.
+6. Tap "‹ Back to list" at the top left. The top of the list shows "Running · Paused". Tap "iPhone 4 · iOS 7.1.2"; "Switch to iPhone 4 · iOS 7.1.2?" pops up; tap "Switch system".
+7. The app jumps to StikDebug once more and automatically comes back to boot iOS 7; the lock screen appears in about 30 seconds; as before, wake it with Home and swipe to unlock to reach the home screen.
+8. When done, swipe the app away in the app switcher.
 
-如果卡在 StikDebug 里（多半是 LocalDevVPN 没连上）：打开 LocalDevVPN，2 分钟内回到 Classic Touch，它会提示「没拿到 JIT」，点「再试一次」。
+If it gets stuck in StikDebug (most likely LocalDevVPN is not connected): open LocalDevVPN and return to Classic Touch within 2 minutes; it will say "Didn't get JIT" (`没拿到 JIT`); tap "Try again".
 
-请顺便告诉我们：中间有没有出现任何系统弹窗；从点系统到回到 Classic Touch 大概几秒；哪一步不顺手。
+Please also tell us: whether any system popup appeared along the way; roughly how many seconds it takes from tapping a system to returning to Classic Touch; and which step felt awkward.
 
-### 7.1 用户手试结果（2026-11-02 00:30 起）
+### 7.1 User hand test results (from 2026-11-02 00:30)
 
-用户反馈：**「iOS 7 滑动和解锁很卡，主界面滑动很卡，但是设置不卡」。** 列表、跳 StikDebug、开机、返回列表、换系统这条流程本身走通了（手机上的运行记录取回到 `work/ios/runs/device/handtest/`）。
+User feedback: **"iOS 7 swiping and unlocking are very laggy, swiping on the home screen is very laggy, but Settings is not laggy."** The flow itself (list, jump to StikDebug, boot, back to list, switch system) worked (the run records on the phone were fetched to `work/ios/runs/device/handtest/`).
 
-两次运行：
+Two runs:
 
-| 运行 | 事件 |
+| Run | Events |
 |---|---|
-| 00:30:39 iPod touch 2 代 3.1.3（列表第一行，不是简报里的 3GS） | JIT 开机，第 10.1 秒 App 失去前台，第 174.7 秒才回来；第 221.9 秒返回列表，第 228.0 秒换系统（`qemu_exit status=0`） |
-| 00:34:30 iPhone 4 iOS 7.1.2 | JIT 开机（这次没有开头被切走）；第 78 到 198 秒离开过 2 分钟，之后两次各几秒 |
+| 00:30:39 iPod touch 2nd gen 3.1.3 (first row of the list, not the 3GS from the brief) | JIT boot; the app lost the foreground at 10.1 seconds and only came back at 174.7 seconds; back to the list at 221.9 seconds, system switch at 228.0 seconds (`qemu_exit status=0`) |
+| 00:34:30 iPhone 4 iOS 7.1.2 | JIT boot (no switch-away at the start this time); away for 2 minutes from 78 to 198 seconds, then twice more for a few seconds each |
 
-每秒出帧数（stats.csv 帧编号的差）和本进程 CPU：
+Frames per second (difference of frame numbers in stats.csv) and this process's CPU:
 
-| 画面（按时间和出帧推断） | 每秒帧数 | CPU（占一个核） |
+| Screen (inferred from time and frame output) | Frames per second | CPU (share of one core) |
 |---|---|---|
-| iOS 7 开机到锁屏前（0 到 25 秒） | 0 到 1 | 100% 到 140% |
-| iOS 7 拖动锁屏解锁（29 到 44 秒） | **6 到 10** | 95% 到 103% |
-| iOS 7 进主屏的动画（45 到 57 秒） | 28 到 57 | 50% 到 100% |
-| iOS 7 翻主屏等（198 到 260 秒里的卡顿段） | **5 到 10** | 70% 到 96% |
-| iOS 7 较顺的段（推测是「设置」） | 33 到 57 | 45% 到 98% |
-| iOS 7 静止时（71 到 78、244 到 250 秒） | 稳定 10 | 约 40% |
-| iPod 3.1.3 解锁和使用（175 到 222 秒） | 14 到 54 | 30% 到 60% |
+| iOS 7 boot until before the lock screen (0 to 25 seconds) | 0 to 1 | 100% to 140% |
+| iOS 7 dragging the lock screen to unlock (29 to 44 seconds) | **6 to 10** | 95% to 103% |
+| iOS 7 animation into the home screen (45 to 57 seconds) | 28 to 57 | 50% to 100% |
+| iOS 7 paging the home screen etc. (the laggy stretches within 198 to 260 seconds) | **5 to 10** | 70% to 96% |
+| iOS 7 smoother stretches (presumably Settings) | 33 to 57 | 45% to 98% |
+| iOS 7 at rest (71 to 78, 244 to 250 seconds) | steady 10 | about 40% |
+| iPod 3.1.3 unlocking and use (175 to 222 seconds) | 14 to 54 | 30% to 60% |
 
-初步判断：
-- 卡的是锁屏和主屏，这两处 iOS 7 的合成层多（整屏壁纸、半透明的层、拖动时整屏移动），每帧都要在 vCPU 线程上转发大量 GL 调用，再把整屏 glReadPixels 读回客体内存。卡的时候进程基本占满一个核，出帧只有 6 到 10，说明瓶颈在模拟 CPU 这一侧（客体代码加同一线程上的 GL 转发和读回），不是 App 界面；「设置」是不透明的列表，层少，所以顺。
-- 静止时稳定每秒 10 帧、CPU 约 40%，和 M2 宿主 GL 报告里「iOS 7 待机 44%、换帧只有 Mac 的三分之一」是同一件事。
-- iOS 7 在真 iPhone 4 上锁屏和主屏本来也偏卡，有一部分是系统本身，但我们这里明显更慢。
-- 这超出 App 雏形的范围，建议单独派一个性能会话：用 `IT_GLES_PROF=1` 看 GL 桥的时间花在哪（读回、纹理上传还是客体 CPU），再决定是给 CoreAnimation 的表面补 IOSurface 免读回、把 GL 挪到单独线程，还是先从 TCG 侧下手。可以先在 Mac 的模拟器里复现（同一套 EAGL 后端），不占手机。
+Preliminary assessment:
+- What lags is the lock screen and the home screen. In these two places iOS 7 has many compositing layers (full-screen wallpaper, translucent layers, the whole screen moving while dragging), so every frame needs a large number of GL calls forwarded on the vCPU thread, and then the whole screen read back into guest memory with glReadPixels. When it lags the process basically saturates one core and produces only 6 to 10 frames, which means the bottleneck is on the emulated CPU side (guest code plus GL forwarding and readback on the same thread), not the app interface; Settings is an opaque list with few layers, so it is smooth.
+- At rest it holds a steady 10 frames per second with CPU at about 40%, which is the same thing as "iOS 7 idle 44%, frame swaps only a third of the Mac's" in the M2 host GL report.
+- On a real iPhone 4, iOS 7's lock screen and home screen were somewhat laggy too, so part of it is the system itself, but here it is clearly slower.
+- This is beyond the scope of the app prototype; recommend dispatching a separate performance session: use `IT_GLES_PROF=1` to see where the GL bridge's time goes (readback, texture upload, or guest CPU), then decide whether to add IOSurface for CoreAnimation surfaces to avoid readback, move GL to its own thread, or start on the TCG side. It can first be reproduced in the simulator on the Mac (same EAGL backend), without tying up the phone.
 
-iPod 那次开机第 10 秒起离开近 3 分钟，用户确认是自己切出去的，不是停在 StikDebug 里。所以「点系统、StikDebug 开好 JIT 后自动回到本 App 开机」在用户手上成立。脚本测试里第一次开机第 2.8 到 9.9 秒那次 7 秒的失去前台仍没弄清，App 自己回来了，不影响使用。
+In the iPod run, the nearly 3-minute absence starting at 10 seconds into boot was, the user confirmed, the user switching away, not being stuck in StikDebug. So "tap a system, StikDebug enables JIT, then the app automatically comes back and boots" holds in the user's hands. The 7-second loss of foreground from 2.8 to 9.9 seconds in the first boot of the scripted test is still unexplained; the app came back by itself, and it does not affect use.
 
-## 8. 已知问题和下一步
+## 8. Known issues and next steps
 
-1. **两次无故失去前台**（6.2 节）：用户手试能帮着确认是不是系统提示。
-2. **iPod touch 2 代熄屏卡住**没修（按用户决定），列表里标了「实验性」。
-3. **客体锁屏几秒就熄屏**：用户可能以为黑屏是坏了。可以考虑开机后自动解锁一次，或在画面上提示「按 Home 叫醒」。
-4. **删除系统**：列表里还不能删设备，只能用 Finder 或「文件」删 `devices/<id>`。
-5. **「用其他 App 打开」.ctpack**：没声明文档类型，从「文件」或隔空投送不能直接「用 Classic Touch 打开」，只能拷进本 App 的文件夹。要做的话加 UTI 声明。
-6. **英文**：String Catalog 已就位，加英文只需在 Xcode 里给 `Localizable.xcstrings` 加 English 并填译文。
-7. 每次换系统都要过一遍 StikDebug（真实用户多点一次确认）。内嵌 StikJIT 可以省掉。
+1. **Two unexplained losses of foreground** (section 6.2): the user's hand test can help confirm whether they are system prompts.
+2. **iPod touch 2nd gen hanging after the screen turns off** is not fixed (per the user's decision); it is marked "Experimental" in the list.
+3. **The guest lock screen turns off after a few seconds**: users may think the black screen means it is broken. Could consider unlocking once automatically after boot, or showing a "press Home to wake" hint on screen.
+4. **Deleting a system**: devices cannot be deleted from the list yet; `devices/<id>` can only be deleted with Finder or the Files app.
+5. **"Open in another app" for .ctpack**: no document type is declared, so from the Files app or AirDrop it cannot be opened directly with "Open in Classic Touch"; it can only be copied into this app's folder. To support it, add a UTI declaration.
+6. **English**: the String Catalog is in place; adding English only needs English added to `Localizable.xcstrings` in Xcode and the translations filled in.
+7. Every system switch goes through StikDebug once (one extra confirmation tap for real users). Embedding StikJIT could remove it.
 
-## 9. 文件
+## 9. Files
 
-- 仓库里（未 commit）：
-  - 新：`app/ClassicTouch/RootViewController.swift`、`LibraryViewController.swift`、`JIT.swift`、`ImportManager.swift`、`Localizable.xcstrings`
-  - 改：`app/ClassicTouch/EmulatorViewController.swift`（去掉菜单和导入，加返回列表、暂停、新控制命令、存图规则）、`Engine.swift`（`setRunning`）、`DeviceProfile.swift`（显示名、占用、排序）、`DevicePack.swift`（暂存、进度、合并）、`LaunchOptions.swift`（autostart 只用一次）、`AppDelegate.swift`
-  - `app/project.yml`（`LSApplicationQueriesSchemes`、String Catalog 设置），重新生成的 `ClassicTouch.xcodeproj`
-  - 新：`scripts/ios/device-app-flow.sh`
-  - 本报告和 `docs/reports/img/m2app-*.png`（14 张，都核对过画面；切到系统「设置」那张有用户的 Apple ID 和 Wi-Fi 名，没放进来）
-- `work/` 里（不提交）：`work/ios/runs/device/flow-20261102-002055/`（流程测试全部截图和日志）、`work/ios/runs/device/20261102-002453-n88ap-10B500-jit*`（回归）、`work/logs/m2app-*.log`（构建和各轮输出）
-- 手机上：新 App 已装好，没在运行；三台设备都在（iPod 那台被重新导入过一次，内容相同）；`Documents/autostart.used.json` 是回归留下的，无害。StikDebug 没动。
+- In the repository (not committed):
+  - New: `app/ClassicTouch/RootViewController.swift`, `LibraryViewController.swift`, `JIT.swift`, `ImportManager.swift`, `Localizable.xcstrings`
+  - Changed: `app/ClassicTouch/EmulatorViewController.swift` (removed the menu and import; added back to list, pause, new control commands, screenshot saving rules), `Engine.swift` (`setRunning`), `DeviceProfile.swift` (display name, disk usage, sorting), `DevicePack.swift` (staging, progress, merge), `LaunchOptions.swift` (autostart single use), `AppDelegate.swift`
+  - `app/project.yml` (`LSApplicationQueriesSchemes`, String Catalog settings), and the regenerated `ClassicTouch.xcodeproj`
+  - New: `scripts/ios/device-app-flow.sh`
+  - This report and `docs/reports/img/m2app-*.png` (14 images, all checked by eye; the one switched to the system Settings app shows the user's Apple ID and Wi-Fi name, so it was left out)
+- In `work/` (not committed): `work/ios/runs/device/flow-20261102-002055/` (all screenshots and logs of the flow test), `work/ios/runs/device/20261102-002453-n88ap-10B500-jit*` (regression), `work/logs/m2app-*.log` (build and per-run output)
+- On the phone: the new app is installed and not running; all three devices are present (the iPod one was reimported once, same contents); `Documents/autostart.used.json` was left by the regression and is harmless. StikDebug untouched.

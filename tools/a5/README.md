@@ -166,7 +166,7 @@ sleep 3; python3 -I tools/a5/qmon.py work/a5/runs/gl/qmp.sock work/a5/runs/gl 60
 
 ## 到锁屏（报告 3.15 节）
 
-格式化开机做完后，对格式化后的盘克隆跑一次 `tools/a5/n78_diskfix.sh`（按系统卷的版本号分支，9.3.5 见最后一节）。对 7.1.2 它会改 fstab 为 disk1、在数据卷放 `.it_sealed`、给 lockdownd 打本地激活补丁（`n78_activate.py`，按哈希认 11D257 lockdownd 和 13G36 mobileactivationd）、把两个罗盘 HID 插件移到 `HIDPlugins.disabled`、补上设置助理的 Siri 等四个完成标记。之后照「GL 桥和截图」一节开机，约 100 秒到锁屏，再过 20 秒左右熄屏，所以截图要在 95 到 120 秒之间多截几张：
+格式化开机做完后，对格式化后的盘克隆跑一次 `tools/a5/n78_diskfix.sh`（按系统卷的版本号分支，9.3.5 见最后一节）。对 7.1.2 它会改 fstab 为 disk1、在数据卷放 `.it_sealed`、给 lockdownd 打本地激活补丁（`n78_activate.py`，按哈希认 11D257 lockdownd 和 13G36 mobileactivationd）、把两个罗盘 HID 插件移到 `HIDPlugins.disabled`、补上设置助理的 Siri 等四个完成标记，并在 launchd 的 `overrides.plist` 里禁掉 DeviceOMatic（它把挂根用的 USB 盘当外接设备，在锁屏上挂一条「Cannot Use Device」，手机上因此要多试几次才能解锁，`docs/reports/ios-device-14pro.md` 第 7 节）。之后照「GL 桥和截图」一节开机，约 100 秒到锁屏，再过 20 秒左右熄屏，所以截图要在 95 到 120 秒之间多截几张：
 
 ```bash
 cp -c work/a5/nandfmt/disk-formatted.img work/a5/nandfmt/disk-ls.img && tools/a5/n78_diskfix.sh work/a5/nandfmt/disk-ls.img

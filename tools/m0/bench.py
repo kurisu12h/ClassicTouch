@@ -25,7 +25,7 @@ import sys
 import threading
 import time
 
-ROOT = "/path/to/classic-ios"
+ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))  # the checkout's root
 BUILDS = {"jit": ROOT + "/work/build-jit/qemu-system-arm", "tci": ROOT + "/work/build-tci/qemu-system-arm"}
 MACHINES = ROOT + "/upstream/LightTouchMac/tests/fixtures/machines.json"
 OCR = ROOT + "/work/tools/ocr/ocr"

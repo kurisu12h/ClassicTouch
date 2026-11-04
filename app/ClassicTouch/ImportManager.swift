@@ -1,6 +1,7 @@
 // 导入设备包，不靠脚本：用户用 Finder（文件共享）或「文件」App 把 .ctpack 放进 Documents/import/（直接放 Documents
-// 根目录也认）。App 盯着这两个目录，包的修改时间 3 秒没变（认为拷完了）就解到 import/.staging-<包名>/，完整解完再并进
-// Documents、删掉包。首页显示拷入中、解包进度和结果；结果另外追加到 logs/import.log（scripts/ios/device-boot.sh 会取回）。
+// 根目录也认）。App 盯着这两个目录，包的修改时间和大小都 3 秒没变（认为拷完了）就解到 import/.staging-<包名>/，完整
+// 解完再并进 Documents、删掉包。首页显示拷入中、解包进度和结果；结果另外追加到 logs/import.log（scripts/ios/device-boot.sh
+// 会取回）。
 // 脚本的老用法照旧：宿主把包拷进 import/ 再启动 App，App 一起来就解，测试入口等导入完才开机（RootViewController）。
 // SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -36,6 +37,9 @@ final class ImportManager {
     /// 失败过的包（路径 → 大小和修改时间），没变就不再重试；拷入中途被读到而失败的，接着拷完大小一变就会重试
     private var failed: [String: String] = [:]
     private var deferred: Set<String> = []
+    /// 每个包上次看到的大小和从什么时候起是这个大小。devicectl copy 先建一个空文件、约 5 秒后才开始写，写完再把
+    /// 修改时间改回 Mac 上原文件的，只看修改时间会把空的或半截的包拿去解（docs/reports/ios-device-14pro.md 第 7 节）
+    private var sizes: [String: (size: UInt64, since: Date)] = [:]
 
     var importDir: URL { documents.appendingPathComponent("import", isDirectory: true) }
     var idle: Bool { active == nil && copying.isEmpty }
@@ -84,7 +88,9 @@ final class ImportManager {
             else { continue }
             let stamp = "\(size) \(mtime.timeIntervalSince1970)"
             if failed[pack.path] == stamp || deferred.contains(pack.path) { continue }
-            if Date().timeIntervalSince(mtime) < 3 {
+            let now = Date()
+            if sizes[pack.path]?.size != size { sizes[pack.path] = (size, now) }
+            if size == 0 || now.timeIntervalSince(mtime) < 3 || now.timeIntervalSince(sizes[pack.path]?.since ?? now) < 3 {
                 stillCopying.append(pack.lastPathComponent)
                 continue
             }
@@ -95,6 +101,9 @@ final class ImportManager {
         copying = stillCopying
         if !copying.isEmpty {
             rescan = Timer.scheduledTimer(withTimeInterval: 1, repeats: false) { [weak self] _ in self?.scan() }
+        } else if failed.keys.contains(where: { fm.fileExists(atPath: $0) }) {
+            // 解失败的包还在：文件长大不触发目录事件，隔一会儿再看，拷完（大小一变）就重试
+            rescan = Timer.scheduledTimer(withTimeInterval: 3, repeats: false) { [weak self] _ in self?.scan() }
         }
         onChange?()
     }

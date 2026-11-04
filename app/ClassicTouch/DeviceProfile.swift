@@ -7,6 +7,7 @@
 //   s5l8900 初代 iPhone、iPod touch 1 代的 1.x（lock 里没有 boot_strategy，按机型认）：iBoot 加 pflash 的 NOR
 //   n78     iPod touch 5 代（A5，7.1.2、9.3.5）：直接进内核，系统卷和数据卷在一块挂 USB 的两分区盘上，NAND（可擦除
 //           存储、NVRAM、钥匙包靠它）是 IOP 模型的页存储目录（docs/reports/a5-step1.md 3.13 到 3.17，a5-app.md）
+//           The iPhone 5 (n41ap, A6, iOS 10.3.4) boots the same way on the iPhone-5 machine (docs/reports/a6-app.md).
 //
 // 目录约定（App 的 Documents 下）：
 //   devices/<id>/            设备本体，只读：device.lock.json、nand/、nor.bin、kboot.bin 或 iBoot.bin（+ gid-blobs.bin）；
@@ -41,6 +42,8 @@ let boards: [String: BoardInfo] = [
     "n90ap": BoardInfo(machine: "iPhone-4", hasCellular: true, hasUSBHost: true, width: 640, height: 960),
     // 有 USB 主机口，但上面挂的是根盘（usb-storage，总线 ehci.0），不挂 usb-kbd，所以这里记 false
     "n78ap": BoardInfo(machine: "iPod-Touch-5G", hasCellular: false, hasUSBHost: false, width: 640, height: 1136),
+    // The iPhone 5: the same USB root disk, and no baseband (the boot bundle hides it, CommCenter is disabled on the disk)
+    "n41ap": BoardInfo(machine: "iPhone-5", hasCellular: false, hasUSBHost: false, width: 640, height: 1136),
 ]
 
 struct DeviceProfile {
@@ -76,6 +79,7 @@ struct DeviceProfile {
         case "n81ap": return String(localized: "iPod touch（第 4 代）")
         case "n90ap": return "iPhone 4"
         case "n78ap": return String(localized: "iPod touch（第 5 代）")
+        case "n41ap": return "iPhone 5"
         default: return board
         }
     }
@@ -235,6 +239,7 @@ struct DeviceProfile {
         case "n78":
             // tools/a5/n78_run.sh 的参数：内核加设备树的开机包；根盘是挂在 EHCI 上的 USB 大容量存储（两分区，
             // fstab 是 disk1s1、disk1s2）；IOP 模型的 NAND 页存储放在 state/nand。内存用机型默认的 512 MB。
+            // The iPhone-5 machine's default is 1 GiB.
             argv += ["-M", "\(info.machine),kboot=\(path("kboot.bin"))" + options,
                      "-drive", "if=none,id=root,file=\(statePath("disk.img")),format=raw",
                      "-device", "usb-storage,bus=ehci.0,drive=root",

@@ -1,9 +1,9 @@
-// 样稿公共脚本：宿主状态栏、几个线条图标、矢量机身。机身都是自己画的简化外形，没有标志和商标字样。
+// Shared mockup script: host status bar, a few line icons, vector device bodies. The device bodies are all simplified shapes we draw ourselves, with no logos or trademark wording.
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 let uid = 0;
 
-/** 宿主手机的状态栏、灵动岛、Home 指示条。color 是文字和图标的颜色 */
+/** The host phone's status bar, Dynamic Island and home indicator. color is the color of the text and icons */
 function hostChrome(color, indicator) {
   const c = color;
   const html = `
@@ -25,7 +25,7 @@ function hostChrome(color, indicator) {
   document.body.insertAdjacentHTML('beforeend', html);
 }
 
-/** 线条图标，size 是边长，color 是描边颜色 */
+/** Line icon; size is the side length, color is the stroke color */
 function icon(name, size, color, weight) {
   const s = size || 22, c = color || 'currentColor', w = weight || 2;
   const p = {
@@ -50,9 +50,9 @@ function icon(name, size, color, weight) {
 }
 
 /**
- * 正面机身。kind：ipod2（铬边、无听筒）、3gs（圆润、听筒）、4（直边、钢圈、听筒和前摄像头）。
- * width 是机身宽度（pt）；screen 是屏幕里放的图（可空，空时画暗色玻璃）。
- * 外形按各机型长宽比例简化，屏幕都按 2:3。
+ * Front of the device body. kind: ipod2 (chrome edge, no earpiece), 3gs (rounded, earpiece), 4 (flat sides, steel band, earpiece and front camera).
+ * width is the body width (pt); screen is the image shown on the screen (optional; when empty, dark glass is drawn).
+ * Shapes are simplified from each model's proportions; screens are all 2:3.
  */
 function device(kind, width, screen) {
   const id = 'd' + (++uid);
@@ -93,7 +93,7 @@ function device(kind, width, screen) {
   </svg>`;
 }
 
-/** 把页面里 data-device="kind width [screen]" 的占位换成机身 */
+/** Replace the data-device="kind width [screen]" placeholders in the page with device bodies */
 function fillDevices() {
   document.querySelectorAll('[data-device]').forEach(el => {
     const [kind, w, screen] = el.dataset.device.split(' ');
@@ -105,7 +105,7 @@ function fillDevices() {
   });
 }
 
-/** 线描机身（只有轮廓），给排版风格的方案用。kind 同 device()，color 是线的颜色 */
+/** Line-drawn device body (outline only), for the typography-style proposal. kind is the same as device(), color is the line color */
 function deviceLine(kind, width, color) {
   const spec = { ipod2: { h: 178, top: 32, rx: 15, ear: false, cam: false },
                  '3gs': { h: 190, top: 38, rx: 17, ear: true, cam: false },

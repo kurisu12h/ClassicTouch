@@ -18,6 +18,9 @@
 #          SWIPETEST=1（STIK 模式下锁屏和主屏的滑动测试，分段记帧数和 CPU，汇总见 summarize-swipe.py）、
 #          PERF=1（QEMU 每秒记 GL 桥、显示、发布帧的耗时，IT_PERF=1）、
 #          QEMUENV（给 QEMU 的额外环境变量，JSON 对象，例如 {"IT_GLES_STRICT": "0"}）
+#          FILES（afc 或 devicectl：App 容器里的文件怎么传，默认有 idevice-tools 走 AFC，否则 devicectl，见 devfiles.sh）、
+#          AUTODRIVE（1 让 App 自己认锁屏和主屏，StikDebug 模式和 devicectl 时默认 1）、
+#          LLDB_PACKET_LOG（连线 JIT 时 LLDB 的包日志，默认写在 lldb 日志旁边，none 关掉）
 set -euo pipefail
 DEVICE="${1:?用法：device-boot.sh <设备id> interp|jit [最长秒数]}"
 TCG="${2:?}"
@@ -59,27 +62,17 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# 文件操作走 AFC（idevice 工具包的 afc --documents，经 usbmuxd，要插着线），不用 devicectl copy：
-# 第三阶段开着 LocalDevVPN 时 CoreDevice 的文件服务先是在 Wi-Fi 下变慢，被中断几次后整个卡死（插拔线也不恢复），
-# 而 AFC 不受影响、一秒内返回。
-IDT="$ROOT/work/ios/tools/idevice-tools-0.1.68/bin/idevice-tools"
-# idevice-tools 偶尔会崩（Abort trap，多半是赶上正在写的文件）：失败不让脚本退出，下一轮再来
-afc() { { "$IDT" --udid "$PHONE" afc --documents "$BUNDLE" "$@" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g'; } || true; }
-fetch() {   # 远端路径 本地路径：先下到临时文件，成功才改名，免得留下半截文件
-    if "$IDT" --udid "$PHONE" afc --documents "$BUNDLE" download "$1" "$2.part" >/dev/null 2>&1; then
-        mv "$2.part" "$2"
-    else
-        rm -f "$2.part"
-    fi
-}
+# 文件操作（dls、dget、dput）：有 idevice-tools 走 AFC，没有走 devicectl，FILES= 可指定（scripts/ios/devfiles.sh）
+source "$ROOT/scripts/ios/devfiles.sh"
+fetch() { dget "$@"; }
 runs() {
-    afc list /Documents/logs | grep -o '"20[0-9-]*-[^"]*"' | tr -d '"' || true
+    dls /Documents/logs | grep '^20[0-9-]*-' || true
 }
 # 把运行目录同步回 $L：三个会变的文本每次都拿，截图只拿新的
 sync_run() {
     mkdir -p "$L"
     local f
-    for f in $(afc list "/Documents/logs/$R" | grep -o '"[^"]*\.[a-z]*"' | tr -d '"'); do
+    for f in $(dls "/Documents/logs/$R" | grep '\.[a-z]*$'); do
         case "$f" in
             events.log|stats.csv|qemu.log|serial-0.log) fetch "/Documents/logs/$R/$f" "$L/$f" ;;
             *) [ -f "$L/$f" ] || fetch "/Documents/logs/$R/$f" "$L/$f" ;;
@@ -89,14 +82,25 @@ sync_run() {
 control() {
     # 每次写进不同的内容：devicectl copy 会跳过它认为没变过的文件，同一个空文件第二次拷就送不到了
     echo "$(date +%s) $RANDOM" > "$EMPTY"
-    afc mkdir /Documents/control >/dev/null
-    afc upload "$EMPTY" "/Documents/control/$1" >/dev/null
+    dput "$EMPTY" "/Documents/control/$1"
 }
 
 before="$(runs)"
 MAC_LOAD_START="$(sysctl -n vm.loadavg)"
 LOG=""
-args=(-device "$DEVICE" -tcg "$TCG" -guestpng 1 -resetstate YES)
+# AUTODRIVE=1：App 自己认锁屏和主屏、解锁、待机后退出（EmulatorViewController.autodrive），这里只轮询 events.log；
+# 0：每秒一张客体截图拿回 Mac 上 OCR。StikDebug 模式和文件走 devicectl 时默认 1：devicectl 一个文件约一秒，
+# 每秒一张截图根本拿不过来（14 Pro 上 400 秒只拿回 37 个文件，docs/reports/ios-device-14pro.md 第 7 节）
+AUTO="${AUTODRIVE:-}"
+if [ -z "$AUTO" ]; then
+    if [ "${STIK:-0}" = 1 ] || [ "$FILES" = devicectl ]; then AUTO=1; else AUTO=0; fi
+fi
+if [ "$AUTO" = 1 ]; then
+    args=(-device "$DEVICE" -tcg "$TCG" -guestpng 5 -resetstate YES -autodrive YES -idle "$IDLE")
+    if [ "${OPENSETTINGS:-0}" = 1 ]; then args+=(-opensettings YES); fi
+else
+    args=(-device "$DEVICE" -tcg "$TCG" -guestpng 1 -resetstate YES)
+fi
 # TCG 代码缓冲（MB）。真机 JIT 时调试器要把整块读出再写回，隔着 Wi-Fi 约 0.8 MB/s：256 MB 要 5 分多钟
 if [ -n "${TBSIZE:-}" ]; then args+=(-tbsize "$TBSIZE"); fi
 # JITPROTO=legacy：旧的 brk #0x69 协议（对照用）；JIT_TOUCH 由调试器脚本自己读
@@ -112,7 +116,7 @@ if [ "${STIK:-0}" = 1 ]; then
     printf '{"device": "%s", "tcg": "%s", "tbsize": %s, "guestpng": 5, "resetstate": true, "waitdebugger": true, "autodrive": true, "idle": %s, "opensettings": %s, "usbkbd": %s, "swipetest": %s, "perf": %s, "qemuenv": %s}\n' \
         "$DEVICE" "$TCG" "${TBSIZE:-256}" "$IDLE" "$(flag "${OPENSETTINGS:-0}")" "$(flag "${USBKBD:-0}")" \
         "$(flag "${SWIPETEST:-0}")" "$(flag "${PERF:-0}")" "$QEMUENV_JSON" > "$cfg"
-    afc upload "$cfg" /Documents/autostart.json >/dev/null
+    dput "$cfg" /Documents/autostart.json
     rm -f "$cfg"
     # 还在跑的 App 先结束，StikDebug 才会重新拉起它
     for p in $(xcrun devicectl device info processes --device "$PHONE" --json-output /dev/stdout --quiet 2>/dev/null \
@@ -129,6 +133,15 @@ elif [ "$TCG" = jit ]; then
          | .identifier' | head -1)"
     # 大约每 4 到 5 次挂载会有一次：挂上后第一次继续就「Resume timed out」，之后一直卡住（调大 gdb-remote 包超时
     # 也不管用）。90 秒内没等到 QEMU 的 brk、却出现 3 次以上这个错误，就结束调试器和 App 重来，最多 3 次。
+    # 手机锁着屏时调试器选不上它、附加后也总是 Resume timed out（docs/reports/ios-device-14pro.md 第 7 节）：先等解锁
+    locked() { xcrun devicectl device info lockState --device "$PHONE" --json-output /dev/stdout --quiet 2>/dev/null \
+        | jq -r '.result.passcodeRequired'; }
+    for i in $(seq 60); do
+        [ "$(locked)" = true ] || break
+        [ "$i" = 1 ] && echo "手机锁着屏，请解锁（最多等 2 分钟）"
+        sleep 2
+    done
+    [ "$(locked)" = true ] && { echo "手机一直锁着屏，停下" >&2; exit 1; }
     for attempt in 1 2 3; do
         # 不用 --start-stopped（会留一个挂起的 SIGSTOP，继续后进程又停在 dyld 入口、手机白屏）：App 正常启动，
         # -waitdebugger 让它在界面上等调试器，挂上后才起 QEMU。
@@ -137,7 +150,12 @@ elif [ "$TCG" = jit ]; then
         pid="$(jq -r '.result.process.processIdentifier' <<<"$out")"
         echo "App 在等调试器，PID $pid，LLDB 挂上去（第 $attempt 次）"
         LOG="$LOCAL/lldb-$(date +%Y%m%d-%H%M%S).log"
-        xcrun python3 "$ROOT/scripts/ios/lldb_jit_runner.py" "$core" "$pid" > "$LOG" 2>&1 &
+        # 包日志默认开：14 Pro（iOS 27.0.1）上不开时十几次挂载全是「停下了但没有停止原因」接着 Resume timed out，
+        # 开着的几次全成（记日志拖慢了 LLDB，像是躲开了一处时序问题，根因没查清，docs/reports/ios-device-14pro.md
+        # 第 7 节）。LLDB_PACKET_LOG=none 关掉，或给一个路径
+        pkt="${LLDB_PACKET_LOG:-${LOG%.log}-packets.log}"
+        [ "$pkt" = none ] && pkt=""
+        LLDB_PACKET_LOG="$pkt" xcrun python3 "$ROOT/scripts/ios/lldb_jit_runner.py" "$core" "$pid" > "$LOG" 2>&1 &
         LLDB_PID=$!
         ok=""
         for _ in $(seq 90); do
@@ -153,6 +171,8 @@ elif [ "$TCG" = jit ]; then
         xcrun devicectl device process signal --device "$PHONE" --pid "$pid" --signal SIGKILL --quiet >/dev/null 2>&1 || true
         sleep 2
     done
+    # 三次都没挂上：App 已经结束，别再等它的运行目录、空等到时限
+    [ -n "$ok" ] || { echo "三次挂载都没等到 QEMU 的 brk，停下" >&2; exit 1; }
 else
     xcrun devicectl device process launch --device "$PHONE" --terminate-existing --quiet "$BUNDLE" -- "${args[@]}" >/dev/null
 fi
@@ -167,7 +187,7 @@ done
 echo "运行目录：$R"
 L="$LOCAL/$R"
 
-if [ "${STIK:-0}" = 1 ]; then
+if [ "$AUTO" = 1 ]; then
     # App 自己跑完整个测量；这里只每 3 秒取一次 events.log，等它退出后再取统计、日志和窗口截图
     mkdir -p "$L"
     t0=$(date +%s)
@@ -187,7 +207,7 @@ if [ "${STIK:-0}" = 1 ]; then
         done
     fi
     for f in stats.csv threads.csv qemu.log serial-0.log argv.json \
-        $(afc list "/Documents/logs/$R" | grep -Eo '"(app|guest|settings|home-back)-[^"]*"' | tr -d '"'); do
+        $(dls "/Documents/logs/$R" | grep -E '^(app|guest|settings|home-back)-'); do
         fetch "/Documents/logs/$R/$f" "$L/$f"
     done
     fetch /Documents/logs/import.log "$L/import.log"
@@ -215,13 +235,13 @@ while [ $(($(date +%s) - t0)) -lt "$LIMIT" ]; do
         seen="$seen $f"
         t=$((10#$(echo "$f" | tr -dc 0-9)))
         text="$("$OCR" "$L/$f" 2>/dev/null | jq -r .text | tr '\n' '|')"
-        if [ -z "$lock" ] && grep -qi 'slide to unlock' <<<"$text"; then
+        if [ -z "$lock" ] && grep -Eqi 'slide to unlock|to unl|press home|day, *(january|february|march|april|may|june|july|august|september|october|november|december)' <<<"$text"; then   # iOS 10: "Press home to open" or the date line
             lock=$t
             echo "锁屏：$t 秒"
             control unlock
             unlocks=1
             last_unlock=$(date +%s)
-        elif [ -n "$lock" ] && [ -z "$home" ] && ! grep -qi 'slide to' <<<"$text" \
+        elif [ -n "$lock" ] && [ -z "$home" ] && ! grep -Eqi 'slide to unlock|to unl|press home|day, *(january|february|march|april|may|june|july|august|september|october|november|december)' <<<"$text" \
             && grep -Eq 'Settings|Safari|App Store|Calendar|Photos' <<<"$text"; then
             home=$t
             echo "主屏：$t 秒"

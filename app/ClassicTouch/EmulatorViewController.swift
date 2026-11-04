@@ -557,6 +557,8 @@ final class EmulatorViewController: UIViewController {
 
     private func unlock(_ engine: Engine) {
         pressHome(engine)
+        // iOS 10 opens on the Home press itself (no slider); a swipe after it would page the home screen to Today
+        if (profile?.majorVersion ?? 0) >= 10 { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 5) { engine.drag(from: (0.18, 0.9), to: (0.92, 0.9)) }
     }
 

@@ -1,11 +1,11 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8">
-<title>方案 B 怀旧拟物：首页</title>
+<html lang="en"><head><meta charset="utf-8">
+<title>Proposal B Nostalgic skeuomorphic: home page</title>
 <link rel="stylesheet" href="common.css">
 <style>
   body { font-family: "Helvetica Neue", "PingFang SC", sans-serif;
          background: repeating-linear-gradient(90deg, #c5ccd4 0 5px, #cbd2d8 5px 7px); }
-  /* 老式蓝灰导航栏：上亮下暗、中间一道分界，标题刻字阴影 */
+  /* Old-style blue-gray navigation bar: light on top, dark below, a dividing line in the middle, engraved shadow on the title */
   .nav { top: 0; left: 0; right: 0; height: 98px;
          background: linear-gradient(#b4c0d0 0%, #93a4bb 55%, #8496b0 56%, #6c82a2 100%);
          border-bottom: 1px solid #2d3642; box-shadow: inset 0 -1px 0 rgba(255,255,255,.18), 0 1px 3px rgba(0,0,0,.25); }
@@ -44,27 +44,27 @@
 </style></head>
 <body>
 <div class="abs nav">
-  <h1>选择系统</h1>
+  <h1>Pick a System</h1>
   <div class="barbtn" style="right:10px" data-icon="tray 18 #fff 2.2"></div>
 </div>
 
-<div class="hdr" style="top:114px">正在运行</div>
+<div class="hdr" style="top:114px">Now Running</div>
 <div class="group" style="top:142px">
   <div class="row" style="height:66px">
     <div class="dev" data-device="ipod2 25"></div>
-    <div class="tx"><div class="t">iPod touch（第 2 代）</div><div class="s">iPhone OS 3.1.3 · 已暂停</div></div>
-    <div class="go">继续</div>
+    <div class="tx"><div class="t">iPod touch (2nd gen)</div><div class="s">iPhone OS 3.1.3 · Paused</div></div>
+    <div class="go">Resume</div>
   </div>
 </div>
 
-<div class="hdr" style="top:226px">系统</div>
+<div class="hdr" style="top:226px">Systems</div>
 <div class="group" style="top:254px">
   <div class="row" style="height:86px">
     <div class="dev" data-device="ipod2 25"></div>
     <div class="tx">
-      <div class="t">iPod touch（第 2 代）<span class="badge">实验性</span></div>
+      <div class="t">iPod touch (2nd gen)<span class="badge">Experimental</span></div>
       <div class="s">iPhone OS 3.1.3 · 7E18</div>
-      <div class="s warn" style="font-size:13px">熄屏后可能卡住</div>
+      <div class="s warn" style="font-size:13px">May freeze after screen off</div>
     </div>
     <div class="v">972 MB</div><svg class="chev" viewBox="0 0 9 13"><path d="M1.5 1.5l5 5-5 5" fill="none" stroke="#8a8a8f" stroke-width="2.6"/></svg>
   </div>
@@ -79,27 +79,27 @@
     <div class="v">2.7 GB</div><svg class="chev" viewBox="0 0 9 13"><path d="M1.5 1.5l5 5-5 5" fill="none" stroke="#8a8a8f" stroke-width="2.6"/></svg>
   </div>
 </div>
-<div class="foot" style="top:487px">一次只能开一个系统，换系统时 App 会重新启动。</div>
+<div class="foot" style="top:487px">Only one system can run at a time; the App restarts when you switch systems.</div>
 
-<div class="hdr" style="top:530px">加速</div>
+<div class="hdr" style="top:530px">Acceleration</div>
 <div class="group" style="top:558px">
   <div class="row" style="height:46px">
     <div class="tile" style="background:linear-gradient(#ffd23f,#f39a0c)"><span style="position:relative;z-index:1" data-icon="bolt 18 #fff 1"></span></div>
     <div class="tx"><div class="t">JIT</div></div>
-    <div class="v">还没开</div><svg class="chev" viewBox="0 0 9 13"><path d="M1.5 1.5l5 5-5 5" fill="none" stroke="#8a8a8f" stroke-width="2.6"/></svg>
+    <div class="v">Off</div><svg class="chev" viewBox="0 0 9 13"><path d="M1.5 1.5l5 5-5 5" fill="none" stroke="#8a8a8f" stroke-width="2.6"/></svg>
   </div>
 </div>
-<div class="foot" style="top:614px">点系统后会跳到 StikDebug 开 JIT，开好后<br>自动回来开机。要先打开 LocalDevVPN。</div>
+<div class="foot" style="top:614px">Tapping a system jumps to StikDebug to enable JIT, then<br>comes back and boots automatically. Turn on LocalDevVPN first.</div>
 
-<div class="hdr" style="top:676px">关于</div>
+<div class="hdr" style="top:676px">About</div>
 <div class="group" style="top:704px">
   <div class="row" style="height:46px">
-    <div class="tx"><div class="t" style="font-weight:normal">开源许可</div></div>
+    <div class="tx"><div class="t" style="font-weight:normal">Open Source License</div></div>
     <div class="v">GPL-2.0+</div><svg class="chev" viewBox="0 0 9 13"><path d="M1.5 1.5l5 5-5 5" fill="none" stroke="#8a8a8f" stroke-width="2.6"/></svg>
   </div>
   <div class="row" style="height:46px">
-    <div class="tx"><div class="t" style="font-weight:normal">致谢</div></div>
-    <div class="v">qemu-ios 等</div><svg class="chev" viewBox="0 0 9 13"><path d="M1.5 1.5l5 5-5 5" fill="none" stroke="#8a8a8f" stroke-width="2.6"/></svg>
+    <div class="tx"><div class="t" style="font-weight:normal">Credits</div></div>
+    <div class="v">qemu-ios and more</div><svg class="chev" viewBox="0 0 9 13"><path d="M1.5 1.5l5 5-5 5" fill="none" stroke="#8a8a8f" stroke-width="2.6"/></svg>
   </div>
 </div>
 

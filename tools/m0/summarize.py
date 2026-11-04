@@ -9,16 +9,16 @@ import statistics
 import struct
 import sys
 
-ROOT = "/path/to/classic-ios"
+ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))  # the checkout's root
 RUNS = sys.argv[1] if len(sys.argv) > 1 else ROOT + "/work/runs"
-DEVICES = [("n72", "iPod touch 2 代 · iPhone OS 3.1.3"), ("n88", "iPhone 3GS · iOS 6.1.6"),
+DEVICES = [("n72", "iPod touch 2nd gen · iPhone OS 3.1.3"), ("n88", "iPhone 3GS · iOS 6.1.6"),
            ("n90", "iPhone 4 · iOS 7.1.2")]
 # M4 Max core equivalents, sustained (upstream's ipod-touch-2g-on-iphone.md: A19 Pro 0.90 single-thread x 0.75 thermal)
 LOAD_MAX = 8.0
-PHONES = [("iPhone 18 Pro（A20 Pro，粗算 0.7）", 0.70), ("iPhone 14 Pro（A16，粗算 0.48）", 0.70 * 0.68),
+PHONES = [("iPhone 18 Pro (A20 Pro, rough estimate 0.7)", 0.70), ("iPhone 14 Pro (A16, rough estimate 0.48)", 0.70 * 0.68),
           # M1's interpreter boots on the iPhone 18 Pro (docs/reports/m1-stage1.md): lock screen after 43 s (n72) and
           # 115 s (n88), against this Mac's TCI 45.7 s and 150.7 s: about 1.06 and 1.31 M4 Max cores, short bursts
-          ("iPhone 18 Pro（按 M1 真机开机校准 1.2）", 1.2)]
+          ("iPhone 18 Pro (calibrated to M1's device boots, 1.2)", 1.2)]
 
 
 def gles_blob(path):
@@ -109,14 +109,14 @@ def main():
         dev, build, _ = name.split("-")
         runs.setdefault((dev, build), []).append(load(run))
     out = {}
-    print("## 每轮原始数据\n")
-    cols = [("boot_s", "开机到锁屏 s", 1), ("boot_cpu_s", "开机 CPU s", 1), ("idle_pct", "主屏静置 %核", 1),
-            ("flips_pct", "翻页 %核", 1), ("settings_s", "开设置 s", 2), ("settings_pct", "开设置 %核", 1),
-            ("clock_s", "开时钟 s", 2), ("clock_pct", "开时钟 %核", 1), ("snap_mb", "快照 MB", 0),
-            ("snap_save_s", "存 s", 2), ("restore_s", "恢复 s", 2), ("restore_idle_pct", "恢复后静置 %核", 1),
-            ("fps", "拖动可见帧率", 1), ("load_before", "负载 开始", 1), ("load_idle", "负载 静置窗口", 1),
-            ("load_after", "负载 结束", 1)]
-    print("| 轮次 | " + " | ".join(c[1] for c in cols) + " |")
+    print("## Raw data per run\n")
+    cols = [("boot_s", "boot to lock screen s", 1), ("boot_cpu_s", "boot CPU s", 1), ("idle_pct", "home screen idle %core", 1),
+            ("flips_pct", "page flips %core", 1), ("settings_s", "open Settings s", 2), ("settings_pct", "open Settings %core", 1),
+            ("clock_s", "open Clock s", 2), ("clock_pct", "open Clock %core", 1), ("snap_mb", "snapshot MB", 0),
+            ("snap_save_s", "save s", 2), ("restore_s", "restore s", 2), ("restore_idle_pct", "idle after restore %core", 1),
+            ("fps", "visible fps while dragging", 1), ("load_before", "load at start", 1), ("load_idle", "load in idle window", 1),
+            ("load_after", "load at end", 1)]
+    print("| Run | " + " | ".join(c[1] for c in cols) + " |")
     print("|---|" + "---:|" * len(cols))
     for (dev, build), rs in sorted(runs.items()):
         for r in rs:
@@ -139,14 +139,14 @@ def main():
         means[key] = {k: statistics.mean(m[k] for m in ms if ok(m, k)) for k in ms[0] if any(ok(m, k) for m in ms)}
     json.dump({"runs": out, "means": {"%s-%s" % k: v for k, v in means.items()}}, open(
         os.path.join(RUNS, "summary.json"), "w"), indent=1)
-    print("## 各机型均值和 TCI/JIT 倍数\n")
-    rows = [("boot_s", "开机到锁屏（s）"), ("boot_cpu0_s", "开机时客体主核线程 CPU 秒"), ("idle_pct", "主屏静置（% 单核）"),
-            ("flips_pct", "主屏翻页（% 单核）"), ("settings_pct", "开设置的 10 秒（% 单核）"),
-            ("settings_s", "点开设置到前台（s）"), ("clock_s", "点开时钟到前台（s）"), ("fps", "主屏拖动可见帧率"), ("fps_cpu0", "　拖动时客体主核 %"), ("fps_lock", "锁屏微光动画可见帧率"),
-            ("fps_lock_cpu0", "　锁屏动画时客体主核 %"),
-            ("snap_mb", "快照大小（MB）"), ("gles_mb", "其中 GL 状态（MB）"), ("snap_save_s", "存快照（s）"),
-            ("restore_s", "恢复快照（s）"), ("restore_tap_s", "恢复后点设置到前台（s）")]
-    head = "| 项目 | " + " | ".join("%s JIT | %s TCI | 倍数" % (d, d) for d, _ in DEVICES) + " |"
+    print("## Per-model means and TCI/JIT ratios\n")
+    rows = [("boot_s", "Boot to lock screen (s)"), ("boot_cpu0_s", "Guest main-core thread CPU seconds during boot"), ("idle_pct", "Home screen idle (% of one core)"),
+            ("flips_pct", "Home screen page flips (% of one core)"), ("settings_pct", "The 10 s of opening Settings (% of one core)"),
+            ("settings_s", "Tap Settings to foreground (s)"), ("clock_s", "Tap Clock to foreground (s)"), ("fps", "Home screen drag visible fps"), ("fps_cpu0", "\u00a0\u00a0guest main core % while dragging"), ("fps_lock", "Lock screen shimmer animation visible fps"),
+            ("fps_lock_cpu0", "\u00a0\u00a0guest main core % during the lock screen animation"),
+            ("snap_mb", "Snapshot size (MB)"), ("gles_mb", "of which GL state (MB)"), ("snap_save_s", "Save snapshot (s)"),
+            ("restore_s", "Restore snapshot (s)"), ("restore_tap_s", "After restore, tap Settings to foreground (s)")]
+    head = "| Item | " + " | ".join("%s JIT | %s TCI | ratio" % (d, d) for d, _ in DEVICES) + " |"
     print(head)
     print("|---|" + "---:|---:|---:|" * len(DEVICES))
     for k, label in rows:
@@ -161,13 +161,14 @@ def main():
                       (fmt(ratio, 1) + "×") if ratio else "–"]
         print("| %s | %s |" % (label, " | ".join(cells)))
     print()
-    print("## 推算到 iPhone（粗算）\n")
-    print("按「M4 Max 核当量」k 换算：开机秒数 / k，CPU 占比 / k（按手机的一个核算，超过 100% 就是吃满、客体变慢），"
-          "拖动帧率 = Mac 帧率 × min(1, k / 客体主核占比)。"
-          "Mac 上已吃满（≥90%）的 TCI 格子写成「≥下限（约 估计）」，估计 = JIT 占比 × 开机时客体主核 CPU 的 TCI/JIT 倍数 / k。\n")
+    print("## Projection to iPhone (rough)\n")
+    print("Converted by the \"M4 Max core equivalent\" k: boot seconds / k, CPU share / k (relative to one phone core; "
+          "above 100% means it is pinned and the guest slows down), drag fps = Mac fps × min(1, k / guest main-core share). "
+          "TCI cells already pinned on the Mac (≥90%) are written as \"≥lower bound (about estimate)\", where "
+          "estimate = JIT share × the TCI/JIT ratio of guest main-core CPU during boot / k.\n")
     for phone, k in PHONES:
         print("### %s\n" % phone)
-        print("| 机型 | 模式 | 开机到锁屏 s | 主屏静置 %核 | 翻页 %核 | 开 App %核 | 主屏拖动帧率 |")
+        print("| Model | Mode | boot to lock screen s | home screen idle %core | page flips %core | open App %core | home screen drag fps |")
         print("|---|---|---:|---:|---:|---:|---:|")
         for d, label in DEVICES:
             for b in ("jit", "tci"):
@@ -186,7 +187,7 @@ def main():
                         # pinned at one core on the Mac: the guest already ran slow there, so v / k understates
                         # the demand; estimate it as the JIT figure times the boot's TCI/JIT guest-CPU ratio
                         jv = statistics.mean([jm["settings_pct"], jm["clock_pct"]]) if key == "app" else jm[key]
-                        return "≥%s（约 %s）" % (fmt(v / k, 0), fmt(jv * ratio / k, 0))
+                        return "≥%s (about %s)" % (fmt(v / k, 0), fmt(jv * ratio / k, 0))
                     return fmt(v / k, 0)
                 print("| %s | %s | %s | %s | %s | %s | %s |" % (label, b.upper(), fmt(mm["boot_s"] / k, 0),
                       pct("idle_pct"), pct("flips_pct"), pct("app"), fmt(fps, 0)))

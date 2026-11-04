@@ -13,6 +13,7 @@
 #          APP（默认 work/ios/DerivedData-tl/Build/Products/Debug-iphoneos/ClassicTouch.app）、
 #          IDLE（主屏待机秒数，默认 30）、SKIP_INSTALL=1、SKIP_UPLOAD=1、SKIP_BOOT=1（跳过对应的步骤）
 # 前提：手机解锁、插着数据线（AFC 走 USB）、LocalDevVPN 开着、没开 iPhone 镜像；跑的时候别碰手机屏幕。
+#      文件有 idevice-tools 时走 AFC，没有时走 devicectl（FILES= 可指定，见 devfiles.sh；devicectl 读不到剩余空间）。
 # 传包约 3 分钟里 App 不在前台，手机可能自动锁屏：要启动 App 时会每 5 秒重试 2 分钟，这时解锁手机就行。
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -21,7 +22,8 @@ PHONE="${PHONE:-$(cat "$ROOT/work/ios/phone-udid" 2>/dev/null)}"  # 手机 UDID 
 APP="${APP:-$ROOT/work/ios/DerivedData-tl/Build/Products/Debug-iphoneos/ClassicTouch.app}"
 IDLE="${IDLE:-30}"
 BUNDLE=org.classictouch.app
-IDT="$ROOT/work/ios/tools/idevice-tools-0.1.68/bin/idevice-tools"
+# 文件操作（dls、dget、dput）：有 idevice-tools 走 AFC，没有走 devicectl，FILES= 可指定（scripts/ios/devfiles.sh）
+source "$ROOT/scripts/ios/devfiles.sh"
 if [ $# -gt 0 ]; then
     PACKS=("$@")
 else
@@ -31,7 +33,6 @@ fi
 OUT="$ROOT/work/ios/runs/device/install-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$OUT"
 say() { echo "$(date +%H:%M:%S) $*" | tee -a "$OUT/install.log"; }
-afc() { "$IDT" --udid "$PHONE" afc --documents "$BUNDLE" "$@" 2>&1 | sed 's/\x1b\[[0-9;]*m//g'; }
 t_start=$(date +%s)
 
 # 1. 检查
@@ -40,20 +41,25 @@ if [ "${SKIP_INSTALL:-0}" != 1 ]; then
     [ -d "$APP" ] || { echo "没有 App：$APP（先编真机版）" >&2; exit 1; }
     codesign --verify --deep "$APP" || { echo "App 签名校验没过：$APP" >&2; exit 1; }
 fi
-info="$("$IDT" --udid "$PHONE" afc device_info 2>&1 | sed 's/\x1b\[[0-9;]*m//g' || true)"
-echo "$info" > "$OUT/device_info.txt"
-# 输出里是 free_bytes（idevice 的 DeviceInfo），老版本的 AFC 字段名是 FSFreeBytes，两个都认
-free="$(grep -Eio '(FSFreeBytes|free_bytes)[^0-9]*[0-9]+' <<<"$info" | grep -Eo '[0-9]+$' | head -1 || true)"
-if [ -z "$free" ]; then
-    say "AFC 读不到手机信息（没插线？没信任这台 Mac？），停下：$(head -c 300 <<<"$info")"
-    exit 1
-fi
 need=2147483648
 for p in "${PACKS[@]}"; do need=$((need + $(stat -f %z "$p"))); done
-say "手机剩余 $((free / 1048576)) MB，这次要约 $((need / 1048576)) MB"
-if [ "${SKIP_UPLOAD:-0}" != 1 ] && [ "$free" -lt "$need" ]; then
-    say "空间不够，停下"
-    exit 1
+if [ "$FILES" = afc ]; then
+    info="$("$IDT" --udid "$PHONE" afc device_info 2>&1 | sed 's/\x1b\[[0-9;]*m//g' || true)"
+    echo "$info" > "$OUT/device_info.txt"
+    # 输出里是 free_bytes（idevice 的 DeviceInfo），老版本的 AFC 字段名是 FSFreeBytes，两个都认
+    free="$(grep -Eio '(FSFreeBytes|free_bytes)[^0-9]*[0-9]+' <<<"$info" | grep -Eo '[0-9]+$' | head -1 || true)"
+    if [ -z "$free" ]; then
+        say "AFC 读不到手机信息（没插线？没信任这台 Mac？），停下：$(head -c 300 <<<"$info")"
+        exit 1
+    fi
+    say "手机剩余 $((free / 1048576)) MB，这次要约 $((need / 1048576)) MB"
+    if [ "${SKIP_UPLOAD:-0}" != 1 ] && [ "$free" -lt "$need" ]; then
+        say "空间不够，停下"
+        exit 1
+    fi
+else
+    # devicectl 读不到剩余空间（device info details 只有总容量）：不检查，先说一声
+    say "文件走 devicectl，读不到手机剩余空间，没检查；这次要约 $((need / 1048576)) MB"
 fi
 
 # 要启动 App 时手机可能锁着：每 5 秒重试，最多 2 分钟
@@ -78,19 +84,18 @@ fi
 
 # 3. 传包（App 不用开着）
 if [ "${SKIP_UPLOAD:-0}" != 1 ]; then
-    afc mkdir /Documents/import > /dev/null || true
     for p in "${PACKS[@]}"; do
         name="$(basename "$p")"
         t=$(date +%s)
         say "传 $name（$(( $(stat -f %z "$p") / 1048576 )) MB）"
-        afc upload "$p" "/Documents/import/$name" >> "$OUT/afc.log"
+        dput "$p" "/Documents/import/$name"
         say "传完 $name，用了 $(( $(date +%s) - t )) 秒"
     done
 
     # 4. 打开 App 让它解包，等 import.log 里每个包都有结果
     count() { grep -c -- "$1" "$OUT/import.log" 2>/dev/null || true; }
-    "$IDT" --udid "$PHONE" afc --documents "$BUNDLE" download /Documents/logs/import.log "$OUT/import.log" \
-        > /dev/null 2>&1 || : > "$OUT/import.log"
+    dget /Documents/logs/import.log "$OUT/import.log"
+    [ -f "$OUT/import.log" ] || : > "$OUT/import.log"
     base=()  # 导入前每个包在 import.log 里已有几行（/bin/bash 3.2 没有关联数组，按 PACKS 的下标对应）
     for p in "${PACKS[@]}"; do base+=("$(count "$(basename "$p")")"); done
     launch_list || { say "一直打不开 App，停下"; exit 1; }
@@ -98,8 +103,7 @@ if [ "${SKIP_UPLOAD:-0}" != 1 ]; then
     t=$(date +%s)
     while :; do
         sleep 3
-        "$IDT" --udid "$PHONE" afc --documents "$BUNDLE" download /Documents/logs/import.log "$OUT/import.log.part" \
-            > /dev/null 2>&1 && mv "$OUT/import.log.part" "$OUT/import.log"
+        dget /Documents/logs/import.log "$OUT/import.log"
         done_all=1
         for i in "${!PACKS[@]}"; do
             [ "$(count "$(basename "${PACKS[$i]}")")" -gt "${base[$i]}" ] || done_all=0

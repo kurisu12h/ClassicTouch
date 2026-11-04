@@ -1,22 +1,29 @@
-ios-gles-perf.patch：iOS 7 锁屏和主屏卡顿的修正，加上找原因用的统计（docs/reports/m2-ios7-perf.md）。
+ios-gles-perf.patch: fix stutter on iOS 7's lock screen and home screen, plus the statistics used to find the cause
+(docs/reports/m2-ios7-perf.md).
 
-原因：iOS 7 的 CoreAnimation 画一帧时，在显示表面和一个离屏目标之间来回切换十几到二十几次，每次在离屏目标上
-调 glFlush。GL 桥的 glFlush 会把所有「已渲染、还没写回」的表面写回客体内存，于是还没画完的整屏显示表面
-（640x960，2.3 MB）每帧被 glReadPixels 读回十几到二十几次；有用的只有回到默认帧缓冲（或 glFinish）时那一次，
-显示就是在那之后换帧。iPhone 18 Pro 上一次读回 6 到 14 毫秒，vCPU 线程大部分时间耗在这上面：拖锁屏 26 帧、
-主屏按住拖 5 帧。
+Why: while drawing a frame, iOS 7's CoreAnimation switches between the display surface and an offscreen target ten
+to twenty-odd times, calling glFlush on the offscreen target each time. The GL bridge's glFlush writes every surface
+that is "rendered but not yet written back" to guest memory, so the half-drawn full-screen display surface (640x960,
+2.3 MB) was read back with glReadPixels ten to twenty-odd times a frame. Only the readback on returning to the default
+framebuffer (or glFinish) is useful; the display swaps frames right after it. On an iPhone 18 Pro one readback takes
+6 to 14 ms and the vCPU thread spent most of its time on them: 26 frames per second dragging the lock screen, 5 when
+pressing and dragging on the home screen.
 
-改动：
-  - gles-host.c：glFlush 时如果绑着的不是显示用的帧缓冲，只写回这个帧缓冲自己的表面，以及已经「脏」了
-    50 毫秒以上的表面（gles_surface_flush_partial）；绑着显示帧缓冲时、glFinish、回到默认帧缓冲，和以前一样全写。
-    别的上下文或客体 CPU 要读的表面照样会写：在它自己的帧缓冲上 flush 时、帧结束时、本组把这块内存当纹理绑定时
-    （gles_bind_surface 原有的 gles_surface_flush(cpu, base)）、或脏了 50 毫秒以后。
-  - 统计和追踪，环境变量打开，不开时每次调用只多一个判断：
-    IT_PERF=1：每秒一行，GL 桥（调用数、宿主耗时和其中的 CPU 时间、最费时的槽位、表面上传、写回和 glReadPixels、
-    缓存没命中的重读，「[perf] gl」）、A4 显示（VBL、换帧、合成耗时，「[perf] disp」，s5l8930_display.c）、
-    发给 App 的帧（「[perf] ui」，qemu-ios-ui.c）。时间戳是 CLOCK_UPTIME_RAW，和 App 的 systemUptime 对得上。
-    IT_PERF_TRACE=起,止 或 IT_PERF_TRACE_EVERY=秒：在客体虚拟时钟的这些时间里逐次记写回、flush、切帧缓冲和换帧。
-基于 samhenrigold/qemu-ios b225694505，打在 ios-eagl-es2.patch 之后（文件名排序就是这个顺序）。
+Changes:
+  - gles-host.c: on glFlush with a framebuffer other than the display's bound, write back only that framebuffer's own
+    surfaces and surfaces that have been dirty for over 50 ms (gles_surface_flush_partial). With the display
+    framebuffer bound, on glFinish and on returning to the default framebuffer, everything is written as before.
+    Surfaces that another context or the guest CPU reads are still written: on a flush of their own framebuffer, at
+    the end of a frame, when this group binds that memory as a texture (gles_bind_surface's existing
+    gles_surface_flush(cpu, base)), or once dirty for 50 ms.
+  - Statistics and tracing, switched on by environment variables; when off, each call costs one extra test:
+    IT_PERF=1: one line per second for the GL bridge (calls, host time and its CPU time, the most expensive slots,
+    surface uploads, writebacks and glReadPixels, rereads on cache misses, "[perf] gl"), the A4 display (VBL, frame
+    swaps, compositing time, "[perf] disp", s5l8930_display.c) and frames sent to the app ("[perf] ui",
+    qemu-ios-ui.c). Timestamps are CLOCK_UPTIME_RAW, matching the app's systemUptime.
+    IT_PERF_TRACE=start,end or IT_PERF_TRACE_EVERY=seconds: log each writeback, flush, framebuffer switch and frame
+    swap during those times on the guest's virtual clock.
+Based on samhenrigold/qemu-ios b225694505, applied after ios-eagl-es2.patch (which is also their file name order).
 
 diff --git a/hw/arm/gles-host.c b/hw/arm/gles-host.c
 --- a/hw/arm/gles-host.c

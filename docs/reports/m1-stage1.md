@@ -1,182 +1,182 @@
-# M1 第一阶段：交叉编译、最简 App 壳、模拟器和 iPhone 18 Pro 上开机
+# M1 stage 1: cross-compiling, a minimal App shell, booting in the simulator and on the iPhone 18 Pro
 
-- 日期：2026-11-01
-- 执行会话：M1 第一阶段。原定范围是 B1、C1 到 C3、D1、E0（iOS 模拟器），中途决策会话追加了 iPhone 18 Pro 上的 E1（解释器）和 E2（Xcode/LLDB 拿 JIT）。
-- 没做的：没碰 iPhone 14 Pro，没装 StikDebug，没 commit，没对外发任何东西，没动 M0 的目录（`work/devices/`、`work/states/` 只读克隆）。
+- Date: 2026-11-01
+- Execution session: M1 stage 1. The original scope was B1, C1 to C3, D1 and E0 (iOS simulator); midway the decision session added E1 (interpreter) and E2 (JIT via Xcode/LLDB) on the iPhone 18 Pro.
+- Not done: no use of the iPhone 14 Pro, StikDebug not installed, no commit, nothing sent anywhere, M0's directories untouched (`work/devices/` and `work/states/` only cloned read-only).
 
-## 0. 结论
+## 0. Conclusions
 
-1. **qemu-ios（QEMU 11.0.5，b225694505）几乎原样就能编成 iOS dylib。** 整个 QEMU 源码只加了一个构建开关补丁（`patches/ios-host-gles-option.patch`，8 行，给 meson 加 `-Dhost_gles=disabled`），一行 C 代码都没改。依赖 sysroot 每个平台约 1 分钟，QEMU 每份约 36 秒，四份 dylib（iphoneos、iphonesimulator 各有解释器版和 JIT 版）每份约 34 MB，只依赖 CoreFoundation、CoreMedia、CoreVideo、VideoToolbox 和 libz、libSystem、libresolv、libiconv，iOS 上都有。协程用 sigaltstack 就行，不需要 libucontext。
-2. **iOS 模拟器里两台设备、两种后端都开到了主屏**：iPod touch 2 代 3.1.3（n72ap 7E18）和 iPhone 3GS 6.1.6（n88ap 10B500），解释器版和 JIT 版都行。JIT 在模拟器里不用挂调试器。
-3. **iPhone 18 Pro（iOS 27.2，24B119）上也开到了主屏**，解释器版和 JIT 版（Mac 上的 LLDB 经 Wi-Fi 挂着）各两台。这就是 M1「第一」里程碑的技术部分：qemu-ios 在 iPhone 上跑 iPhone OS 3 和 iOS 6。
-4. **最大的瓶颈是 JIT 代码区的「准备」**：照上游 `lldb_jit.py` 的做法，调试器要把整块代码区读出再写回。手机走 Wi-Fi 连 Mac，实测约 0.8 MB/s：256 MB 要 322 秒，所以真机测量时代码区缩到 32 MB（准备 38 到 46 秒）；缩小后 JIT 要频繁清空重翻译，提速只剩 2 到 4 倍（模拟器里 256 MB 时是 4 到 9 倍）。解决办法见第 7 节（插线、改新协议让调试器直接分配可执行内存）。
-5. 真机解释器版：iPod touch 2 代 43 秒到锁屏，3GS 115 秒；主屏待机 CPU 分别约 50% 和 91%（一个核），占用 380 到 560 MB；App 可用内存约 3.0 GB，宽裕。
+1. **qemu-ios (QEMU 11.0.5, b225694505) builds into an iOS dylib almost unchanged.** The entire QEMU source got only one build switch patch (`patches/ios-host-gles-option.patch`, 8 lines, adding `-Dhost_gles=disabled` to meson), and not a single line of C was changed. The dependency sysroot takes about 1 minute per platform and QEMU about 36 seconds per build. Each of the four dylibs (iphoneos and iphonesimulator, each with an interpreter version and a JIT version) is about 34 MB and depends only on CoreFoundation, CoreMedia, CoreVideo, VideoToolbox and libz, libSystem, libresolv, libiconv, all present on iOS. Coroutines work with sigaltstack; libucontext is not needed.
+2. **In the iOS simulator, both devices booted to the home screen with both backends**: iPod touch 2nd gen 3.1.3 (n72ap 7E18) and iPhone 3GS 6.1.6 (n88ap 10B500), with both the interpreter and the JIT versions. JIT in the simulator needs no debugger attached.
+3. **Also booted to the home screen on the iPhone 18 Pro (iOS 27.2, 24B119)**, both devices with the interpreter version and with the JIT version (LLDB on the Mac attached over Wi-Fi). This is the technical part of M1's "first" milestone: qemu-ios running iPhone OS 3 and iOS 6 on an iPhone.
+4. **The biggest bottleneck is "preparing" the JIT code region**: following upstream `lldb_jit.py`, the debugger has to read the whole code region and write it back. With the phone connected to the Mac over Wi-Fi, this measured about 0.8 MB/s: 256 MB takes 322 seconds, so the code region was shrunk to 32 MB for device measurements (38 to 46 seconds to prepare). With the smaller region, JIT has to flush and retranslate often, and the speedup drops to only 2 to 4 times (4 to 9 times in the simulator with 256 MB). See section 7 for the fix (plug in the cable; switch to the new protocol where the debugger allocates executable memory directly).
+5. Interpreter version on the real device: iPod touch 2nd gen reaches the lock screen in 43 seconds, 3GS in 115 seconds; home screen idle CPU about 50% and 91% respectively (one core), footprint 380 to 560 MB; the App has about 3.0 GB of free memory, plenty.
 
-## 1. 能复现的构建命令
+## 1. Reproducible build commands
 
-前提：Xcode 27.2、Homebrew 的 meson 1.11、ninja、pkg-config、jq，`/opt/homebrew/opt/python@3.12`（和 M0 同一个），XcodeGen。全部在仓库根目录跑。
+Prerequisites: Xcode 27.2, Homebrew meson 1.11, ninja, pkg-config, jq, `/opt/homebrew/opt/python@3.12` (the same one as M0), XcodeGen. Everything runs from the repository root.
 
 ```bash
-# B1：下载依赖源码（8 个包 66 MB，逐个核对 sha256），再为两个平台各编一套静态库 sysroot
+# B1: download dependency sources (8 packages, 66 MB, sha256 checked one by one), then build a static library sysroot for each of the two platforms
 scripts/ios/fetch-sources.sh
-scripts/ios/build-deps.sh iphonesimulator     # 约 1 分钟 → work/ios/sysroot-iphonesimulator-arm64
-scripts/ios/build-deps.sh iphoneos            # 约 1 分钟 → work/ios/sysroot-iphoneos-arm64
+scripts/ios/build-deps.sh iphonesimulator     # about 1 minute → work/ios/sysroot-iphonesimulator-arm64
+scripts/ios/build-deps.sh iphoneos            # about 1 minute → work/ios/sysroot-iphoneos-arm64
 
-# C1：qemu-ios 的独立工作树（同一个提交），meson 子项目从上游克隆本地复制，不联网拉源码
+# C1: a separate work tree for qemu-ios (same commit); meson subprojects are copied locally from the upstream clone, no sources fetched from the network
 git -C upstream/qemu-ios worktree add --detach "$PWD/work/ios/qemu-ios" b225694505
 for d in dtc keycodemapdb berkeley-softfloat-3 berkeley-testfloat-3; do cp -R upstream/qemu-ios/subprojects/$d work/ios/qemu-ios/subprojects/; done
 
-# C2/C3：四份 QEMU 和 dylib（build-qemu.sh 会自动打 patches/ios-*.patch），每份约 36 秒
+# C2/C3: four QEMU builds and dylibs (build-qemu.sh applies patches/ios-*.patch automatically), about 36 seconds each
 for p in iphonesimulator iphoneos; do for t in interp jit; do
   TCG=$t scripts/ios/build-qemu.sh $p && TCG=$t scripts/ios/make-dylib.sh $p
 done; done
-# 产物：work/ios/build-qemu-<平台>-<后端>/libqemu-arm-<后端>.dylib
+# Output: work/ios/build-qemu-<platform>-<backend>/libqemu-arm-<backend>.dylib
 
-# D1：App 壳（嵌入阶段会把上面的 dylib 拷进 Frameworks 并签名）
+# D1: App shell (the embed phase copies the dylibs above into Frameworks and signs them)
 (cd app && xcodegen generate)
 xcodebuild -project app/ClassicTouch.xcodeproj -scheme ClassicTouch -configuration Debug \
   -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath work/ios/DerivedData build
 xcodebuild -project app/ClassicTouch.xcodeproj -scheme ClassicTouch -configuration Debug \
   -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath work/ios/DerivedData \
-  -allowProvisioningUpdates DEVELOPMENT_TEAM=<签名团队 ID> build
+  -allowProvisioningUpdates DEVELOPMENT_TEAM=<signing team ID> build
 ```
 
-开机测量（设备先放进 App 的 Documents，见第 3 节）：
+Boot measurement (put the devices into the App's Documents first, see section 3):
 
 ```bash
-scripts/ios/sim-boot.sh n72ap-7E18 interp          # E0，模拟器
-TBSIZE=32 scripts/ios/device-boot.sh n88ap-10B500 jit   # E1/E2，真机；jit 会自动挂 LLDB
+scripts/ios/sim-boot.sh n72ap-7E18 interp          # E0, simulator
+TBSIZE=32 scripts/ios/device-boot.sh n88ap-10B500 jit   # E1/E2, real device; jit attaches LLDB automatically
 ```
 
-`scripts/ios/` 一览：
+Overview of `scripts/ios/`:
 
-| 文件 | 作用 |
+| File | Purpose |
 |---|---|
-| `sources.tsv`、`fetch-sources.sh` | 依赖源码的官方地址和 sha256（glib 到 nettle 取自 LightTouchMac 的 `dependencies.json`），下载并核对 |
-| `common.sh` | 平台设置：`-target arm64-apple-ios16.0[-simulator]`、SDK、并行度（上限 8） |
-| `build-deps.sh` | libffi 3.8.0、pcre2 10.48、glib 2.88.3（带 proxy-libintl 0.5 和 LightTouchMac 的 pipe2 补丁）、pixman 0.46.4、libslirp 4.9.4（加 qemu-ios 的两个补丁）、OpenSSL 3.6.3（只要 libcrypto）、Nettle 3.10.2，全静态；许可证原文放 `sysroot/share/licenses/` |
-| `build-qemu.sh` | 改自上游已删的 `contrib/ios-app/build-ios.sh`：去掉 TCTI 和 PGO，`--without-default-features` 再打开 pixman、slirp、nettle，`--with-coroutine=sigaltstack`，`-Dhost_gles=disabled` |
-| `make-dylib.sh` | 改自上游已删的 `make-dylib.sh` 和现行 `make-dylib-macos.sh`：取 ninja 的链接命令，把 `system/main.c` 换成 `qemu-ios-entry.c`，链进 `qemu-ios-ui.c` 和 `qemu-macos-extras.c`，导出和 Mac 版相同的 ABI 再加两个 iOS 专用函数，共 58 个；不用 `-undefined dynamic_lookup` |
-| `embed-qemu.sh` | Xcode 构建阶段：拷 dylib 进 Frameworks 并签名 |
-| `pack-device.py` | 把设备目录打成 `.ctpack`（只装有数据的区段），见第 5 节 |
-| `sim-boot.sh`、`device-boot.sh`、`summarize-run.py` | 冷启动计时：重置状态、启动、每秒一张客体截图、OCR 判锁屏和主屏、自动解锁、汇总 |
-| `lldb_jit.py` | 上游已删的 LLDB 停止钩子，原样找回（只加了来源说明） |
-| `lldb_jit_runner.py` | E2 用的调试器：LLDB SB API、同步模式，应答 `brk #0x69` |
+| `sources.tsv`, `fetch-sources.sh` | Official URLs and sha256 of the dependency sources (glib through nettle taken from LightTouchMac's `dependencies.json`); download and verify |
+| `common.sh` | Platform settings: `-target arm64-apple-ios16.0[-simulator]`, SDK, parallelism (capped at 8) |
+| `build-deps.sh` | libffi 3.8.0, pcre2 10.48, glib 2.88.3 (with proxy-libintl 0.5 and LightTouchMac's pipe2 patch), pixman 0.46.4, libslirp 4.9.4 (with qemu-ios's two patches), OpenSSL 3.6.3 (libcrypto only), Nettle 3.10.2, all static; license texts go in `sysroot/share/licenses/` |
+| `build-qemu.sh` | Adapted from upstream's deleted `contrib/ios-app/build-ios.sh`: TCTI and PGO removed, `--without-default-features` then pixman, slirp and nettle turned back on, `--with-coroutine=sigaltstack`, `-Dhost_gles=disabled` |
+| `make-dylib.sh` | Adapted from upstream's deleted `make-dylib.sh` and the current `make-dylib-macos.sh`: takes ninja's link command, replaces `system/main.c` with `qemu-ios-entry.c`, links in `qemu-ios-ui.c` and `qemu-macos-extras.c`, and exports the same ABI as the Mac version plus two iOS-only functions, 58 in total; does not use `-undefined dynamic_lookup` |
+| `embed-qemu.sh` | Xcode build phase: copy the dylibs into Frameworks and sign them |
+| `pack-device.py` | Packs a device directory into a `.ctpack` (only the extents that hold data), see section 5 |
+| `sim-boot.sh`, `device-boot.sh`, `summarize-run.py` | Cold boot timing: reset state, launch, one guest screenshot per second, OCR to detect the lock screen and home screen, automatic unlock, summary |
+| `lldb_jit.py` | Upstream's deleted LLDB stop hook, recovered unchanged (only a note on its origin added) |
+| `lldb_jit_runner.py` | The debugger used for E2: LLDB SB API, synchronous mode, answers `brk #0x69` |
 
-依赖比简报多了两个，都是官方源码包：**libffi**（iOS SDK 里没有 ffi 头文件，模拟器 SDK 连库都没有，glib 的 gobject 要它）和 **Nettle**（QEMU 11 去掉了内置 AES，iPod touch 1 代和 A4 机型的 CDMA 解密靠它；LightTouchMac 也编它）。另外 QEMU 的 configure 会用 pip 从 PyPI 装 `qemu.qmp` 和 `setuptools` 两个构建工具（和 M0 的 Mac 构建一样，几百 KB）。没下载任何预编译二进制。
+There are two more dependencies than in the brief, both official source packages: **libffi** (the iOS SDK has no ffi headers, and the simulator SDK does not even have the library; glib's gobject needs it) and **Nettle** (QEMU 11 dropped its built-in AES, and CDMA decryption for the iPod touch 1st gen and A4 models relies on it; LightTouchMac builds it too). In addition, QEMU's configure uses pip to install two build tools, `qemu.qmp` and `setuptools`, from PyPI (the same as M0's Mac build, a few hundred KB). No prebuilt binaries were downloaded.
 
-## 2. 补丁和对上游的改动
+## 2. Patches and changes to upstream
 
-| 补丁 | 改了什么 | 原因 |
+| Patch | What it changes | Why |
 |---|---|---|
-| `patches/ios-host-gles-option.patch` | `meson_options.txt` 加 `host_gles` 特性开关（默认 auto，行为和上游一样），`meson.build` 里 `host_gles` 依赖改用它，`scripts/meson-buildoptions.sh` 加对应的 `--enable/--disable-host-gles` | iOS SDK 带 OpenGLES.framework，上游只要找到就自动编 EAGL 版 GL 桥，没法关。首次开机要先不用宿主 GL（调研报告 4.5）：换成 `gles-host-stub.c`，客体探测 GLES HLE 失败后退回软件合成 |
+| `patches/ios-host-gles-option.patch` | Adds a `host_gles` feature option to `meson_options.txt` (default auto, same behavior as upstream), makes the `host_gles` dependency in `meson.build` use it, and adds the matching `--enable/--disable-host-gles` to `scripts/meson-buildoptions.sh` | The iOS SDK includes OpenGLES.framework, and upstream builds the EAGL GL bridge automatically whenever it finds it, with no way to turn it off. The first boot has to run without host GL (research report 4.5): `gles-host-stub.c` is used instead, and after the guest's GLES HLE probe fails it falls back to software compositing |
 
-除此之外 QEMU 源码一行没改。原来预计要改的几处都不用改：`tcg/region.c` 的 TXM 路径、`osdep.h` 的 JIT 写保护空桩、configure 的 `needs_exe_wrapper` 都在主干里，直接能用；`file-posix.c` 的 IOKit、`system()` 在 iOS 上不可用这些，QEMU 自己早已处理。
+Apart from this, not a line of QEMU source was changed. None of the places expected to need changes did: the TXM path in `tcg/region.c`, the JIT write protection stub in `osdep.h` and `needs_exe_wrapper` in configure are all in main and work as is; things like IOKit in `file-posix.c` and `system()` being unavailable on iOS were handled by QEMU itself long ago.
 
-运行时用到的两个机器选项（在 App 里拼参数时加，不是补丁）：
+Two machine options used at run time (added when the App builds the arguments, not patches):
 
-- iPod touch 2 代加 `amc-mode=handshake`：默认的 `decode` 要 libavcodec（FFmpeg），没有就直接报错退出；`handshake` 只做音频握手，正好对应 M1 不出声。
-- JIT 版加 `-accel tcg,split-wx=on`：默认 split-wx 是关的，会去申请 MAP_JIT，iOS 不给；双映射才走 `region.c` 的 TXM 路径。代码缓冲用 `tb-size`（App 默认 256 MB，真机 JIT 测量用 32 MB）。
+- iPod touch 2nd gen adds `amc-mode=handshake`: the default `decode` needs libavcodec (FFmpeg) and exits with an error without it; `handshake` only does the audio handshake, which matches M1 having no sound.
+- The JIT version adds `-accel tcg,split-wx=on`: split-wx is off by default and would request MAP_JIT, which iOS does not grant; only the dual mapping takes the TXM path in `region.c`. The code buffer uses `tb-size` (App default 256 MB, 32 MB for device JIT measurements).
 
-## 3. App 壳（`app/`）
+## 3. App shell (`app/`)
 
-- XcodeGen 工程（`app/project.yml`），Bundle ID `org.classictouch.app`，显示名「Classic Touch」，都是占位名。最低 iOS 16，场景生命周期（iOS 27 SDK 要求），只竖屏。签名团队不写进仓库，构建时命令行传。
-- `Engine.swift`：按后端 `dlopen` Frameworks 里的 `libqemu-arm-interp.dylib` 或 `-jit.dylib`，`dlsym` 出 ABI，在 8 MB 栈的后台线程上调 `qemu_ios_main`。一个进程只起一次 QEMU。
-- `EmulatorViewController.swift`：CADisplayLink 每次屏幕刷新取 `qemu_ios_ui_frame` 的 BGRA 帧，做成 CGImage 放进 CALayer；单指触摸按客体屏幕归一化后给 `qemu_ios_ui_touch`；Home 键、电源键给 `qemu_ios_ui_button`；`sceneWillResignActive`、`sceneDidBecomeActive` 接 `qemu_ios_set_foreground`。顶上一行显示运行时间、CPU、占用、可用内存、帧数。QEMU 的 stderr、串口、每秒统计、客体截图都写到 `Documents/logs/<时间>-<设备>-<后端>/`。
-- `DeviceProfile.swift`：读 FirmwareKit 的 `device.lock.json`，照 LightTouchMac 的 `BootRecipe.swift`（iPod 和 iPad 两种）和 M0 的 `bench.py` 拼 argv。M1 支持 `boot_strategy` 为 iboot（iPod touch 2 代）和 kboot（3GS、iPhone 4、iPod touch 3/4 代、初代 iPad）的设备。
-- `DevicePack.swift`：启动时把 `Documents/import/*.ctpack` 解到 Documents。
-- 启动参数（供脚本用）：`-device`、`-tcg`、`-tbsize`、`-resetstate`、`-waitdebugger`、`-guestpng`、`-autounlock`、`-qemuargs`；宿主可以往 `Documents/control/` 放 `unlock`、`home`、`quit` 文件来操作。
-- 宿主 GL 关着，没有 entitlement 文件（`get-task-allow` 由开发签名自带），没加 `increased-memory-limit`。
+- XcodeGen project (`app/project.yml`), Bundle ID `org.classictouch.app`, display name "Classic Touch", both placeholders. Minimum iOS 16, scene lifecycle (required by the iOS 27 SDK), portrait only. The signing team is not written into the repository and is passed on the command line at build time.
+- `Engine.swift`: by backend, `dlopen` `libqemu-arm-interp.dylib` or `-jit.dylib` from Frameworks, `dlsym` the ABI, and call `qemu_ios_main` on a background thread with an 8 MB stack. QEMU is started only once per process.
+- `EmulatorViewController.swift`: CADisplayLink fetches the `qemu_ios_ui_frame` BGRA frame on every screen refresh, turns it into a CGImage and puts it in a CALayer; single-finger touches are normalized to the guest screen and passed to `qemu_ios_ui_touch`; the Home and power buttons go to `qemu_ios_ui_button`; `sceneWillResignActive` and `sceneDidBecomeActive` are wired to `qemu_ios_set_foreground`. A line at the top shows run time, CPU, footprint, free memory and frame count. QEMU's stderr, serial port, per-second stats and guest screenshots are all written to `Documents/logs/<time>-<device>-<backend>/`.
+- `DeviceProfile.swift`: reads FirmwareKit's `device.lock.json` and builds argv following LightTouchMac's `BootRecipe.swift` (the iPod and iPad variants) and M0's `bench.py`. M1 supports devices whose `boot_strategy` is iboot (iPod touch 2nd gen) or kboot (3GS, iPhone 4, iPod touch 3rd/4th gen, original iPad).
+- `DevicePack.swift`: at launch, unpacks `Documents/import/*.ctpack` into Documents.
+- Launch arguments (for scripts): `-device`, `-tcg`, `-tbsize`, `-resetstate`, `-waitdebugger`, `-guestpng`, `-autounlock`, `-qemuargs`; the host can put `unlock`, `home` or `quit` files into `Documents/control/` to operate it.
+- Host GL is off, there is no entitlements file (`get-task-allow` comes with development signing), and `increased-memory-limit` was not added.
 
-设备放进 App：模拟器直接 `cp -c`（APFS 克隆）进容器的 `Documents/devices/`；真机用 `pack-device.py` 打包后 `xcrun devicectl device copy to` 拷进 `Documents/import/`，App 启动时解开。3GS 的包里带了 M0 走完设置向导的状态（`work/states/n88ap-10B500` 的克隆，放在 `golden-state/`），`-resetstate` 每次从它重来，开机直接到锁屏。
+Putting devices into the App: in the simulator, `cp -c` (APFS clone) straight into the container's `Documents/devices/`; on the real device, pack with `pack-device.py`, copy into `Documents/import/` with `xcrun devicectl device copy to`, and the App unpacks it at launch. The 3GS pack includes M0's state after completing the setup assistant (a clone of `work/states/n88ap-10B500`, placed in `golden-state/`); `-resetstate` starts over from it each time, so boot goes straight to the lock screen.
 
-## 4. 开机结果
+## 4. Boot results
 
-计时口径：App 调 `qemu_ios_main` 起算的墙钟秒；「锁屏」「主屏」是每秒一张客体截图里 OCR 第一次认出「slide to unlock」和主屏图标名的时间；CPU 是本进程所有线程 user+sys，百分比按一个核算（同 M0）；「QEMU 亮屏」是 QEMU 自己打的 `[boot] first lit frame`，不含等调试器和准备代码区的停顿，最适合横向比较。主屏时间受自动解锁的时机影响（屏还没亮时滑动无效，要重试），参考价值比锁屏低。
+Timing method: wall-clock seconds counted from when the App calls `qemu_ios_main`; "lock screen" and "home screen" are the times when OCR on the one-per-second guest screenshots first recognizes "slide to unlock" and the home screen icon names; CPU is user+sys of all threads of this process, with percentages counted as one core (same as M0); "QEMU screen on" is QEMU's own `[boot] first lit frame` log, which excludes the pauses for waiting on the debugger and preparing the code region, and is best for side-by-side comparison. The home screen time is affected by when the automatic unlock happens (swiping does nothing while the screen is still off and has to be retried), so it is less useful as a reference than the lock screen.
 
-### 4.1 iOS 模拟器（E0，M4 Max 上的 iPhone 18 Pro 模拟器，iOS 27.2）
+### 4.1 iOS simulator (E0, iPhone 18 Pro simulator on an M4 Max, iOS 27.2)
 
-| 设备 | 后端 | QEMU 亮屏 | 锁屏 | 到锁屏的 CPU | 主屏 | 主屏待机 CPU | 最大占用 |
+| Device | Backend | QEMU screen on | Lock screen | CPU to lock screen | Home screen | Home screen idle CPU | Max footprint |
 |---|---|---|---|---|---|---|---|
-| iPod touch 2 代 3.1.3 | 解释器 | 36.3 秒 | 54 秒 | 54.5 秒 | 64 秒 | 58% | 394 MB |
-| iPod touch 2 代 3.1.3 | JIT（256 MB） | 7.0 秒 | 10 秒 | 9.2 秒 | 19 秒 | 17% | 704 MB |
-| iPod touch 2 代 3.1.3 | JIT（32 MB，对照） | 19.5 秒 | 27 秒 | 26.9 秒 | 35 秒 | 19% | 228 MB |
-| iPhone 3GS 6.1.6 | 解释器 | 159.9 秒 | 160 秒 | 169.0 秒 | 179 秒 | 93% | 545 MB |
-| iPhone 3GS 6.1.6 | JIT（256 MB） | 18.2 秒 | 19 秒 | 20.7 秒 | 49 秒 | 10% | 789 MB |
+| iPod touch 2nd gen 3.1.3 | Interpreter | 36.3 s | 54 s | 54.5 s | 64 s | 58% | 394 MB |
+| iPod touch 2nd gen 3.1.3 | JIT (256 MB) | 7.0 s | 10 s | 9.2 s | 19 s | 17% | 704 MB |
+| iPod touch 2nd gen 3.1.3 | JIT (32 MB, for comparison) | 19.5 s | 27 s | 26.9 s | 35 s | 19% | 228 MB |
+| iPhone 3GS 6.1.6 | Interpreter | 159.9 s | 160 s | 169.0 s | 179 s | 93% | 545 MB |
+| iPhone 3GS 6.1.6 | JIT (256 MB) | 18.2 s | 19 s | 20.7 s | 49 s | 10% | 789 MB |
 
-- 模拟器里 `os_proc_available_memory()` 恒为 0，可用内存没有意义。
-- JIT 在模拟器里不用调试器：模拟器进程按 macOS 规则，`split-wx` 的双映射可以直接用。
-- 32 MB 对照说明：代码缓冲缩小对 JIT 伤害很大（亮屏从 7 秒变 19.5 秒），所以第 4.2 节真机 JIT 的提速偏小主要是缓冲太小，不是手机慢。
-- 第一次开机时的实际观察（`m1-sim-n72ap-3.1.3-interp-*.png`）：触摸、Home 键都能用；3.x 锁屏几秒不碰就熄屏，熄屏后按 Home 能叫醒；熄屏时解释器 CPU 降到 20% 到 30%，没有空转。
+- In the simulator `os_proc_available_memory()` is always 0, so free memory is meaningless.
+- JIT in the simulator needs no debugger: the simulator process follows macOS rules, and the `split-wx` dual mapping can be used directly.
+- What the 32 MB comparison shows: shrinking the code buffer hurts JIT a lot (screen on goes from 7 seconds to 19.5 seconds), so the small JIT speedup on the real device in section 4.2 is mainly due to the buffer being too small, not the phone being slow.
+- Actual observations on first boot (`m1-sim-n72ap-3.1.3-interp-*.png`): touch and the Home button both work; the 3.x lock screen turns off after a few seconds untouched, and pressing Home wakes it; while the screen is off the interpreter's CPU drops to 20% to 30%, so it does not spin.
 
-截图：`docs/reports/img/m1-sim-n72ap-3.1.3-interp-home.png`、`m1-sim-n72ap-3.1.3-interp-lock.png`、`m1-sim-n72ap-3.1.3-jit-home.png`、`m1-sim-n88ap-6.1.6-interp-home.png`、`m1-sim-n88ap-6.1.6-jit-home.png`。
+Screenshots: `docs/reports/img/m1-sim-n72ap-3.1.3-interp-home.png`, `m1-sim-n72ap-3.1.3-interp-lock.png`, `m1-sim-n72ap-3.1.3-jit-home.png`, `m1-sim-n88ap-6.1.6-interp-home.png`, `m1-sim-n88ap-6.1.6-jit-home.png`.
 
-### 4.2 iPhone 18 Pro 真机（E1、E2，iOS 27.2 24B119，A20 Pro，Wi-Fi 连 Mac）
+### 4.2 iPhone 18 Pro real device (E1, E2, iOS 27.2 24B119, A20 Pro, connected to the Mac over Wi-Fi)
 
-| 设备 | 后端 | QEMU 亮屏 | 锁屏 | 到锁屏的 CPU | 主屏 | 主屏待机 CPU | 占用 | 可用内存（最低） |
+| Device | Backend | QEMU screen on | Lock screen | CPU to lock screen | Home screen | Home screen idle CPU | Footprint | Free memory (minimum) |
 |---|---|---|---|---|---|---|---|---|
-| iPod touch 2 代 3.1.3 | 解释器 | 27.4 秒 | 43 秒 | 42.5 秒 | 54 秒 | 50% | 378 到 411 MB | 2965 MB |
-| iPod touch 2 代 3.1.3 | JIT（32 MB） | 12.8 秒 | 88 秒，扣掉停顿约 18 秒 | 17.8 秒 | 101 秒 | 18% | 227 到 277 MB | 3099 MB |
-| iPhone 3GS 6.1.6 | 解释器 | 114.6 秒 | 115 秒 | 122.7 秒 | 137 秒 | 91% | 534 到 559 MB | 2817 MB |
-| iPhone 3GS 6.1.6 | JIT（32 MB） | 26.1 秒 | 84 秒，扣掉停顿约 26 秒 | 27.0 秒 | 112 秒 | 79% | 319 到 365 MB | 3011 MB |
+| iPod touch 2nd gen 3.1.3 | Interpreter | 27.4 s | 43 s | 42.5 s | 54 s | 50% | 378 to 411 MB | 2965 MB |
+| iPod touch 2nd gen 3.1.3 | JIT (32 MB) | 12.8 s | 88 s, about 18 s excluding the pause | 17.8 s | 101 s | 18% | 227 to 277 MB | 3099 MB |
+| iPhone 3GS 6.1.6 | Interpreter | 114.6 s | 115 s | 122.7 s | 137 s | 91% | 534 to 559 MB | 2817 MB |
+| iPhone 3GS 6.1.6 | JIT (32 MB) | 26.1 s | 84 s, about 26 s excluding the pause | 27.0 s | 112 s | 79% | 319 to 365 MB | 3011 MB |
 
-- JIT 两行的「停顿」是：App 等 LLDB 挂上，QEMU 分配代码区时 `brk #0x69` 请调试器准备，调试器读写 32 MB 用了 46.4 秒（iPod）和 37.7 秒（3GS）。这期间整个 App 被调试器停住，手机画面不动（第 6 节）。停顿后 QEMU 才真正开始跑，所以 JIT 行看「QEMU 亮屏」和「到锁屏的 CPU」更准。
-- 真机比 M4 Max 上的模拟器还快：解释器亮屏 27.4 秒对 36.3 秒（iPod）、114.6 秒对 159.9 秒（3GS）。
-- 真机上 JIT 对解释器：亮屏快 2.1 倍（iPod）和 4.4 倍（3GS）；这是 32 MB 缓冲下的数字，照模拟器的对照推算，换成 256 MB 还能快 2 到 3 倍。
-- 没加 `increased-memory-limit` 时 App 的内存上限约 3.3 GB，测量中可用内存一直在 2.8 GB 以上，iPhone 18 Pro 上内存不是问题。
-- iOS 6 在解释器下主屏待机还占 91% 的核，耗电会是问题；iPod 3.1.3 是 50%。
-- **决策会话核对补注**：3GS JIT 那次第 112 秒到主屏属实（`work/ios/runs/device/20261101-195908-n88ap-10B500-jit/guest-0112.png`）。但第 116 到 146 秒，客体里依次打开了设置、通用、语言，又退回主屏。脚本没有发这些点按（`events.log` 里只有两次 unlock 和一次 quit），是有人在手机上点的，正好说明真机 JIT 下触摸能用。因此这一行的「主屏待机 CPU 79%」不是待机数，要重测；`m1-device-n88ap-6.1.6-jit-home.png` 截到的也是设置刚打开的画面，不是主屏。
+- The "pause" in the two JIT rows is: the App waits for LLDB to attach; when QEMU allocates the code region it issues `brk #0x69` to ask the debugger to prepare it, and the debugger took 46.4 seconds (iPod) and 37.7 seconds (3GS) to read and write 32 MB. During this time the whole App is stopped by the debugger and the phone's display does not move (section 6). Only after the pause does QEMU really start running, so for the JIT rows "QEMU screen on" and "CPU to lock screen" are more accurate.
+- The real device is faster than the simulator on the M4 Max: interpreter screen on at 27.4 seconds versus 36.3 seconds (iPod), and 114.6 seconds versus 159.9 seconds (3GS).
+- JIT versus interpreter on the real device: screen on is 2.1 times faster (iPod) and 4.4 times faster (3GS); these are numbers with a 32 MB buffer, and extrapolating from the simulator comparison, 256 MB would be another 2 to 3 times faster.
+- Without `increased-memory-limit` the App's memory limit is about 3.3 GB, and free memory stayed above 2.8 GB throughout the measurements, so memory is not a problem on the iPhone 18 Pro.
+- iOS 6 under the interpreter still uses 91% of a core while idle on the home screen, which will be a battery problem; iPod 3.1.3 uses 50%.
+- **Note added after the decision session's check**: in the 3GS JIT run, reaching the home screen at second 112 is genuine (`work/ios/runs/device/20261101-195908-n88ap-10B500-jit/guest-0112.png`). But from seconds 116 to 146, Settings, General and Language were opened one after another in the guest, and then it went back to the home screen. The script sent none of these taps (`events.log` has only two unlocks and one quit); someone tapped on the phone, which happens to show that touch works under JIT on the real device. So this row's "home screen idle CPU 79%" is not an idle figure and must be remeasured; `m1-device-n88ap-6.1.6-jit-home.png` also captured Settings just opening, not the home screen.
 
-截图：`docs/reports/img/m1-device-n72ap-3.1.3-interp-booting.png`（devicectl 截的真机全屏，开机中）、`m1-device-n72ap-3.1.3-interp-home.png`、`m1-device-n72ap-3.1.3-jit-home.png`、`m1-device-n88ap-6.1.6-interp-home.png`、`m1-device-n88ap-6.1.6-jit-home.png`，以及两张锁屏的客体截图。原始记录在 `work/ios/runs/`（摘要 `*.summary`、每秒统计 `stats.csv`、`qemu.log`、串口、LLDB 日志）。
+Screenshots: `docs/reports/img/m1-device-n72ap-3.1.3-interp-booting.png` (full device screen captured with devicectl, during boot), `m1-device-n72ap-3.1.3-interp-home.png`, `m1-device-n72ap-3.1.3-jit-home.png`, `m1-device-n88ap-6.1.6-interp-home.png`, `m1-device-n88ap-6.1.6-jit-home.png`, plus two guest screenshots of the lock screen. Raw records are in `work/ios/runs/` (summaries `*.summary`, per-second stats `stats.csv`, `qemu.log`, serial port, LLDB logs).
 
-## 5. 遇到的问题和解决办法
+## 5. Problems and fixes
 
-| 问题 | 解决 |
+| Problem | Fix |
 |---|---|
-| configure 加 `--disable-download` 后失败：它无条件要装 Python 的 tooling 组（qemu.qmp、setuptools），离线找不到 | 不加这个开关；meson 子项目事先从上游克隆本地复制，所以只会从 PyPI 装那两个构建工具，和 M0 一样 |
-| meson 报 hexagon 目标「No build machine compiler」 | `--host-cc` 不能用工具链里的 clang 原身（找不到 macOS SDK），改用 `/usr/bin/clang`（xcrun 包装） |
-| 依赖脚本末尾 `otool \| grep -m1` 触发 pipefail 退出 | 加 `\|\| true` |
-| App 报「dylib 里没有 qemu_ios_set_foreground」 | Mac 版导出表没有它和 `qemu_ios_ui_frame_size`（Mac 不需要），iOS 导出表补上这两个 |
-| iPod touch 2 代报「AMC decoding requires a build with libavcodec support」 | 机器选项 `amc-mode=handshake`，见第 2 节 |
-| iPod touch 2 代报「is a NAND image store, written in place: it takes no nandrw overlay」 | 这台的 NAND 是就地写的镜像库，照 LightTouchMac 的 `liveNAND`：第一次启动把 NAND 克隆到 `state/nand` 再就地写，不传 nandrw。3GS 的 NAND 控制器支持页覆盖层，照 M0 用 `nand-overlay` |
-| **iPod touch 2 代要苹果的 SecureROM（`bootrom_240_4`），本机没有** | 用 4 字节占位文件（一条 ARM `b .`）。看过 `hw/arm/ipod_touch_2g.c`：direct-iboot 冷启动时 bootrom 只被放进地址 0、从不执行，所以能开机；但**深睡（AP 断电）唤醒会从 bootrom 走真正的启动链，用占位文件时会停住**。测试中锁屏熄屏、按 Home 唤醒都正常，那是屏幕休眠不是 AP 断电；长时间待机会不会触发还没测。这件事要决策，见第 7 节 |
-| devicectl 拷文件不保留稀疏空洞：设备的 NAND 是稀疏文件（iPod 实际 465 MB、表观 8.1 GB；3GS 加黄金状态表观 34 GB），实测把 4 GB 空洞当零照传要 71 秒 | 自己打包：`pack-device.py` 只收有数据的区段（SEEK_DATA/SEEK_HOLE，再跳过全零的 64 KiB 块），iPod 451 MB、3GS 1911 MB；拷进手机 9 秒和 32 秒，App 解包 0.4 秒和 1.8 秒，解出来还是稀疏文件 |
-| 自动解锁失败：3.x、6.x 的锁屏几秒就熄屏，熄屏时滑动无效 | 先按 Home 叫醒，5 秒后再滑；脚本没看到主屏就每 20 到 25 秒再试一次 |
-| JIT：`devicectl --start-stopped` 加 LLDB 挂载后手机白屏 | 本机只有手机旧系统（24B5110a）的符号缓存，手机已是 24B119，LLDB 卡在 dyld 的加载通知上隔着网络读模块。改成 App 正常启动、带 `-waitdebugger` 在界面上等调试器，LLDB 设 `target.memory-module-load-level minimal` 只读段信息，挂载从超时变成 0.5 秒 |
-| JIT：Xcode 27.2 的 LLDB 崩溃两次 | 一次是并行加载模块时在 `PlatformDarwinDevice::GetDeviceSupportDirectoryForOSVersion` 里崩（关 `target.parallel-module-load`）；一次是命令行驱动的事件线程在 `ProcessGDBRemote::WillPublicStop` 里崩。最后改成独立脚本 `lldb_jit_runner.py`：SB API、同步模式、自己处理每次停止，不用停止钩子 |
-| JIT：偶发「Resume timed out」后一直卡住 | Wi-Fi 下默认的 gdb-remote 包超时不够，`plugin.process.gdb-remote.packet-timeout` 设成 60 |
-| JIT：准备 256 MB 代码区要 322 秒 | 真机测量改用 `-tbsize 32`（38 到 46 秒）；根治见第 7 节 |
+| configure fails with `--disable-download`: it unconditionally wants to install Python's tooling group (qemu.qmp, setuptools), which it cannot find offline | Do not use that switch; meson subprojects are copied locally from the upstream clone beforehand, so it only installs those two build tools from PyPI, the same as M0 |
+| meson reports "No build machine compiler" for the hexagon target | `--host-cc` cannot use the bare clang from the toolchain (it cannot find the macOS SDK); use `/usr/bin/clang` (the xcrun wrapper) instead |
+| `otool \| grep -m1` at the end of the dependency script triggers a pipefail exit | Add `\|\| true` |
+| The App reports "qemu_ios_set_foreground not found in the dylib" | The Mac version's export table lacks it and `qemu_ios_ui_frame_size` (the Mac does not need them); add both to the iOS export table |
+| iPod touch 2nd gen reports "AMC decoding requires a build with libavcodec support" | Machine option `amc-mode=handshake`, see section 2 |
+| iPod touch 2nd gen reports "is a NAND image store, written in place: it takes no nandrw overlay" | This device's NAND is an image store written in place. Following LightTouchMac's `liveNAND`: on first launch clone the NAND to `state/nand` and write it in place, without passing nandrw. The 3GS NAND controller supports a page overlay, so it uses `nand-overlay` as in M0 |
+| **iPod touch 2nd gen needs Apple's SecureROM (`bootrom_240_4`), which this machine does not have** | Use a 4-byte placeholder file (one ARM `b .`). From reading `hw/arm/ipod_touch_2g.c`: on a direct-iboot cold boot the bootrom is only placed at address 0 and never executed, so it boots; but **waking from deep sleep (AP powered off) goes through the real boot chain from the bootrom, and with the placeholder file it will hang**. In testing, the lock screen turning off and waking with Home both worked, but that is display sleep, not AP power off; whether long idle periods trigger it has not been tested. This needs a decision, see section 7 |
+| devicectl does not preserve sparse holes when copying files: the device NANDs are sparse files (iPod actually 465 MB, apparent 8.1 GB; 3GS plus the golden state apparent 34 GB), and transferring a 4 GB hole as zeros was measured at 71 seconds | Pack it ourselves: `pack-device.py` collects only the extents that hold data (SEEK_DATA/SEEK_HOLE, then skipping all-zero 64 KiB blocks), giving 451 MB for the iPod and 1911 MB for the 3GS; copying to the phone takes 9 and 32 seconds, the App unpacks them in 0.4 and 1.8 seconds, and the results are still sparse files |
+| Automatic unlock fails: the 3.x and 6.x lock screens turn off after a few seconds, and swiping does nothing while the screen is off | Press Home first to wake it, then swipe 5 seconds later; if the script does not see the home screen, it retries every 20 to 25 seconds |
+| JIT: white screen on the phone after `devicectl --start-stopped` plus LLDB attach | This machine only had the symbol cache for the phone's old system (24B5110a), while the phone is already on 24B119, so LLDB got stuck on dyld's load notifications reading modules over the network. Changed to launching the App normally with `-waitdebugger` so it waits for the debugger in its UI, and LLDB sets `target.memory-module-load-level minimal` to read only section info; attaching went from timing out to 0.5 seconds |
+| JIT: Xcode 27.2's LLDB crashed twice | Once in `PlatformDarwinDevice::GetDeviceSupportDirectoryForOSVersion` while loading modules in parallel (turned off `target.parallel-module-load`); once in the command-line driver's event thread in `ProcessGDBRemote::WillPublicStop`. In the end switched to a standalone script, `lldb_jit_runner.py`: SB API, synchronous mode, handling each stop itself, no stop hook |
+| JIT: occasionally stuck for good after "Resume timed out" | The default gdb-remote packet timeout is not enough over Wi-Fi; set `plugin.process.gdb-remote.packet-timeout` to 60 |
+| JIT: preparing a 256 MB code region takes 322 seconds | Use `-tbsize 32` for device measurements (38 to 46 seconds); for the real fix see section 7 |
 
-## 6. 装真机：现状、用了什么、还需要用户做什么
+## 6. Installing on the real device: current state, what was used, what the user still needs to do
 
-已经做了（决策会话追加 E1/E2 后，按「只用 Xcode 里已有的签名团队」的边界）：
+Already done (after the decision session added E1/E2, within the boundary of "use only the signing team already in Xcode"):
 
-- **签名团队**：Xcode 里有一个付费个人团队（团队 ID 略，`isFreeProvisioningTeam = 0`），钥匙串里有它的 Apple Development 证书。自动签名直接用了团队现成的通配描述文件「iOS Team Provisioning Profile: *」，没有新建 App ID，没改任何账号设置。团队 ID 没写进仓库。
-- **手机**：iPhone 18 Pro，iOS 27.2 正式版（24B119，不是调研时缓存里那个 24B5110a），已配对，开发者模式已开，经 Wi-Fi 连着。装 App、拷设备、启动、挂调试器都是 `xcrun devicectl` 和 LLDB 在 Mac 上做的，不用用户在手机上点任何东西。
-- 手机上现在装着 `org.classictouch.app`，Documents 里有两台设备（约 2.4 GB）和运行记录。测完已结束 App。不需要时可以直接在手机上删掉 App。
+- **Signing team**: Xcode has one paid individual team (team ID omitted, `isFreeProvisioningTeam = 0`), and the keychain has its Apple Development certificate. Automatic signing used the team's existing wildcard profile "iOS Team Provisioning Profile: *"; no new App ID was created and no account settings were changed. The team ID is not written into the repository.
+- **Phone**: iPhone 18 Pro, iOS 27.2 release (24B119, not the 24B5110a in the cache during research), already paired, Developer Mode on, connected over Wi-Fi. Installing the App, copying devices, launching and attaching the debugger were all done from the Mac with `xcrun devicectl` and LLDB, with no need for the user to tap anything on the phone.
+- The phone now has `org.classictouch.app` installed, with two devices (about 2.4 GB) and run records in Documents. The App was ended after testing. When it is not needed, the App can simply be deleted on the phone.
 
-需要用户知道或决定的：
+For the user to know or decide:
 
-1. **测试时手机会白屏或冻住**：JIT 测试中 App 先显示「等待调试器」，挂上后在准备代码区时整个画面不动（32 MB 约 40 秒）。之前有一次用 `--start-stopped` 的做法白屏了 5 分钟，已经改掉。
-2. **插线会快很多**（推测）：现在手机走 Wi-Fi，调试器读写内存约 0.8 MB/s。用数据线连 Mac 再测一次就知道能不能把代码区放大到 256 MB。要用户插线。
-3. **要不要让 Xcode 拷一份 24B119 的设备符号**（约 6 到 7 GB，从手机拷到 Mac 的 `~/Library/Developer/Xcode/iOS DeviceSupport`）：在 Xcode 里直接「运行」到这台手机时会自动拷。现在靠 minimal 模块加载绕过去了，不拷也能用；拷了之后挂调试器、看崩溃栈更顺。我没触发。
-4. **iPhone 14 Pro 没碰**：第一次连 Xcode 也要拷约 6 到 7 GB 符号，按简报等批准。
-5. **离开电脑用 JIT（E3）**要装 StikDebug 和 LocalDevVPN、导配对文件，没做。
+1. **The phone will show a white screen or freeze during tests**: in JIT tests the App first shows "Waiting for debugger", and after attaching the whole display stops moving while the code region is prepared (about 40 seconds for 32 MB). Earlier, one attempt with `--start-stopped` gave a white screen for 5 minutes; that approach has been changed.
+2. **Plugging in the cable will be much faster** (guess): the phone currently uses Wi-Fi, and the debugger reads and writes memory at about 0.8 MB/s. One more test with a data cable to the Mac will show whether the code region can be grown to 256 MB. Needs the user to plug in the cable.
+3. **Whether to let Xcode copy the 24B119 device symbols** (about 6 to 7 GB, from the phone to `~/Library/Developer/Xcode/iOS DeviceSupport` on the Mac): Xcode copies them automatically when you "Run" directly to this phone from Xcode. For now the minimal module loading works around it, so it works without copying; after copying, attaching the debugger and reading crash stacks go more smoothly. I did not trigger it.
+4. **The iPhone 14 Pro was not touched**: the first connection to Xcode would also copy about 6 to 7 GB of symbols; per the brief, waiting for approval.
+5. **Using JIT away from the computer (E3)** needs StikDebug and LocalDevVPN installed and a pairing file imported; not done.
 
-推荐手机：继续用 iPhone 18 Pro 做开发机（已经跑通，CPU 最快，内存宽裕）；14 Pro 在 E3 之后作为低配和 27.0.1 的对照。
+Recommended phone: keep using the iPhone 18 Pro as the development device (already working, fastest CPU, plenty of memory); use the 14 Pro after E3 as the low-end and 27.0.1 comparison.
 
-## 7. 下一步建议
+## 7. Suggested next steps
 
-1. **JIT 改新协议（E3 之前最值得做的事）**：让调试器直接分配已准备好的可执行内存（StikDebug 的 universal.js 那套，`brk #0xf00d`、x0 传 0 时由 debugserver 代为分配 RX，参考 Ios-emul 的 0016 补丁），不再搬运整块数据。这样代码区可以回到 256 MB 以上，准备时间和区大小无关，真机 JIT 才能拿到模拟器里那种 4 到 9 倍的提速，也是脱离电脑用 StikDebug 的前提。这要改 `tcg/region.c`，做成 `patches/ios-txm-jit-protocol.patch`。
-2. **先插线复测一次 E2**（256 MB），量化 USB 下的准备速度，判断旧协议在开发阶段还能不能凑合。
-3. **iPod touch 2 代的 SecureROM 怎么办（要决策）**：上游 Light Touch 把 `bootrom_240_4` 打包在 App 里，我们的规矩是苹果固件不进仓库、不进 App。选项：让用户自己提供；或者研究能不能让唤醒也走 direct-iboot 的路子（改 qemu-ios）、或在客体里关掉深睡。在这之前，iPod touch 2 代长时间待机可能会卡住，要先实测一次长待机。
-4. **省电**：解释器下 iOS 6 主屏待机占 91% 的核。值得看上游 blake-lucas 分支的空闲优化，以及前后台切换时暂停虚拟机。
-5. **F 阶段的事照原计划**：EAGL 补 ES 2.0、快照（无 GL 时存、退出、新进程恢复、看能不能点）、`tb-size` 和内存对比、`glGetTexImage` 探测。
+1. **Switch JIT to the new protocol (the most worthwhile thing before E3)**: have the debugger directly allocate executable memory that is already prepared (StikDebug's universal.js approach: `brk #0xf00d`, and when x0 is 0, debugserver allocates RX on its behalf; see Ios-emul's 0016 patch), instead of moving the whole block of data. Then the code region can go back to 256 MB or more, preparation time no longer depends on region size, and JIT on the real device can get the 4 to 9 times speedup seen in the simulator; it is also the prerequisite for using StikDebug away from the computer. This requires changing `tcg/region.c`, as `patches/ios-txm-jit-protocol.patch`.
+2. **First rerun E2 once with the cable plugged in** (256 MB) to quantify preparation speed over USB, and judge whether the old protocol is good enough for the development phase.
+3. **What to do about the iPod touch 2nd gen SecureROM (needs a decision)**: upstream Light Touch bundles `bootrom_240_4` in the App, while our rule is that Apple firmware goes neither into the repository nor into the App. Options: let users supply it themselves; or investigate whether waking can also take the direct-iboot route (changing qemu-ios), or disable deep sleep in the guest. Until then, the iPod touch 2nd gen may hang after long idle periods, and a long idle test should be run first.
+4. **Power saving**: under the interpreter, iOS 6 uses 91% of a core while idle on the home screen. Worth looking at the idle optimizations in upstream's blake-lucas branch, and at pausing the VM when switching between foreground and background.
+5. **Stage F as originally planned**: add ES 2.0 to EAGL, snapshots (save without GL, quit, restore in a new process, check whether it can be tapped), `tb-size` and memory comparison, `glGetTexImage` probing.
 
-## 8. 产物和目录
+## 8. Outputs and directories
 
-- 仓库里（未 commit）：`scripts/ios/`、`patches/ios-host-gles-option.patch`、`app/`（`project.yml`、生成的 `ClassicTouch.xcodeproj`、`ClassicTouch/*.swift`、`Info.plist`）、本报告和 `docs/reports/img/m1-*.png`。
-- `work/ios/`（约 7.5 GB，不提交）：`src/`（源码包）、`sysroot-*`、`deps-build/`、`qemu-ios/`（工作树，带补丁）、`build-qemu-*`（四份构建和 dylib）、`DerivedData/`、`devices/`（M0 设备的 APFS 克隆和 3GS 黄金状态）、`packs/`（`.ctpack`）、`runs/`（测量记录）、`logs/`。
-- 专用模拟器「ClassicTouch iPhone 18 Pro」（7C0870F5-C435-4A26-AC3C-D17ADB816486），App 容器里有两台设备的克隆。
-- `upstream/qemu-ios` 本身没改，只多了一条 worktree 登记。
-- 自动化记忆里加了一条：真机测试会白屏或冻住时先跟用户说明。
+- In the repository (not committed): `scripts/ios/`, `patches/ios-host-gles-option.patch`, `app/` (`project.yml`, the generated `ClassicTouch.xcodeproj`, `ClassicTouch/*.swift`, `Info.plist`), this report and `docs/reports/img/m1-*.png`.
+- `work/ios/` (about 7.5 GB, not committed): `src/` (source packages), `sysroot-*`, `deps-build/`, `qemu-ios/` (work tree, with patches), `build-qemu-*` (four builds and dylibs), `DerivedData/`, `devices/` (APFS clones of the M0 devices and the 3GS golden state), `packs/` (`.ctpack`), `runs/` (measurement records), `logs/`.
+- A dedicated simulator, "ClassicTouch iPhone 18 Pro" (7C0870F5-C435-4A26-AC3C-D17ADB816486), whose App container has clones of the two devices.
+- `upstream/qemu-ios` itself is unchanged; it only gained one worktree registration.
+- One entry was added to the automated memory: when a device test will show a white screen or freeze, tell the user first.

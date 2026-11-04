@@ -1,10 +1,12 @@
-ios-host-gles-option.patch：给 meson 加 host_gles 构建开关（-Dhost_gles=disabled / --disable-host-gles）。
+ios-host-gles-option.patch: add a host_gles build option to meson (-Dhost_gles=disabled / --disable-host-gles).
 
-原因：iOS SDK 带 OpenGLES.framework，上游 meson 只要找到它就自动编 EAGL 版 GL 桥（gles-host.c + gles-host-eagl.c），
-没有办法关。M1 第一次开机要先不用宿主 GL（调研报告 4.5）：GL 桥换成 gles-host-stub.c，客体探测 GLES HLE 失败后
-退回自己的软件合成，把「能不能开机」和「GL 对不对」分开验证，也让快照不被 GL 状态挡住。
-默认值 auto，行为和上游一样；只有显式 disabled 才走 stub。
-基于 samhenrigold/qemu-ios b225694505。
+Why: the iOS SDK ships OpenGLES.framework, and upstream meson builds the EAGL GL bridge (gles-host.c +
+gles-host-eagl.c) whenever it finds it, with no way to turn it off. M1's first boot had to run without host GL first
+(research report 4.5): the GL bridge is replaced by gles-host-stub.c, the guest's GLES HLE probe fails and it falls back
+to its own software compositing. That separates "does it boot" from "is GL right", and keeps GL state from blocking
+snapshots.
+The default is auto, which behaves as upstream does; only an explicit disabled takes the stub.
+Based on samhenrigold/qemu-ios b225694505.
 
 diff --git a/meson.build b/meson.build
 index be28191129..4102f5d67a 100644
