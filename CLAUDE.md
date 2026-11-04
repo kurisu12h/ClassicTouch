@@ -2,7 +2,7 @@
 
 An iPhone app that runs stock iPhone OS 1 through iOS 10 on an iPhone, for anyone who wants to revisit classic iOS. The user widened the goal from 7.1.2 to iOS 10 on 2026-11-02. Upstream emulation stops at iOS 7.1.2; iOS 8 to 10 need the A5 and A6 machines this project is adding. The user sees the project as a contribution to the open-source community: open source (GPL-2.0-or-later), distributed by sideloading.
 
-Repository: [kurisu12h/ClassicTouch](https://github.com/kurisu12h/ClassicTouch), private for now and made public when it is ready.
+Repository: [kurisu12h/ClassicTouch](https://github.com/kurisu12h/ClassicTouch), public since 2026-11-04. Commits use the GitHub noreply address set in this repository's git config.
 
 ## Roles
 
