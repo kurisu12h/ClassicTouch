@@ -1,4 +1,4 @@
-# Contributing to Classic Touch
+# Contributing to Slide to Unlock
 
 Thanks for helping. Most of the rules below protect two things: no Apple material in the repository, and nobody's private data either.
 

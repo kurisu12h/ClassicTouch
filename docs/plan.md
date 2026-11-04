@@ -50,6 +50,7 @@
 | 2026-11-04 | **All repository text in English (the user: "write the whole repository in English")**: docs, reports, comments, script messages, commit messages and patch descriptions. Replies to the user stay Chinese. **The app's UI becomes English source strings with a Simplified Chinese translation (the user: "change it, with a Chinese translation")**, so Chinese-language devices show the same UI as before; the app's logs are English. |
 | 2026-11-04 | **iOS 10 in the app, and JIT without a computer on the iPhone 14 Pro** (`docs/reports/a6-app.md`, `docs/reports/stikdebug-14pro.md`): the user had StikDebug 3.2.0 installed on the 14 Pro and approved downloading idevice-tools to make a pairing file. StikDebug gives JIT on iOS 27.0.1; iOS 10.3.4 reaches the home screen in 102 s without the Mac. The app's automatic slide-to-unlock fails often on the phone for iOS 7 and 9. **The user: make the repository public once StikDebug works**, after a final review |
 | 2026-11-04 | **Repository made public (the user: "make it public now")**: before that, the history was rewritten so the 8 commits use the GitHub noreply address instead of the personal email, old hard-coded local paths in early scripts became `/path/to/classic-ios`, and the 5 Chinese commit messages were translated; every commit's tree is otherwise unchanged. `main` now matches `a5-n78`. Description and topics are in English, private vulnerability reporting is on |
+| 2026-11-04 | **Name: Slide to Unlock (the user chose it)**, replacing the placeholder Classic Touch, which combined the names of two Apple products. No trademark registration for the phrase was found (Apple held patents on the gesture). The repository was renamed to `kurisu12h/slide-to-unlock` (the old URL redirects). Internal names stay: bundle ID `org.classictouch.app` (changing it would orphan the devices already imported on phones), the Xcode target, the local folder and the codename in patch comments. The app's display name and UI strings change after the current app/ work |
 
 ## Test devices
 
@@ -73,7 +74,6 @@
 - **Whether to do iOS 8 to 10** (research report `docs/research/ios8-10-feasibility.md`, 2026-11-02): doable with no hard blockers, but it is a port to an entirely new SoC (the A5's interrupt controller, dual core, PPN flash); median estimate 2.5 to 4 months to the iOS 9 home screen, plus 1 to 3 months for iOS 10. Recommended first machine: iPod touch 5 (A5, 6.0 to 9.3.5); iOS 10 needs a second one, the iPhone 5 (A6, firmware not encrypted, spot-checked in fwkeydb). Step 0 needs the iPod touch 5's 9.3.5 and 7.1.2 downloaded (about 2.9 GB). Whether to buy a used reference device (iPod touch 5 or iPad mini 1 plus a Raspberry Pi Pico, or an iPhone 5) is undecided
 - Which platform and link for "Buy me a coffee"
 
-- App name (cannot contain Apple trademarks such as iOS or iPhone); currently the placeholder name Classic Touch (`org.classictouch.app`)
 - Whether to let Xcode copy the 24B119 device symbols from the iPhone 18 Pro (about 6 to 7 GB, into the Mac's `~/Library/Developer/Xcode/iOS DeviceSupport`); it works without copying for now
 
 ## Known facts and things to verify

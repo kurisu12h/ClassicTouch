@@ -6,6 +6,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The
 
 ### 2026-11-04
 
+- **Renamed to Slide to Unlock** (was Classic Touch, which combined two Apple product names). The repository is now `kurisu12h/slide-to-unlock`; the old URL redirects. The repository is public.
 - **JIT without a computer on the iPhone 14 Pro (iOS 27.0.1)**: StikDebug prepares the code buffer in about 1.2 s. iOS 10.3.4 reaches the home screen in 102 s and iOS 9.3.5 in 172 s; iOS 7.1.2 reaches its lock screen, but the app's automatic slide-to-unlock fails on the phone. (`docs/reports/stikdebug-14pro.md`)
 - **The app's UI is English, with a Simplified Chinese translation** that shows the same text as before on Chinese-language devices. The app's logs are English.
 - **iOS 10.3.4 in the app**: the iPhone 5 (A6) is a new entry in the timeline. In the iOS Simulator it reaches the lock screen in 85 s, the home screen and Settings; on the iPhone 14 Pro, with JIT from a tethered Mac, it reaches the home screen in 146 s with a peak footprint of 1.4 GB. (`docs/reports/a6-app.md`)

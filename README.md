@@ -1,6 +1,8 @@
-# Classic Touch (working title)
+# Slide to Unlock
 
 Run stock iPhone OS 1 through iOS 10 on an iPhone, for anyone who wants to revisit classic iOS.
+
+The project was called Classic Touch until 2026-11-04; internal names such as the bundle ID `org.classictouch.app` and the Xcode target `ClassicTouch` still use it.
 
 > Work in progress. Nothing has been released and there is no build to download.
 
