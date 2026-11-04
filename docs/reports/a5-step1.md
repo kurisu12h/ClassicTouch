@@ -9,7 +9,9 @@
 
 ## 0. 结论摘要
 
-> **最新（3.16 节）：** 接上触摸（spi1 上的 Zephyr2 传感器）和 GPIO 按键，用脚本经 QMP 注入输入，7.1.2 从锁屏滑动解锁进了主屏，点开了「设置」，按 Home 回到主屏。
+> **最新（3.17 节，交接）：** 9.3.5 的 NAND 层在同一个 IOP 模型上原样可用，格式化和 FTL 打开都成功；两分区盘、dyld 覆盖、launchd 清单、GL 前端还没做。
+>
+> **3.16 节：** 接上触摸（spi1 上的 Zephyr2 传感器）和 GPIO 按键，用脚本经 QMP 注入输入，7.1.2 从锁屏滑动解锁进了主屏，点开了「设置」，按 Home 回到主屏。
 >
 > **3.15 节：** 7.1.2 开机直接进了锁屏。做了四件事：给 lockdownd 打本地激活补丁；补上 iPod touch 5 设置助理比 iPhone 4 多出的步骤标记（Siri 等）；把常让 backboardd 崩溃的两个罗盘 HID 插件移走；n78 接上 guest 包服务，GL 协议告警随之消失。
 >
@@ -529,6 +531,139 @@ PMU 唤醒没有做：D1881 还只是一组寄存器。不过熄屏后按 Home �
 3. **开机时间不稳：** 同一块盘，锁屏有时 100 秒出现，有时要等按 Home 才看到（`t2`）。脚本里先按 Home 再解锁，就不受影响。
 4. 自动锁定没有改；锁屏约 20 秒后熄屏，按 Home 能唤醒。
 5. 多指、旋转、音量键没有测；PMU 唤醒、复位、实时时钟、罗盘插件崩溃的根因、9.3.5 仍待做。
+
+## 3.17 9.3.5（13G36）：锁屏、主屏、打开「设置」
+
+**结论：** 9.3.5 在模拟的 iPod touch 5 上开机进了锁屏，滑动解锁到主屏，点开了「设置」。从已经过首次数据迁移的盘开机，约 80 秒到锁屏（第一次开机多一段约 100 秒的迁移进度条）。【已核实：`work/a5/runs/s317/b4/in-83.png`、`in-90.png`、`in-25.png`】7.1.2 用同一套新脚本和新开机包回归，90 到 110 秒照旧锁屏。【已核实：`work/a5/runs/s317/r712/in-100.png`】
+
+| 锁屏 | 主屏 | 「设置」 |
+|---|---|---|
+| ![9.3.5 锁屏](img/a5-935-lockscreen.png) | ![9.3.5 主屏](img/a5-935-homescreen.png) | ![9.3.5 设置](img/a5-935-settings.png) |
+
+主屏上那个「Trust This Computer?」是 lockdownd 的配对提示（USB 设备模式起来了，以为连着电脑），点「Don't Trust」就关了。比 7.1.2 多做的事，按卡住的先后：
+
+1. 两分区盘自己做（FirmwareKit 没有 iOS 9 配方）：`tools/a5/n78_volumes.py`。
+2. 格式化帮手要带 `com.apple.private.security.disk-device-access` 等授权，9.x 的平台沙盒不让它读裸盘。
+3. 共享缓存改成开发版（头 +0x68 置 0，同时重算签名第 0 页的哈希），dyld-390 才用磁盘上的 GL 前端：`tools/a5/n78_devcache.py`。
+4. GL 前端补 iOS 9 的 4 个颜色格式导出（GLKit 强绑定）和 EAGLContext 的 `debugLabel`、`multiThreaded`（CoreImage 发 `setDebugLabel:`，SpringBoard 原来崩在这里）。
+5. 设备树隐藏两个 M2 缩放器（9.3.5 的 SpringBoard 一用就让内核 panic），隐藏时连 `device_type` 一起改。
+6. 激活补丁从 lockdownd 移到 mobileactivationd；设置助理靠 `ForceNoBuddy`。
+
+前半部分（3.17.1 到 3.17.3）是上一段的交接记录，3.17.4 是这一段按步骤的过程记录。
+
+### 3.17.1 已核实
+
+1. **IOP 模型对 9.3.5 原样可用。** 9.3.5 的恢复内存盘当根、放出 IOP 和闪存控制器（`work/a5/kboot/n78-13G36-fmi-rd.bin`）开机：AppleA5IOP 起来，固件是 iBoot-2817.60.2；IOP 依次收到 set_config、0x16（控制器信息）、0x17、0xb（读引导页）；分区方案读引导页，报 `no partition table found`。和 7.1.2 一样，cnfg 块和消息环都不用改。【已核实：`work/a5/runs/s317/p1/serial.log`、`q.log`】
+2. **格式化在 9.3.5 上也通。** 9.3.5 的恢复内存盘副本（`work/a5/nandfmt/rd-13G36.dmg`，做法同 3.13.3）加 `it_nandfmt`、`nand-enable-reformat=1`，挂 `13G36-usbroot.img`：VFL、FPart、FTL 依次格式化，`Writing final signature`、`VFL_Open [OK]`、`FTL_Open [OK]`，`AppleNANDFactoryBBT::start: ready`，可擦除存储 `started`，`it_nandfmt: NAND partition format -> 0`。IOP 约 1.6 万个命令，各种页状态都认。7.1.2 上调好的 PPN 设置（`max-transaction-size` 32、空白页 0x49、按列读半页）在 9.3.5 的 SwissPPN 上同样成立。【已核实：`work/a5/runs/s317/f1/serial.log`】
+3. **帮手的误报：** 那次帮手最后报 `FAILED: no AppleEffaceableStorage`，其实可擦除存储已经起来了。帮手在同一个循环里同时等数据卷和服务，`13G36-usbroot.img` 只有一个分区，短路求值导致服务没被取到。要修：分开等两样东西，并给出准确的报错。用两分区的盘就不会碰到。【已核实：`tools/a5/it_nandfmt.c`】**更正（3.17.4）：** 两分区盘照样报这个错，根因是 9.x 的平台沙盒不让没授权的帮手读 `/dev/disk0s2`，循环已拆开。
+
+### 3.17.2 交接时列的下一步（都已在 3.17.4 做完）
+
+1. **做 9.3.5 的两分区盘。** FirmwareKit 没有 iOS 9 的配方：A4 机型最高到 7.1.2，`patches/a5-firmwarekit-n78-volumes.patch` 是让 n78 借 n90 的 iOS 7 配方，对 13G36 不适用。所以要么给 FirmwareKit 加 iOS 9 配方，要么不用它：系统卷用 `n78_usbroot.py` 从解密的 rootfs 扩容，数据卷照 FirmwareKit 的做法新建日志式 HFSX、放 `/private/var` 骨架并写属主。【推测：工作量主要在后一种】
+2. **9.3.5 用户态的两个已知问题**（第 0 步报告 4.3、第 5 节，3.12.3）：
+   - dyld-390 要求共享缓存是开发版，才允许用磁盘上的库覆盖缓存里的库；GL 前端、AppSync、guest 工具都靠这种覆盖。
+   - 新的 launchd 从 `xpcd_cache.dylib` 读守护进程清单，往 `/System/Library/LaunchDaemons` 放的 plist 可能不生效，`it_boot`、`it_seal` 等装法会受影响。
+   a5-launchd 会话查过一部分，先读它的记录。
+3. **盘上修改要按版本分开**（`n78_diskfix.sh`）：
+   - `n78_activate.py` 只认 11D257 的 lockdownd（哈希加偏移写死），9.3.5 要另找 `dealwith_activation` 里同样的判断；
+   - 设置助理的完成标记要看 9.3.5 Setup.app 的键（iOS 8、9 新加了步骤）；
+   - fstab 仍是 disk1（NAND 的 FTL 盘占 disk0）；
+   - 罗盘插件是否同样要移走；
+   - `.it_sealed` 只有装了 it_seal 才需要。
+4. **GL 前端：** 系统卷里的前端（contrib/gles-public）要在 9.3.5 上验证。第 0 步核对过，GL 派发表三代逐字节相同，但跳板形状没核对；加上上面第 2 条的覆盖问题。
+5. 然后依次是：正常开机、锁屏、解锁、「设置」。n78 机型这边（触摸、按键、GL 桥、guest 包服务）不用为 9.3.5 改。【推测】
+
+### 3.17.3 现场
+
+- 内核、设备树、恢复内存盘：`work/a5/dec/13G36/`。
+- 9.3.5 格式化用的内存盘：`work/a5/nandfmt/rd-13G36.dmg`。
+- 这次格式化出的 NAND 存储：`work/a5/nandfmt/nand-935/`。它没有建系统钥匙包，可擦除存储也没格式化，给正式的两分区盘做格式化开机时要重来。
+
+### 3.17.4 第二段（同一会话续做，按 3.17.2 的顺序）
+
+**第 1 步：两分区盘（完成）。**
+
+- 新脚本 `tools/a5/n78_volumes.py ROOTFS.dmg OUTDIR [系统卷加大 MiB] [数据卷 MiB]`：系统卷用 imgtools 的 `extract_rootfs` 从解密的 rootfs 切出，再用 `grow_to_partition` 加大 512 MiB（留给 GL 前端和帮手）；数据卷照 FirmwareKit `SystemEdits` 的做法：14 GiB 稀疏、日志式、区分大小写的 HFSX，经 noowners 挂载拷入系统卷的 `/private/var` 骨架，再按系统卷目录里的属主离线改回（没有记录的按规则：`mobile`、`ea` 归 501，其余归 root），最后打开内容保护位（卷头属性 0x40000000，5.0 起恢复都这样格式化）。不做其他修改，fstab、激活、设置助理都留给 `n78_diskfix.sh`。【已核实：`work/a5/vol-13G36/build.log`】
+- 结果：`system.img` 2524 MiB，HFSX，4 KiB 块，空闲 131835 块（约 515 MiB）；`data.img` 属主 0:0×27、0:1×1、0:3×1、24:24×1、25:25×2、33:33×1、64:0×1、501:501×29，共改 63 条目录记录。整个过程 8 秒。【已核实：同上】
+- 拼盘：`python3 -I -B tools/a5/n78_usbroot.py work/a5/vol-13G36/system.img work/a5/disks/13G36-full.img work/a5/vol-13G36/data.img`，分区 1 System 在 LBA 2048，分区 2 Data 在 LBA 5173248，整盘 16863 MiB（稀疏，实占约 2 GB）。【已核实】
+- 9.3.5 原版 fstab 是 `/dev/disk0s1 / hfs ro` 加 `/dev/disk0s2 /private/var`，和 7.1.2 一样要改成 disk1。系统卷里有 `dyld_shared_cache_armv7`，没有 `System/Library/Caches/com.apple.xpcd/`。【已核实：只读挂载 `vol-13G36/system.img` 查看】
+
+**第 2 步：dyld 覆盖和 launchd 清单（静态结论，开机验证见后）。** 文件从 `vol-13G36/system.img` 拷到 `work/a5/vol-13G36/x/`（dyld、launchd、共享缓存），反编译用 REA（Ghidra），launchd 的大函数存在 `work/a5/dis/launchd-935-17d84.c`。
+
+- **dyld-390 开哪个缓存**（`dyld::openSharedCacheFile`，0x1fe03226）：`enable-dylibs-to-override-cache` 存在且小于 1 KiB、并且 `dyld_shared_cache_armv7.development` 存在时开 `.development`；否则生产版缓存不存在时也开 `.development`；其余开生产版。【已核实】
+- **何时允许磁盘库覆盖缓存**（`dyld::loadPhase5`，0x1fe077c4）：comm page 0xFFFF4084 第 0 位为 1，并且缓存头 +0x68 的 64 位 `cacheType` 为 0，才先 stat 磁盘上的库（`loadPhase5stat`），找到就用磁盘版；否则直接用缓存。`dyld::mapSharedCache`（0x1fe06390）在同样条件下还会不建 `ImageLoaderMegaDylib`（开发版缓存不走加速表）。【已核实】
+- **缓存签名：** 13G36 的缓存在 0x1f58c000 有签名块，是 ad hoc（CodeDirectory flags 0x2，CMS 槽只有 8 字节），SHA-1、4 KiB 一页，共 128396 页，第 0 页哈希与文件吻合。dyld 映射前用 `fcntl(0x61)` 登记签名，失败就抛异常；之后把头 0x2000 字节 mmap 成可执行再和 read 到的比较。所以只改 +0x68 而不改第 0 页的哈希，页校验会失败。做法：+0x68 改 0，同时把 CodeDirectory 第 0 槽换成新页的 SHA-1。CDHash 随之改变，不在内核信任缓存里，能不能过要看 `amfi_allow_any_signature=1 cs_enforcement_disable=1`（我们自己的 ad hoc 帮手在这组参数下能跑）。【前半已核实，能否放行待开机】
+- **开发位：** kboot 强制设备树 `debug-enabled` = 1（`imgtools/ipad1_kboot.py` 395 行），`PE_i_can_has_debugger` 为真，comm page 开发位应为 1。【推测，开机时读 0xffff4084 确认】
+- **launchd 765.50.8 读清单的规则：** 开机时只在 `xpcd_cache.dylib` 在磁盘上**不存在**时才 dlopen 缓存里的那份（`FUN_0000513c`：`lstat` 成功就不读），所以往磁盘放一份改过的 `xpcd_cache.dylib` 会让 launchd 拿不到清单，「No service cache」后退出。`/System/Library/LaunchDaemons` 下的 plist 逐个去缓存里查，查不到就当错误丢掉（`FUN_000055cc`，类型改 4、错误 0x94），只有不在 `/System/Library` 下的路径才从磁盘读。决定这一切的开关是 `kern.bootargs` 里有没有子串 `rd=md0`（`FUN_0002675c`，结果写 0x3684d）：恢复内存盘开机时为真，「disk will be searched for uncached services」；正常开机为假，「system services must be in cache」。【已核实】
+- **对本轮的影响：** 到锁屏和「设置」不需要新增守护进程（7.1.2 走到主屏也只改了 fstab、lockdownd、设置助理标记、罗盘插件和 GL 前端），所以 xpcd_cache 先不处理。以后要加守护进程，可试两条路：启动参数里放一个含 `rd=md0` 子串、但内核不认的参数（如 `it_rd=md0`；内核按参数名整词匹配 `rd`）【推测，副作用没查：开关还控制 ASL 日志等几处】；或者包一个缓存里已有、不关键的守护进程。【推测】
+
+**格式化开机第一次失败（`work/a5/runs/s317/fmt2`）：** NAND 分区、VFL、FTL 都格式化好了（`it_nandfmt: NAND partition format -> 0`），之后帮手每秒被拒一次：`Sandbox: restored_externa(5) System Policy: deny(1) file-read-data /dev/disk0s2`，最后报 `FAILED: no AppleEffaceableStorage`。9.x 的平台沙盒不让没有授权的进程读裸盘；原版 restored_external 带 `com.apple.private.security.disk-device-access` 等 9 个授权。3.17.1 第 3 条说的「两分区盘就不会碰到」不对，单分区那次大概也是同一个原因。【已核实】修法：帮手按 `tools/a5/it_nandfmt.ent`（原版的 4 个相关授权）用 `ldid -Stools/a5/it_nandfmt.ent` 签名；帮手里等服务和等数据卷拆成两个循环，各报各的错。重做了 `nandfmt/rd-13G36.dmg` 和 `kboot/n78-13G36-nandfmt.bin`。
+
+**第 3 步：9.3.5 格式化开机（完成，`work/a5/runs/s317/fmt3`）。** 带授权的帮手这次一路走完：`effaceable open 0 isFormatted 0 -> 0`、`format 0`、数据卷 `/dev/disk1s2`、`MKBKeyBagCreateSystem -> 0, /mnt2/keybags/systembag.kb 1495 bytes`、`system keybag created; halting`。中间内核报了两行 `[effaceable:ERR ] unable to efface group 0/1 after 3 attempts`，没有影响建钥匙包，正常开机时再看可擦除存储是否认得。【已核实：`work/a5/runs/s317/fmt3/serial.log` 218 到 240 行】成品：盘 `work/a5/nandfmt/disk-935-formatted.img`，NAND 目录 `work/a5/nandfmt/nand-935-formatted/`（实占 2.3 GB）。以后开机都用 `cp -c` 克隆。命令：
+
+```bash
+cp -c work/a5/disks/13G36-full.img work/a5/nandfmt/disk-935.img && mkdir -p work/a5/nandfmt/nand-935f
+IOP_TRACE=1 DISK=work/a5/nandfmt/disk-935.img SNAP=off tools/a5/n78_run.sh work/a5/runs/s317/fmt3 work/a5/kboot/n78-13G36-nandfmt.bin 420 \
+  -global driver=s5l8940.iop,property=nand,value=work/a5/nandfmt/nand-935f -D work/a5/runs/s317/fmt3/q.log
+# 帮手打出 "system keybag created; halting" 后约 15 秒按 PID 结束 QEMU
+```
+
+**第 4 步：盘上修改按版本拆开（完成），GL 前端补了 9.x 的导出。**
+
+- **激活搬家了。** 9.3.5 的 lockdownd 已经没有「Short circuiting」那段，它向 mobileactivationd 要激活状态（`MAEGate_GetActivationState`）。同一段逻辑在 `/usr/libexec/mobileactivationd` 的 `dealwith_activation`（0xb428，MobileActivation-96.60.1）：`bl 0x1a6bc; cmp r0,#1; bne` 后接 `bl 0x1a670; cmp r0,#0; beq 短路`，日志 `Hactivation is enabled, short circuiting activation state to Activated.`。把 0xb448 的 `bne`（文件偏移 0x7448，`03 d1` 改 `00 bf`）去掉，和 7.1.2 是同一个补丁。`tools/a5/n78_activate.py` 改成按 SHA-1 认两份原版（11D257 lockdownd `261017f5…`、13G36 mobileactivationd `b2f628f3…`），可重复执行。【已核实：反编译和字节；运行效果待开机】
+- **设置助理：** 9.3.5 的盘没有 FirmwareKit 的种子，新脚本 `tools/a5/n78_setupdone.py` 写一个超集：13G36 Setup.app 和共享缓存里出现的所有 `…Presented` 键（`AppleIDPB9Presented`、`Passcode4Presented`、`LocationServices5Presented`、`Payment2Presented`、`TrueTonePresented` 等 34 个键），加 `SetupDone`、`SetupFinishedAllSteps` 和 7.x 的云配置记录。`SetupVersion` 填 7 是猜的（6.x 是 3，7.x 是 5）。【推测，待开机】
+- **GL 前端缺 4 个导出。** 用缓存的导出字典树把 9.3.5 原版 OpenGLES 的 489 个导出解出来（`work/a5/vol-13G36/x/opengles-13G36.exports`），和前端比，只缺 `kEAGLColorFormatRGBA_XR10_64BPP`、`kEAGLColorFormatSRGBA_XR10_64BPP`、`kEAGLColorFormatSRGB_XR10`、`kEAGLColorFormatSRGB_XR10_A8_2P`。再扫全缓存 971 个镜像的绑定表，只有 GLKit 强绑定这 4 个，缺了它们，凡加载 GLKit 的进程在覆盖后都会绑不上。前端 `contrib/gles-public/opengles.c` 按原版字符串值补了这 4 个常量，`opengles.exports` 加了 4 行，重编到 `work/a5/guest/OpenGLES`（`build.sh`，替代 SDK），之后 9.3.5 的导出全覆盖。改动在 `work/a5/qemu-ios` 里，随补丁导出。【已核实：nm 对比为 0 缺】
+- **缓存改开发版：** `tools/a5/n78_devcache.py` 把 +0x68 改 0 并重算签名第 0 槽（只动 20 个字节，可重复执行）。
+- **`tools/a5/n78_diskfix.sh` 现在按 `SystemVersion.plist` 的 `ProductBuildVersion` 分支：** 两版都改 fstab、打激活补丁、移走罗盘插件（9.3.5 也有这两个插件，先照做）；11D257 照旧放 `.it_sealed`、补 4 个设置键；13G36 改缓存为开发版、装前端（`GLES=` 可换，默认 `work/a5/guest/OpenGLES`，装完离线把属主改回 root）、写设置助理种子。在 `disk-935-formatted.img` 的克隆上一次跑通。【已核实】
+
+**第 5 步：GL 前端在 9.3.5 上加载了（`work/a5/runs/s317/b1`）。** 正常开机包 `kboot/n78-13G36-fmi.bin`（`N78_SHOW=arm-io/iop,arm-io/flash-controller0`，不带内存盘），盘 `nandfmt/disk-935-a.img`（格式化后的克隆跑过 diskfix），NAND `nandfmt/nand-935a`（格式化后的克隆），330 秒。
+
+- comm page 0xffff4084 每次读都是 1，开发位成立。【已核实：`b1/mem.txt`】
+- 改过的缓存映射成功，没有 dyld 报错；改过的程序 AMFI 照常放行（`AMFI: Invalid signature but permitting execution`）。【已核实：`b1/serial.log`】
+- 可擦除存储认出第 3 代，`MKB_INIT: System Keybag loaded`，数据保护起来了。【已核实】
+- **dyld 用上了磁盘上的前端：** QEMU 打出 `shim hello: protocol 1`、`OpenGLES front end (contrib/gles-public): 508 gl exports … ES 1.1 + 2.0 (GLEngine.bundle); IOSurface`、`dispatch layout from the @encode's count … 1035 slots`、`CoreAnimation composites through the host`。所以「缓存头改 0 加第 0 页重算哈希」这条路在 9.3.5 上走通了。【已核实：`b1/qemu.out`】
+- 画面：120 秒是苹果标志加一条空进度条（iOS 9 首次开机的数据迁移界面，backboardd 用 GL 画的），210 秒起只剩苹果标志，到 300 秒没变。【已核实：`b1/shot-120.png`、`shot-210.png`、`shot-300.png`】
+- **卡点：SpringBoard 每隔几秒崩一次**（数据卷里 10 份 `SpringBoard-*.ips`）：主线程 SIGABRT，栈是 SpringBoardFoundation → UIKit → CoreImage → CoreFoundation 的 `___forwarding___` → `doesNotRecognizeSelector:` → 抛异常。把 9.3.5 原版 EAGLContext、EAGLSharegroup 的方法表从缓存的 ObjC 元数据里解出来（`work/a5/vol-13G36/x/eagl-13G36.methods`），和前端比，缺 `debugLabel`、`setDebugLabel:`、`isMultiThreaded`、`setMultiThreaded:`、`setBlockFence:onQueue:` 等；再扫全缓存的 `__objc_selrefs`，发 `setDebugLabel:` 的正是 CoreImage 和 GLKit，`isMultiThreaded` 是 CoreMotion，`setBlockFence:onQueue:` 是 MediaToolbox。【已核实】前端补了前四个（EAGLContext 存在私有结构里，EAGLSharegroup 加一个实例变量），`setBlockFence:onQueue:` 只有视频用到，没补。
+- 另有 mediaserverd 前几分钟崩了 11 次：相机的 `HDR.videoprocessor` 初始化时抛 C++ 异常（没有模拟相机），和到锁屏无关。【已核实】
+
+**第二次开机（`work/a5/runs/s317/b2`，前端补了 EAGL 方法，盘 `disk-935-b.img` 是 a 盘开过一次后的克隆，已过数据迁移）：** 90 秒起画面变成状态栏（「iPod」、电池）加灰色苹果标志，说明 SpringBoard 起来并开始画了；之后一直不变。串口里内核 panic：`AppleM2ScalerCSCHalSamsung::resetScaler(): cannot reset the scaler 0`，panic 的任务是 SpringBoard（pid 48），前面是一串 `Scaler waiting for device reset step 2 to complete.`。缩放器驱动开机时就读到 `SOC 0x0, Scaler HW Version 0x0`（我们没模拟这个块，寄存器全零）；9.3.5 的 SpringBoard 一用硬件缩放器，复位等不到完成就 panic。7.1.2 没走到这条路。【已核实：`b2/serial.log` 440 行、`b2/shot-150.png`】下一步先试在开机包里隐藏 `arm-io/scaler0`（`N78_HIDE`），看 SpringBoard 会不会退回软件路径。
+
+**第三次开机（`work/a5/runs/s317/b3`，开机包隐藏 `arm-io/scaler0`、`arm-io/scaler1`）：** 第一次只改 `compatible` 没用，缩放器驱动照样加载、照样 panic：IOKit 的 IONameMatch 也匹配 `device_type`（"scaler"）。`n78_kboot.py` 的隐藏改成 arm-io 下的节点同时把 `device_type` 改成 `-`（cpus/cpu1 不动，内核按它数 CPU；`-` 是为了放得进 ae2 只有 4 字节的 `device_type`）。之后缩放器不再加载，没有 panic，SpringBoard 没有退回失败，画面正常。90 秒前屏幕已熄，按 Home 唤醒后是设置助理的欢迎页「Hola / Deslizar para configurar」（多语言轮播）。【已核实：`b3/in-6.png`，存为 `img/a5-935-hello.png`】两个缩放器随后加进了 `HIDDEN` 的默认列表。
+
+**设置助理的开关：** SpringBoard 导入的是 SetupAssistant.framework 的 `BYSetupAssistantNeedsToRun`。用新工具 `tools/a5/cache2elf.py` 把这个镜像从缓存切成 ELF 反编译（0x2a5e3b10）：com.apple.purplebuddy 的 `ForceNoBuddy` 为真就答「不用跑」；否则只看 `/tmp/com.apple.purplebuddy.sentinel` 在不在（设置助理那边做完才写）。之前写的那些 `…Presented`、`SetupVersion` 键在 9.x 上都不起决定作用。`n78_setupdone.py` 加上 `ForceNoBuddy = YES`。【已核实：反编译和缓存里的 CFString】
+
+**第四次开机（`work/a5/runs/s317/b4`，盘 `disk-935-d.img` 是 c 盘的克隆再跑一次 diskfix，NAND `nand-935d`，开机包同第三次）：** qinput 在 QEMU 约 108 秒按 Home，屏上是锁屏（时间、日期、「slide to unlock」、相机）；`swipe:140,975,620,975,500` 解锁进主屏（FaceTime、日历、照片、相机等四排加 Dock，第二页小点）；点「Don't Trust」(455,785) 关掉配对提示，点「设置」(244,930) 打开设置，列表到「Wallpaper」。纵向仍要补约 100 像素（3.16 的老问题）。【已核实：`b4/in-83.png`、`in-90.png`、`in-25.png`、`qinput.log`】
+
+**7.1.2 回归（`work/a5/runs/s317/r712`）：** 新的 `n78_kboot.py`（缩放器默认隐藏、`device_type` 一起改）重做 `kboot/n78-11D257-fmi.bin`，新的 `n78_diskfix.sh` 改 `nandfmt/disk-formatted.img` 的克隆（`disk-712-r.img`，打的仍是 lockdownd 补丁），90、100、110 秒是锁屏，120 秒熄屏，和 3.15 一致；没有缩放器日志，没有 panic。【已核实：`r712/in-100.png`、`serial.log`】
+
+### 3.17.5 复现（9.3.5，全部在 `tools/a5/README.md`「9.3.5」一节）
+
+```bash
+# 1. 卷和盘（解密的 rootfs 见 3.11 节）
+cd work/a5 && python3 -B ../../tools/a5/n78_volumes.py rootfs/13G36-rootfs.dmg vol-13G36 && cd ../..
+python3 -I -B tools/a5/n78_usbroot.py work/a5/vol-13G36/system.img work/a5/disks/13G36-full.img work/a5/vol-13G36/data.img
+# 2. 格式化开机（帮手要用 it_nandfmt.ent 签名，内存盘副本做法同 3.13）
+cp -c work/a5/disks/13G36-full.img work/a5/nandfmt/disk-935-formatted.img && mkdir -p work/a5/nandfmt/nand-935-formatted
+IOP_TRACE=1 DISK=work/a5/nandfmt/disk-935-formatted.img SNAP=off tools/a5/n78_run.sh work/a5/runs/fmt935 \
+  work/a5/kboot/n78-13G36-nandfmt.bin 420 -global driver=s5l8940.iop,property=nand,value=work/a5/nandfmt/nand-935-formatted
+# 3. GL 前端（work/a5/qemu-ios 打过补丁）和盘上修改
+ARMV6_SDK=$PWD/work/sdk-substitute/iPhoneOS-substitute.sdk bash work/a5/qemu-ios/contrib/gles-public/build.sh $PWD/work/a5/guest/OpenGLES
+cp -c work/a5/nandfmt/disk-935-formatted.img work/a5/nandfmt/disk-935.img && tools/a5/n78_diskfix.sh work/a5/nandfmt/disk-935.img
+# 4. 正常开机（首次多约 100 秒数据迁移），锁屏后按 Home、滑动、点设置
+N78_SHOW=arm-io/iop,arm-io/flash-controller0 python3 -I -B tools/a5/n78_kboot.py work/a5/dec/13G36 work/a5/kboot/n78-13G36-fmi.bin
+mkdir -p work/a5/nandfmt/nand-935 && cp -c work/a5/nandfmt/nand-935-formatted/* work/a5/nandfmt/nand-935/
+(DISK=work/a5/nandfmt/disk-935.img SNAP=off tools/a5/n78_run.sh work/a5/runs/ui935 work/a5/kboot/n78-13G36-fmi.bin 330 \
+  -global driver=s5l8940.iop,property=nand,value=work/a5/nandfmt/nand-935 &)
+```
+
+### 3.17.6 没做的和下一步
+
+1. **缩放器只是藏起来了。** 9.3.5 的 SpringBoard 没了它也能跑，但照片缩略图、视频等用 IOSurfaceAccelerator 的地方以后可能出问题；真要用得模拟 M2 Scaler。【推测】
+2. **前端没补 `setBlockFence:onQueue:`**（MediaToolbox 用，视频播放时才会碰到）。`setDebugLabel:` 等的补法、4 个导出都在补丁里，要不要提给上游由用户定。
+3. **mediaserverd 在相机 HDR 插件里反复崩**（没模拟相机），没影响界面。
+4. **launchd 只认缓存里的守护进程**（3.17.4 第 2 步），以后装 it_boot 一类的帮手要另想办法；`it_rd=md0` 那条路没试。
+5. **设置助理是用 `ForceNoBuddy` 跳过的，**没有真正走完；`…Presented` 那些键在 9.x 上不起决定作用，留着无害。
+6. 纵向触摸偏 100 像素、罗盘插件、实时时钟、复位，都是 7.1.2 留下的老问题，9.3.5 同样存在（罗盘插件在 9.3.5 上没验证是否也会崩，照样移走了）。
 
 ## 4. 测试机
 

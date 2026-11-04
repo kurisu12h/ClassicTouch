@@ -56,11 +56,12 @@ while [ $(($(date +%s) - t0)) -lt "$LIMIT" ]; do
         seen="$seen $f"
         t=$((10#$(echo "$f" | tr -dc 0-9)))
         text="$("$OCR" "$R/$f" 2>/dev/null | jq -r .text | tr '\n' '|')"
-        if [ -z "$lock" ] && grep -qi 'slide to unlock' <<<"$text"; then
+        # iOS 9 的「slide to unlock」带流光，OCR 常读成「crae to unlotk」之类，所以也认「to unl」
+        if [ -z "$lock" ] && grep -Eqi 'slide to unlock|to unl' <<<"$text"; then
             lock=$t
             echo "锁屏：$t 秒"
             touch "$C/Documents/control/unlock"
-        elif [ -n "$lock" ] && [ -z "$home" ] && ! grep -qi 'slide to' <<<"$text" \
+        elif [ -n "$lock" ] && [ -z "$home" ] && ! grep -Eqi 'slide to|to unl' <<<"$text" \
             && grep -Eq 'Settings|Safari|App Store|Calendar|Photos' <<<"$text"; then
             home=$t
             echo "主屏：$t 秒"

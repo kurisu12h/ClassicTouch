@@ -1,0 +1,41 @@
+# The iOS app bridge (contrib/ios-app/qemu-ios-ui.c) for the iPod touch 5G: its buttons, its DSI panel for
+# display_sleeping, its row in the machine table. Applies after patches/ios-*.patch and a5-n78-skeleton.patch
+# (scripts/ios/build-qemu.sh). git apply ignores these lines.
+--- a/contrib/ios-app/qemu-ios-ui.c
++++ b/contrib/ios-app/qemu-ios-ui.c
+@@ -70,7 +70,7 @@
+ static int ios_vm_alive;
+ /* Which machine is running, latched on the QEMU thread when the VM starts. */
+ static int ios_is_ipad1;
+-static int ios_dsi_panel;       /* the panel is powered over DSI: the iPad's and the S5L8920 boards' */
++static int ios_dsi_panel;       /* the panel is powered over DSI: the iPad's, the S5L8920 boards', the iPod touch 5G's */
+ 
+ static struct {
+     DisplayChangeListener dcl;
+@@ -433,7 +433,8 @@
+     qatomic_set(&ios_is_ipad1, object_dynamic_cast(qdev_get_machine(),
+                                                    MACHINE_TYPE_NAME("ipad1")) != NULL);
+     qatomic_set(&ios_dsi_panel, qatomic_read(&ios_is_ipad1) ||
+-                object_dynamic_cast(qdev_get_machine(), "s5l8920-machine") != NULL);
++                object_dynamic_cast(qdev_get_machine(), "s5l8920-machine") != NULL ||
++                object_dynamic_cast(qdev_get_machine(), MACHINE_TYPE_NAME("iPod-Touch-5G")) != NULL);
+     for (i = 0; i < INPUT_EVENT_SLOTS_MAX; i++) {
+         ios.slots[i].tracking_id = -1;
+     }
+@@ -468,6 +469,8 @@
+     { "ipad1",         "k48ap", 1024,  768, 1, 1, false, true,  true,  true,  A4_PANEL },
+     { "iPod-Touch-4G", "n81ap",  640,  960, 2, 0, false, true,  false, false, A4_PANEL },
+     { "iPhone-4",      "n90ap",  640,  960, 2, 0, true,  true,  true,  false, A4_PANEL },
++    /* the A5's H4P pipe (s5l8930_display h4p=on), the A4's limits; the root disk is a usb-storage on ehci.0 */
++    { "iPod-Touch-5G", "n78ap",  640, 1136, 2, 0, false, true,  false, false, A4_PANEL },
+ };
+ 
+ const QemuIosDeviceInfo *qemu_ios_device_info(const char *machine)
+@@ -664,6 +667,7 @@
+     ipad1_press_button(button, down);
+     ipod_touch_1g_press_button(button, down);
+     s5l8920_press_button(button, down);
++    ipod_touch_5g_press_button(button, down);
+ }
+ 
+ static void ios_button_release(void *opaque)

@@ -566,11 +566,12 @@ final class EmulatorViewController: UIViewController {
     }
 
     /// 宿主（scripts/ios/sim-boot.sh、device-boot.sh）的控制通道：往 Documents/control/ 放一个文件，文件名就是命令。
-    /// unlock：按 Home 后滑动解锁；home：按一下 Home；quit：让 QEMU 正常退出；
+    /// unlock：按 Home 后滑动解锁；home：按一下 Home；quit：让 QEMU 正常退出；tap：文件内容是客体屏幕上的归一化坐标
+    /// 「x,y」（左上为原点），在那里点一下（按住 0.3 秒，和 tools/a5/qinput.py 一样），给没有点屏工具的脚本用；
     /// back：返回列表；resume：从列表回到画面；select：像用户在列表里点了文件内容写的那台（换系统，不弹确认）。
     private func pollControl(_ engine: Engine) {
         let dir = documents.appendingPathComponent("control", isDirectory: true)
-        for command in ["unlock", "home", "quit", "back", "resume", "select"] {
+        for command in ["unlock", "home", "quit", "tap", "back", "resume", "select"] {
             let file = dir.appendingPathComponent(command)
             guard FileManager.default.fileExists(atPath: file.path) else { continue }
             let argument = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
@@ -580,6 +581,12 @@ final class EmulatorViewController: UIViewController {
             case "unlock": unlock(engine)
             case "home": pressHome(engine)
             case "quit": engine.quit()
+            case "tap":
+                let xy = argument.split(whereSeparator: { ", \n".contains($0) }).compactMap { Double($0) }
+                guard xy.count >= 2 else { break }
+                event(String(format: "tap %.3f,%.3f", xy[0], xy[1]))
+                engine.touch(.begin, x: xy[0], y: xy[1])
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { engine.touch(.end, x: xy[0], y: xy[1]) }
             // 脚本每次写进不同的内容（devicectl 会跳过没变过的文件），select 取第一个词
             default: onControl?(command, String(argument.split(separator: " ").first ?? ""))
             }

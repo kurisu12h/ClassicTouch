@@ -1,11 +1,613 @@
+diff --git a/contrib/gles-public/opengles.c b/contrib/gles-public/opengles.c
+index 17d82892e8..474401beda 100644
+--- a/contrib/gles-public/opengles.c
++++ b/contrib/gles-public/opengles.c
+@@ -40,6 +40,8 @@
+ #include "../it-gles/mbxshim.c"
+ 
+ #include <pthread.h>
++#include <sys/utsname.h>
++const char *getprogname(void);
+ 
+ #define GLES_FN(n, f, id, argc, fl) GLES_ROW_##n,
+ enum {
+@@ -116,9 +118,12 @@ static fe_cur_t *fe_cur(int create)
+     return c;
+ }
+ 
++static void fe_stock_current(void **macro);
++
+ static void fe_set_current(GuestGC *gc, void *owner, int is_egl, void *draw, void *read)
+ {
+     fe_cur_t *c = fe_cur(gc != 0);
++    fe_stock_current(0);
+     if (!c) return;
+     if (c->gc && c->gc != gc) batch_flush(c->gc);
+     c->gc = gc; c->owner = owner; c->is_egl = is_egl; c->draw = draw; c->read = read;
+@@ -239,6 +244,7 @@ static void fe_hello(void)
+     w("), host protocol "); wd((unsigned)(hello & 0xff));
+     w(fe_es2() ? "; ES 1.1 + 2.0 (GLEngine.bundle)" : "; ES 1.1 only (no GLEngine.bundle)");
+     w(p_IOSurfaceGetID ? "; IOSurface" : p_IOSurfaceGetBaseAddress ? "; CoreSurface" : "; no surfaces");
++    w("; in "); w(getprogname());
+     w("\n");
+     if (hello < 0 || (hello & 0xff) != GLES_HELLO_PROTO) {
+         w("[gles] the host speaks another wire protocol: GL calls may go astray\n");
+@@ -246,6 +252,13 @@ static void fe_hello(void)
+     }
+ }
+ 
++/* A context the caller asked for and does not get, with the process (a nil context is a crash waiting in code
++ * that never checks). The API's own refusal is not logged: 10.x asks every process for ES 3.0 first. */
++static void fe_init_failed(unsigned api, const char *step)
++{
++    w("[gles] EAGLContext initWithAPI:"); wd(api); w(" fails at "); w(step); w(" in "); w(getprogname()); w("\n");
++}
++
+ /* One line the first time CoreAnimation's compositor takes a path through this file, so the log proves CA
+  * composites through the host (a software CoreAnimation draws the same home screen and never comes here). */
+ static void fe_ca_path(const char *how)
+@@ -1497,7 +1510,9 @@ static int fe_getBooleanv(void *gc, unsigned pname, unsigned params)
+ }
+ 
+ /* {GC, table}: 5.x QuartzCore and CoreImage load the engine's context from word 0 and call field k through word
+- * 1 + k with it as the first argument (9B206 QuartzCore 0x32662ad2..0x32662ae8; docs/ipad1/gles-public-seam.md). */
++ * 1 + k with it as the first argument (9B206 QuartzCore 0x32662ad2..0x32662ae8; docs/ipad1/gles-public-seam.md).
++ * FE_STOCK_PAD words come before it, so the stock trampolines' view of it (fe_stock_current) stays inside. */
++#define FE_STOCK_PAD 4
+ static void **fe_macro(GuestGC *gc, void ***cache)
+ {
+     static int layout = -1;
+@@ -1515,14 +1530,50 @@ static void **fe_macro(GuestGC *gc, void ***cache)
+         return 0;
+     }
+     n = gles_discover(0);
+-    if (!n || !(m = calloc(1 + n, sizeof *m))) return 0;
++    if (!n || !(m = calloc(FE_STOCK_PAD + 1 + n, sizeof *m))) return 0;
++    m += FE_STOCK_PAD;
+     m[0] = gc;
+     gles_fill(m + 1, n, fe_hand);
+     *cache = m;
+-    fe_ca_path("macro context");
+     return m;
+ }
+ 
++/*
++ * 10.x's stock gl* trampolines, still in the shared cache, find the current context in the thread's OpenGL key
++ * (__PTK_FRAMEWORK_OPENGL_KEY, slot 30), its GC at +0x10 and field k at +0x14 + 4k: 14G61's glGetIntegerv
++ * (0x1d0a33e8) is `mrc p15, 0, r0, c13, c0, 3; bic r0, #3; ldr r3, [r0, #0x78]; cbz r3; ldr r0, [r3, #0x10];
++ * ldr.w r3, [r3, #0x1b4]; bx r3`, and all 457 read the key at 0x78 and nothing of the context below +0x14 but the
++ * GC. That is a macro context 0x10 bytes on (the FE_STOCK_PAD words before it are this file's). The cache's own
++ * images call these trampolines directly: update_dyld_shared_cache made their stubs pc-relative branches, so dyld
++ * never rebinds them here (30 images, UIKit, CoreImage and MediaToolbox among them; ClassicTouch
++ * docs/reports/a6-step1.md 16.1), and with the key empty every such call did nothing. So making an EAGLContext
++ * current puts its macro context in the key, as the stock +setCurrentContext: puts its own context there, and
++ * those calls reach this file with the GC they would have on the device; with no context current they still do
++ * nothing, as there. Only where the trampolines decoded with their GC at +0x10 (gles_trampoline_gc), and only
++ * from Darwin 16 (10.x): earlier firmwares keep the behaviour they were checked with.
++ */
++static int fe_stock_tls(void)
++{
++    static int want = -1;
++    struct utsname u;
++    const char *p;
++    int major = 0;
++    if (want < 0) {
++        if (!uname(&u)) for (p = u.release; *p >= '0' && *p <= '9'; p++) major = major * 10 + (*p - '0');
++        want = major >= 16;
++    }
++    return want;
++}
++
++static void fe_stock_current(void **macro)
++{
++    void **tsd;
++    if (!fe_stock_tls() || (macro && gles_trampoline_gc != 0x10)) return;
++    __asm__ volatile ("mrc p15, 0, %0, c13, c0, 3" : "=r"(tsd));
++    tsd = (void **)((unsigned long)tsd & ~3UL);
++    tsd[30] = macro ? (char *)macro - 0x10 : 0;
++}
++
+ /* ------------------------------------------------------------------------- EAGL --- */
+ 
+ void EAGLGetVersion(unsigned *major, unsigned *minor);
+@@ -1564,6 +1615,7 @@ __attribute__((objc_root_class))
+ - (void)dealloc;
+ - (id)retain;
+ - (void)release;
++- (id)copy;
+ - (BOOL)respondsToSelector:(SEL)sel;
+ - (BOOL)isEqual:(id)other;
+ - (BOOL)boolValue;
+@@ -1583,9 +1635,15 @@ NSString *const kEAGLContextPropertyClientRetainRelease = @"EAGLContextPropertyC
+ NSString *const kEAGLColorFormatSRGBA8 = @"EAGLColorFormatSRGBA8";
+ NSString *const kEAGLContextPropertySharedWithCompute = @"EAGLContextPropertySharedWithCompute";
+ NSString *const kEAGLContextPropertyVisibleInDebugTools = @"EAGLContextPropertyVisibleInDebugTools";
++/* 9.x: the extended-range formats; GLKit binds all four strongly, so without them no process that loads GLKit
++ * binds against this front end (13G36, iPod touch 5) */
++NSString *const kEAGLColorFormatRGBA_XR10_64BPP = @"EAGLColorFormatRGBA_XR10_64BPP";
++NSString *const kEAGLColorFormatSRGBA_XR10_64BPP = @"EAGLColorFormatSRGBA_XR10_64BPP";
++NSString *const kEAGLColorFormatSRGB_XR10 = @"EAGLColorFormatSRGB_XR10";
++NSString *const kEAGLColorFormatSRGB_XR10_A8_2P = @"EAGLColorFormatSRGB_XR10_A8_2P";
+ 
+ __attribute__((visibility("default")))
+-@interface EAGLSharegroup : NSObject { @public void *_private; NSUInteger _api; }
++@interface EAGLSharegroup : NSObject { @public void *_private; NSUInteger _api; NSString *_label; }
+ @end
+ 
+ @implementation EAGLSharegroup
+@@ -1605,14 +1663,18 @@ __attribute__((visibility("default")))
+ - (NSUInteger)APIs { return _api; }
+ /* 5.x OpenCL's: libGFXShared state, which this front end never makes. */
+ - (void *)getGLIShared { refused("eagl:", "getGLIShared", ~0u); return 0; }
++/* 7.x+'s debugLabel property (9.x GLKit sets it); kept, nothing reads it here */
++- (NSString *)debugLabel { return _label; }
++- (void)setDebugLabel:(NSString *)label { NSString *old = _label; _label = [label copy]; [old release]; }
+ - (void)dealloc
+ {
+     if (_private) GLESDestroySharegroup(_private);
++    [_label release];
+     [super dealloc];
+ }
+ @end
+ 
+-struct eagl_private { GuestGC *gc; EAGLSharegroup *sharegroup; NSUInteger api; void **macro; };
++struct eagl_private { GuestGC *gc; EAGLSharegroup *sharegroup; NSUInteger api; void **macro; NSString *label; BOOL multi; };
+ 
+ __attribute__((visibility("default")))
+ @interface EAGLContext : NSObject { @public struct eagl_private *_private; }
+@@ -1626,11 +1688,17 @@ __attribute__((visibility("default")))
+ - (id)initWithAPI:(NSUInteger)api sharegroup:(EAGLSharegroup *)sharegroup
+ {
+     if (!(self = [super init])) return 0;
+-    if ((api != 1 && !(api == 2 && fe_es2())) || !(_private = calloc(1, sizeof *_private))) { [self release]; return 0; }
++    if (api != 1 && !(api == 2 && fe_es2())) { [self release]; return 0; }    /* 10.x asks for ES 3.0 first */
++    if (!(_private = calloc(1, sizeof *_private))) {
++        fe_init_failed(api, "calloc");
++        [self release];
++        return 0;
++    }
+     _private->api = api;
+     _private->sharegroup = sharegroup ? [sharegroup retain] : [[EAGLSharegroup alloc] initWithAPI:api];
+     if (!_private->sharegroup ||
+         !(_private->gc = fe_new_gc(_private->sharegroup->_private, 0, api))) {
++        fe_init_failed(api, !_private->sharegroup ? "sharegroup" : "GLESCreateGC");
+         [self release];
+         return 0;
+     }
+@@ -1657,7 +1725,8 @@ __attribute__((visibility("default")))
+             if (v) fe_own(v, 0);
+             fe_destroy_gc(_private->gc);
+         }
+-        free(_private->macro);
++        if (_private->macro) free(_private->macro - FE_STOCK_PAD);
++        [_private->label release];
+         [_private->sharegroup release];
+         free(_private);
+     }
+@@ -1673,6 +1742,7 @@ __attribute__((visibility("default")))
+     if (context) {
+         [context retain];
+         fe_set_current(context->_private->gc, context, 0, 0, 0);
++        if (fe_stock_tls()) fe_stock_current(fe_macro(context->_private->gc, &context->_private->macro));
+     } else {
+         fe_set_current(0, 0, 0, 0, 0);
+     }
+@@ -1761,8 +1831,20 @@ __attribute__((visibility("default")))
+ - (BOOL)getParameter:(unsigned)pname to:(int *)value { (void)pname; (void)value; return 0; }
+ 
+ /* 5.x: {GC, this firmware's dispatch table} (fe_macro); 6.x's QuartzCore asks with a lower-case g. */
+-- (void *)GetMacroContextPrivate { return fe_macro(_private->gc, &_private->macro); }
+-- (void *)getMacroContextPrivate { return fe_macro(_private->gc, &_private->macro); }
++- (void *)GetMacroContextPrivate
++{
++    void **m = fe_macro(_private->gc, &_private->macro);
++    if (m) fe_ca_path("macro context");
++    return m;
++}
++- (void *)getMacroContextPrivate { return [self GetMacroContextPrivate]; }
++/* 7.x+'s properties: debugLabel (9.x CoreImage and GLKit set it on every context they make; without it SpringBoard
++ * dies in -[NSObject doesNotRecognizeSelector:] under UIKit's first CoreImage use) and multiThreaded (9.x CoreMotion
++ * asks). Both are kept and answered; the host executor has no use for either. */
++- (NSString *)debugLabel { return _private->label; }
++- (void)setDebugLabel:(NSString *)label { NSString *old = _private->label; _private->label = [label copy]; [old release]; }
++- (BOOL)isMultiThreaded { return _private->multi; }
++- (void)setMultiThreaded:(BOOL)multi { _private->multi = multi; }
+ @end
+ 
+ void *EAGLGetCurrentMacroContextPrivate(void);
+diff --git a/contrib/gles-public/opengles.exports b/contrib/gles-public/opengles.exports
+index 95f5526c4d..b500269e4c 100644
+--- a/contrib/gles-public/opengles.exports
++++ b/contrib/gles-public/opengles.exports
+@@ -1,7 +1,8 @@
+ # The OpenGLES.framework/OpenGLES exports of every firmware the front end replaces: the union of 2.2.1 (5H11a),
+ # 3.1.3 (7E18), 3.2.2 (7B500), 4.2.1 (8C148, iPad and iPod), 4.3.5 (8L1), 5.0 beta 1 (9A5220p, which exports the
+ # ...EXT set as ...APPLE), 5.1.1 (9B206), 6.0 beta 1 (10A5316k, which exports
+-# the map-buffer-range pair as ...APPLE), 6.0 (10A403) and 7.1.2 (11D257, iPhone 4), without the leading _
++# the map-buffer-range pair as ...APPLE), 6.0 (10A403), 7.1.2 (11D257, iPhone 4) and 9.3.5 (13G36, iPod touch 5:
++# its four ...XR10 color formats), without the leading _
+ # (contrib/gles-public/seam_survey.py; docs/ipad1/gles-public-seam.md). Every name any of them exports, because dyld
+ # binds each cached consumer's imports by name once the cached OpenGLES is overridden. 2.1.1 (5F138) and 2.2 export
+ # 2.2.1's set (it-gles/opengles-2x.exports); 3.2 (7B367) and 4.3-4.3.4 are their families'. A new firmware's name
+@@ -567,7 +568,11 @@ glWaitSyncAPPLE
+ glWeightPointerOES
+ kEAGLColorFormatRGB565
+ kEAGLColorFormatRGBA8
++kEAGLColorFormatRGBA_XR10_64BPP
+ kEAGLColorFormatSRGBA8
++kEAGLColorFormatSRGBA_XR10_64BPP
++kEAGLColorFormatSRGB_XR10
++kEAGLColorFormatSRGB_XR10_A8_2P
+ kEAGLContextPropertyAccelerated
+ kEAGLContextPropertyClientRetainRelease
+ kEAGLContextPropertySharedWithCompute
+diff --git a/contrib/it-gles/gles_dispatch.c b/contrib/it-gles/gles_dispatch.c
+index 178d141985..6211bb9175 100644
+--- a/contrib/it-gles/gles_dispatch.c
++++ b/contrib/it-gles/gles_dispatch.c
+@@ -219,6 +219,10 @@ static const char *gles_find_encode(void)
+ 
+ /* ---- (b) the exported trampolines ------------------------------------------------------ */
+ 
++/* Where a decoded trampoline found the GC in the thread's context (0x10 from 5.x on), 0 if none decoded: the
++ * front end lays its own context out the same way for the stock trampolines (opengles.c fe_stock_current). */
++static unsigned gles_trampoline_gc;
++
+ /* The one dispatch-table offset the trampoline at p loads its target from, else -1: the
+  * `ldr` immediates a register call or a load into pc goes through (contrib/gles-public/glitsv.py
+  * and FirmwareKit's GLIDispatch.callLoads read the same forms), up to the unconditional
+@@ -305,7 +309,9 @@ done:
+ #undef CALL
+     {
+         unsigned base = gc == 0x10 ? 0x14 : 0x10;
+-        return noffs == 1 && offs[0] >= base ? (int)((offs[0] - base) / 4) : -1;
++        if (noffs != 1 || offs[0] < base) return -1;
++        if (gc) gles_trampoline_gc = gc;
++        return (int)((offs[0] - base) / 4);
+     }
+ }
+ 
+diff --git a/hw/arm/gles-host-stub.c b/hw/arm/gles-host-stub.c
+index d708c8c199..0addc58006 100644
+--- a/hw/arm/gles-host-stub.c
++++ b/hw/arm/gles-host-stub.c
+@@ -42,6 +42,7 @@ int gles_host_context_count(void) { return 0; }
+ bool gles_host_refuse(const char *fmt, ...) { return false; }
+ char *gles_host_rejects(void) { return g_strdup(""); }
+ void gles_host_set_debug(bool on) { }
++void gles_host_set_owner_check(bool on) { }
+ bool gles_host_debug(void) { return false; }
+ uint64_t gles_host_ram_gen(uint64_t addr, uint64_t len) { return 0; }
+ 
+diff --git a/hw/arm/gles-host.c b/hw/arm/gles-host.c
+index ab1b0af03f..3dc2fe37f0 100644
+--- a/hw/arm/gles-host.c
++++ b/hw/arm/gles-host.c
+@@ -37,6 +37,7 @@
+ #include "exec/tlb-flags.h"
+ #include "system/ram_addr.h"
+ #include "system/physmem.h"
++#include "system/address-spaces.h"
+ #include "hw/core/sysbus.h"
+ #include "hw/arm/ipod_touch_2g.h"
+ #include "hw/arm/guest-services/general.h"
+@@ -371,11 +372,16 @@ typedef struct {
+      * host texture is the newer one, and the guest memory is written at the
+      * frame's flush, not while the frame is half drawn (gles_sync_surface). */
+     bool dirty;
+-    /* (A snapshot keeps the fields above: GLES_SURFACE_SNAP_BYTES.) The page
+-     * generation (gles_surface_changed) the texture was last uploaded at, and
+-     * the surface's pages as RAM offsets from base's page on, found at the
+-     * guest's bind: the memory the GPU samples. npages 0: not tracked (NV12,
+-     * or not RAM), so re-read at every draw. */
++    /* (A snapshot keeps the fields above: GLES_SURFACE_SNAP_BYTES.) The
++     * binding process's TTBR0, 0 unknown (gles_surface_owned). */
++    uint64_t ttbr;
++    /* Rendered by the host, but its process no longer maps it, so the frame stayed on the host
++     * (gles_surface_writeback): another bind of the same memory takes the texture instead. */
++    bool unwritten;
++    /* The page generation (gles_surface_changed) the texture was last uploaded
++     * at, and the surface's pages as RAM offsets from base's page on, found at
++     * the guest's bind: the memory the GPU samples. npages 0: not tracked
++     * (NV12, or not RAM), so re-read at every draw. */
+     uint64_t gen;
+     unsigned npages;
+     bool detached;      /* detached from its texture, which still holds its pixels (gles_surface_forget) */
+@@ -2046,6 +2052,13 @@ void gles_host_set_debug(bool on)
+     gles_debug = on;
+ }
+ 
++static bool gles_owner_check;
++
++void gles_host_set_owner_check(bool on)
++{
++    gles_owner_check = on;
++}
++
+ bool gles_host_debug(void)
+ {
+     GLES_ON_ANGLE(gles_angle_host_debug());
+@@ -4457,9 +4470,10 @@ static unsigned gles_surface_bpp(uint32_t fmt)
+     case GLES_SURFACE_ARGB32: case GLES_SURFACE_ABGR32:     return 4;
+     case GLES_SURFACE_RGB565: case GLES_SURFACE_RGB555:
+     case GLES_SURFACE_RGBA4444: case GLES_SURFACE_RGBA5551:
+-    case GLES_SURFACE_LA88: case GLES_SURFACE_LA88_IOS7:
++    case GLES_SURFACE_LA88: case GLES_SURFACE_LA88_IOS7: case GLES_SURFACE_LA88_IOS10:
+     case GLES_SURFACE_ARGB1555: case GLES_SURFACE_ARGB1555_TWIDDLED: return 2;
+     case GLES_SURFACE_A8: case GLES_SURFACE_L8:             return 1;
++    case GLES_SURFACE_RGBA_HALF:                            return 8;
+     default:                                                return 0;
+     }
+ }
+@@ -4531,6 +4545,86 @@ static unsigned gles_surface_map(CPUState *cpu, uint32_t base, unsigned n, ram_a
+     return n;
+ }
+ 
++/* The calling process's first-level table (TTBR0), 0 where the walk below cannot follow it (LPAE). */
++static uint64_t gles_owner_ttbr(CPUState *cpu)
++{
++    CPUARMState *env = cpu_env(cpu);
++
++    return env->cp15.tcr_el[1] & (1u << 31) ? 0 : env->cp15.ttbr0_el[1];
++}
++
++/*
++ * Where the page tables at `ttbr` (short descriptors, TTBCR.N as now) put `va`: 1 with its RAM offset,
++ * 0 unmapped or not RAM, -1 when they cannot be followed here (an address for TTBR1, a v5 fine table).
++ */
++static int gles_owner_page(CPUState *cpu, uint64_t ttbr, vaddr va, ram_addr_t *ram)
++{
++    unsigned n = cpu_env(cpu)->cp15.tcr_el[1] & 7;
++    uint32_t d1, d2;
++    hwaddr pa, xlat, len = 1;
++    MemoryRegion *mr;
++
++    if (n && va >> (32 - n)) return -1;
++    d1 = address_space_ldl_le(&address_space_memory, ((uint32_t)ttbr & ~((1u << (14 - n)) - 1)) + (va >> 20) * 4,
++                              MEMTXATTRS_UNSPECIFIED, NULL);
++    switch (d1 & 3) {
++    case 1:
++        d2 = address_space_ldl_le(&address_space_memory, (d1 & ~0x3ffu) + ((va >> 12) & 0xff) * 4,
++                                  MEMTXATTRS_UNSPECIFIED, NULL);
++        if (d2 & 2) {
++            pa = (d2 & ~0xfffu) | (va & 0xfff);
++        } else if (d2 & 1) {
++            pa = (d2 & 0xffff0000u) | (va & 0xffff);
++        } else {
++            return 0;
++        }
++        break;
++    case 2:
++        pa = d1 & (1u << 18) ? (d1 & 0xff000000u) | (va & 0xffffff) : (d1 & 0xfff00000u) | (va & 0xfffff);
++        break;
++    case 3:
++        return -1;
++    default:
++        return 0;
++    }
++    WITH_RCU_READ_LOCK_GUARD() {
++        mr = address_space_translate(&address_space_memory, pa, &xlat, &len, false, MEMTXATTRS_UNSPECIFIED);
++        if (!memory_region_is_ram(mr)) return 0;
++        *ram = memory_region_get_ram_addr(mr) + xlat;
++    }
++    return 1;
++}
++
++/*
++ * Whether the guest memory a writeback is about to fill is still the surface's (gles_host_set_owner_check,
++ * which the A5/A6 machines turn on). The pages were found at the bind and kept; once the surface is freed,
++ * or its process gone, they are the kernel's again, and on 10.3.4 a frame written into them later became a
++ * page table entry (0xff6ac1b0, an opaque pixel) or a zone element (docs/reports/a6-step1.md 13). So the
++ * binding process's own tables, at the bind's TTBR0, must still put its first, middle and last page where
++ * they were. A surface without kept pages is written through the caller's mappings: only its own process
++ * may do that. 4.x's kernel unmaps all but the last page a process touched, which is why this is not on
++ * for every machine.
++ */
++static bool gles_surface_owned(CPUState *cpu, GLESSurface *s)
++{
++    if (!s->ttbr) {
++        return true;
++    }
++    if (!s->npages) {
++        return gles_owner_ttbr(cpu) == s->ttbr;
++    }
++    unsigned probe[3] = { 0, s->npages / 2, s->npages - 1 };
++    for (unsigned i = 0; i < 3; i++) {
++        ram_addr_t now;
++        int r = gles_owner_page(cpu, s->ttbr, (s->base & TARGET_PAGE_MASK) + (vaddr)probe[i] * TARGET_PAGE_SIZE,
++                                &now);
++        if (r == 0 || (r > 0 && now != s->pages[probe[i]])) {
++            return false;
++        }
++    }
++    return true;
++}
++
+ /*
+  * An IOSurface's pages, by its kernel ID (the shim's ninth bind argument).
+  *
+@@ -4711,6 +4805,18 @@ static int gles_surface_upload(GLESSurface *s, uint32_t fmt, uint8_t *pixels)
+         }
+         break;
+     }
++    case GLES_SURFACE_RGBA_HALF:
++        /* Forward in place: pixel i's 8 bytes become its 4 at i * 4, never past what is still to be read. */
++        for (size_t i = 0; i < (size_t)w * h; i++) {
++            for (unsigned c = 0; c < 4; c++) {
++                unsigned half = pixels[i * 8 + c * 2] | (pixels[i * 8 + c * 2 + 1] << 8);
++                unsigned e = (half >> 10) & 31;
++                float v = half & 0x8000 || !e ? 0.0f : ldexpf(1.0f + (half & 0x3ff) / 1024.0f, (int)e - 15);
++                pixels[i * 4 + c] = v >= 1.0f ? 255 : (uint8_t)(v * 255.0f + 0.5f);
++            }
++        }
++        glfmt = GL_RGBA;
++        break;
+     case GLES_SURFACE_RGB565:   glfmt = GL_RGB;  type = GL_UNSIGNED_SHORT_5_6_5;   break;
+     case GLES_SURFACE_RGBA4444: glfmt = GL_RGBA; type = GL_UNSIGNED_SHORT_4_4_4_4; break;
+     case GLES_SURFACE_RGBA5551: glfmt = GL_RGBA; type = GL_UNSIGNED_SHORT_5_5_5_1; break;
+@@ -4720,7 +4826,8 @@ static int gles_surface_upload(GLESSurface *s, uint32_t fmt, uint8_t *pixels)
+     case GLES_SURFACE_A8:       glfmt = GL_ALPHA;     break;
+     case GLES_SURFACE_L8:       glfmt = GL_LUMINANCE; break;
+     case GLES_SURFACE_LA88:
+-    case GLES_SURFACE_LA88_IOS7: glfmt = GL_LUMINANCE_ALPHA; break;
++    case GLES_SURFACE_LA88_IOS7:
++    case GLES_SURFACE_LA88_IOS10: glfmt = GL_LUMINANCE_ALPHA; break;
+     case GLES_SURFACE_RGBA32:   glfmt = GL_RGBA;      break;
+     case GLES_SURFACE_ARGB32:
+     case GLES_SURFACE_ABGR32:
+@@ -4812,7 +4919,7 @@ static bool gles_surface_mapped(CPUState *cpu, const GLESSurface *s)
+ /* A tracked surface's changed memory into its (bound) texture. */
+ static int gles_surface_reload(GLESSurface *s)
+ {
+-    g_autofree uint8_t *pixels = g_malloc((size_t)s->width * s->height * 4);
++    g_autofree uint8_t *pixels = g_malloc((size_t)s->width * s->height * MAX(4, gles_surface_bpp(s->format)));
+ 
+     gles_surface_fetch(s, pixels);
+     return gles_surface_upload(s, s->format, pixels);
+@@ -4826,6 +4933,15 @@ static bool gles_surface_same(const GLESSurface *a, const GLESSurface *b)
+         !memcmp(a->pages, b->pages, a->npages * sizeof(ram_addr_t));
+ }
+ 
++/* The same memory as another process binds it: a's base is its own process's address. */
++static bool gles_surface_same_memory(const GLESSurface *a, const GLESSurface *b)
++{
++    return a->npages && a->npages == b->npages && (a->base & ~TARGET_PAGE_MASK) == (b->base & ~TARGET_PAGE_MASK) &&
++        a->stride == b->stride && a->width == b->width && a->height == b->height &&
++        a->format == b->format && a->window == b->window &&
++        !memcmp(a->pages, b->pages, a->npages * sizeof(ram_addr_t));
++}
++
+ /*
+  * 4.x's CoreAnimation attaches a layer's surface to a texture for the draws
+  * that use it and detaches it after (GLEngine's gliSetInteger 0x38E/0x39B),
+@@ -4968,6 +5084,7 @@ static int64_t gles_bind_surface(CPUState *cpu, const uint32_t *a, uint32_t id)
+     surface->format = fmt; surface->uv = a[6]; surface->uvstride = a[7]; surface->target = target;
+     surface->window = window;
+     surface->npages = npages;
++    surface->ttbr = gles_owner_ttbr(cpu);
+     if (npages) {
+         int r = gles_surface_resolve(cpu, id, surface);
+         if (r < 0) return -1;                   /* reissued once the page is in */
+@@ -4983,6 +5100,19 @@ static int64_t gles_bind_surface(CPUState *cpu, const uint32_t *a, uint32_t id)
+         GHashTableIter it;
+         gpointer key, value;
+ 
++        /* A frame its process could not write back (gles_surface_writeback) is this memory's newest:
++         * taken below like a detached copy, as this process maps it. */
++        g_hash_table_iter_init(&it, gh.surfaces);
++        while (g_hash_table_iter_next(&it, &key, &value)) {
++            GLESSurface *src = value;
++            if (src->unwritten && GPOINTER_TO_UINT(key) != (unsigned)texture &&
++                gles_surface_same_memory(src, surface)) {
++                src->unwritten = false;
++                src->detached = true;
++                src->base = surface->base;
++                src->ttbr = surface->ttbr;
++            }
++        }
+         g_hash_table_iter_init(&it, gh.surfaces);
+         while (g_hash_table_iter_next(&it, &key, &value)) {
+             GLESSurface *src = value;
+@@ -4997,7 +5127,7 @@ static int64_t gles_bind_surface(CPUState *cpu, const uint32_t *a, uint32_t id)
+     }
+     gles_surface_changed(surface);              /* what is read next is the current generation */
+ 
+-    pixels = g_malloc((size_t)w * h * 4);
++    pixels = g_malloc((size_t)w * h * MAX(4, bpp));
+     if (surface->npages) {
+         gles_surface_fetch(surface, pixels);    /* every page was just mapped: no fault can come */
+     } else if (nv12) {
+@@ -5095,6 +5225,20 @@ static int gles_surface_writeback(CPUState *cpu, GLuint texture, GLESSurface *s)
+     GLint framebuffer = 0;
+     bool rgb555 = s->format == GLES_SURFACE_RGB555;
+     unsigned bpp = (s->format == GLES_SURFACE_RGB565 || rgb555) ? 2 : 4;
++
++    if (gles_owner_check && !gles_surface_owned(cpu, s)) {
++        if (gles_refuse("surface:writeback:not-owned")) {
++            fprintf(stderr, "[gles] surface tex %u (%ux%u at 0x%08x) no longer its process's: frame kept on the host\n",
++                    texture, s->width, s->height, s->base);
++        }
++        s->dirty = false;
++        if (s->npages) {
++            s->unwritten = true;
++        } else {
++            s->detached = true;
++        }
++        return 0;
++    }
+     g_autofree uint8_t *pixels = g_malloc((size_t)s->width * s->height * 4);
+ 
+     /* Read through a scratch framebuffer: the texture is no longer the bound
+diff --git a/hw/arm/guest-gles.c b/hw/arm/guest-gles.c
+index eaada66cad..eb6ddb0f28 100644
+--- a/hw/arm/guest-gles.c
++++ b/hw/arm/guest-gles.c
+@@ -44,9 +44,15 @@
+  * queues only pointer-free calls) and are never armed. The draw paths check
+  * gles_guest_fault_pending so a draw is never issued with an array missing.
+  * Needs ARM_CP_RAISES_EXC on the trap register, so the PC is synced first.
++ *
++ * A store into a page mapped read-only at every level that stays so after the kernel has seen the write
++ * faults (10.x's wallpaper renderer reads its frame back with glReadPixels into such a buffer, by its
++ * shape an IOSurface's user mapping) is what the device's GPU writes from its side: the call is reissued
++ * once more with those present pages written past their protection. A copy-on-write page would have
++ * been copied at the first write fault, so this never reaches one (ClassicTouch a6-step1.md 15.5).
+  */
+ static struct {
+-    bool armed, pending;
++    bool armed, pending, past_ro;
+     MMUAccessType type;
+     vaddr va, last_va;
+     unsigned repeats, slot;
+@@ -112,8 +118,9 @@ int gles_guest_rw(CPUState *cpu, vaddr va, void *buf, size_t len, bool write)
+             return -1;
+         }
+         for (;;) {
+-            if (probe_access_flags(env, p, 0, type, idx, true, &host, 0) &
+-                TLB_INVALID_MASK) {
++            if ((probe_access_flags(env, p, 0, type, idx, true, &host, 0) & TLB_INVALID_MASK) &&
++                !(gf.past_ro && write &&
++                  !(probe_access_flags(env, p, 0, MMU_DATA_LOAD, idx, true, &host, 0) & TLB_INVALID_MASK))) {
+                 if (!gf.armed) {
+                     return -1;
+                 }
+@@ -136,13 +143,24 @@ static void gles_guest_fault_in(CPUState *cpu)
+     gf.armed = false;
+     if (!gf.pending) {
+         gf.repeats = 0;
++        gf.past_ro = false;
+         return;
+     }
+     gf.pending = false;
+     if (gf.va != gf.last_va) {
+         gf.last_va = gf.va;
+         gf.repeats = 0;
+-    } else if (++gf.repeats > 4) {
++    } else if (++gf.repeats > 4 && gf.type == MMU_DATA_STORE && !gf.past_ro &&
++               !(probe_access_flags(cpu_env(cpu), gf.va, 0, MMU_DATA_LOAD, cpu_mmu_index(cpu, false), true,
++                                    &(void *){0}, 0) & TLB_INVALID_MASK)) {
++        /* Present and readable, still read-only after the kernel's turns: written as the GPU would. */
++        if (gles_host_refuse("guest-write:read-only-page")) {
++            fprintf(stderr, "[gles] guest page 0x%08" PRIx64 " stays read-only to stores (slot %u): "
++                    "written past its protection, as the GPU writes it\n", (uint64_t)gf.va, gf.slot);
++        }
++        gf.past_ro = true;
++        gf.repeats = 0;
++    } else if (gf.repeats > 4) {
+         /* The kernel resolved it but the probe still fails: give up on
+          * this call (it fails as it always did) rather than loop. */
+         if (gles_host_refuse("guest-read:fault-dropped")) {
 diff --git a/hw/arm/ipod_touch_5g.c b/hw/arm/ipod_touch_5g.c
 new file mode 100644
-index 0000000000..e3fc32aed6
+index 0000000000..a778cd3a47
 --- /dev/null
 +++ b/hw/arm/ipod_touch_5g.c
-@@ -0,0 +1,514 @@
+@@ -0,0 +1,734 @@
 +/*
-+ * iPod touch 5G (N78AP, S5L8942X "A5", -M iPod-Touch-5G): bring-up skeleton.
++ * iPod touch 5G (N78AP, S5L8942X "A5", -M iPod-Touch-5G) and iPhone 5 (N41AP, S5L8950X "A6", -M iPhone-5).
++ *
++ * The A6's arm-io map is the A5's block for block (ClassicTouch docs/reports/a6-step1.md 2), so the iPhone 5
++ * is this machine with another N78Board: Swift cores, 1 GiB, a third I2C bus, other GPIOs.
 + *
 + * Step 1 of the A5 track (ClassicTouch docs/research/ios8-10-step0.md §7):
 + * enter the 7.1.2 (11D257) and 9.3.5 (13G36) kernels from a kboot bundle and
@@ -34,6 +636,7 @@ index 0000000000..e3fc32aed6
 +#include "hw/i2c/i2c.h"
 +#include "hw/arm/exynos4210.h"
 +#include "hw/arm/s5l8930.h"
++#include "chardev/char.h"
 +#include "hw/arm/s5l8940.h"
 +#include "hw/arm/ipod_touch_mipi_dsi.h"
 +#include "hw/arm/ipod_touch_usb_otg.h"
@@ -49,37 +652,68 @@ index 0000000000..e3fc32aed6
 +#include "hw/arm/guest-package.h"
 +#include "hw/arm/ipod_touch_spi.h"
 +#include "hw/arm/ipod_touch_multitouch.h"
++#include "hw/arm/ipod_touch_buttons.h"
 +#include "ui/console.h"
 +#include "ui/input.h"
 +
-+#define N78_DRAM_SIZE       (512 * MiB)
-+#define N78_CONSOLE_UART    1               /* the DT has no uart0 */
 +#define N78_ROM_LO_SIZE     0x10000         /* the SecureROM's 64 KiB */
 +#define N78_FB_WIDTH        640
 +#define N78_FB_HEIGHT       1136
 +/* iBoot's vram, where it leaves the boot logo: DRAM's top less pram (0x4000) and vram (0x8fc000),
 + * as tools/a5/n78_kboot.py (ipad1_kboot.layout) puts it in the DT and boot_args. */
-+#define N78_VRAM_BASE       (S5L8940_DRAM_BASE + N78_DRAM_SIZE - 0x4000 - 0x8fc000)
++#define N78_VRAM_BASE(dram) (S5L8940_DRAM_BASE + (dram) - 0x4000 - 0x8fc000)
 +
 +#define KBOOT_MAGIC         "K48KBOOT"
 +#define KBOOT_TRAILER_LEN   24
 +#define KBOOT_SEGMENT_LEN   20
 +
++/*
++ * What the iPod touch 5 (n78) and the iPhone 5 (n41) do not share, from their DTs. Their arm-io blocks sit at
++ * the same addresses with the same AIC lines; the A6 adds i2c1 (accelerometer, light sensor, compass), moves
++ * the I2C buses' and the touch sensor's GPIOs and adds the ringer switch at pin 4.
++ */
++typedef struct N78Board {
++    const char *name;                   /* "n78", "n41": messages */
++    uint64_t dram_size;
++    unsigned i2c_buses;                 /* bit n: i2c<n> */
++    uint32_t i2c_pins[6];               /* their function-iic_sda/scl GPIOs, which rest high */
++    unsigned n_i2c_pins;
++    uint32_t mt_atn;                    /* the multi-touch sensor's DT interrupt, as a GPIO pin */
++    const MTSensorProfile *mt;
++    unsigned buttons;                   /* GPIO pins 0 .. buttons - 1: menu, hold, volup, voldown(, ringer) */
++    unsigned console_uart;              /* serial0: n78's uart1 (no uart0 in its DT), n41's uart6 (debug-console) */
++    int gauge_mah;                      /* a bq27540 HDQ gas gauge on uart5 (n41's DT), this battery; 0 none */
++    uint8_t backlight_addr;             /* an LM3534 backlight driver on i2c0 (n41's i2c0/lm3534), 7-bit; 0 none */
++    uint32_t clcd_gamma_busy;           /* the display's "gamma-busy": the A6's AppleH5PCLCD's gamma-load bit */
++    uint8_t pmu_adc_ctl;                /* the D1972's ADC control register, 0: the PMU is a plain register file */
++    unsigned pmu_irq_pin;               /* its interrupt, a GPIO (DT pmu interrupts) */
++} N78Board;
++
 +#define TYPE_N78_MACHINE MACHINE_TYPE_NAME("iPod-Touch-5G")
-+OBJECT_DECLARE_SIMPLE_TYPE(N78MachineState, N78_MACHINE)
++#define TYPE_N41_MACHINE MACHINE_TYPE_NAME("iPhone-5")
++OBJECT_DECLARE_TYPE(N78MachineState, N78MachineClass, N78_MACHINE)
++
++struct N78MachineClass {
++    MachineClass parent;
++    const N78Board *board;
++};
 +
 +struct N78MachineState {
 +    MachineState parent;
 +
++    const N78Board *board;
 +    ARMCPU *cpu;
 +    MemoryRegion dram;
 +    MemoryRegion rom_lo;
 +    DeviceState *aic;
 +    DeviceState *gpio;
-+    DeviceState *i2c[2];                    /* i2c0, i2c2 */
++    DeviceState *i2c[3];                    /* i2c0 to i2c2, as the board has them */
 +    char *kboot_path;
 +    GuestPackage pkg;                       /* hw/arm/guest-package.c: the GL front's hello, guest packages */
 +    IPodTouchMultitouchState *mt;           /* spi1's sensor */
++    /* A6: the core's virtual timer, an IRQ-class interrupt with its own vector (n41_vtimer) */
++    qemu_irq cpu_irq;
++    bool aic_irq, vtimer;
 +};
 +
 +/*
@@ -90,8 +724,6 @@ index 0000000000..e3fc32aed6
 +#define N78_GPIO_BTN_HOLD   0x001
 +#define N78_GPIO_BTN_VOLUP  0x002
 +#define N78_GPIO_BTN_VOLDN  0x003
-+/* The sensor's ATN: DT multi-touch interrupts 0x15 on the GPIO controller, pin 0x205 as on the A4. */
-+#define N78_GPIO_MT_ATN     0x205
 +
 +/*
 + * The iPod touch 5's sensor: an N1-class part the kernel drives as AppleMultitouchN1SPI
@@ -110,6 +742,44 @@ index 0000000000..e3fc32aed6
 +    .region_param = { MT_SENSOR_REGION_PARAM }, .region_param_len = 1,
 +    .frame_x0 = -69, .frame_width = 4748,
 +    .frame_y0 = -254, .frame_height = 8709,
++};
++
++/*
++ * The iPhone 5's: 14G61's N41.mtprops has one entry, "C1F57,1" (firmware 0x0266, 64340 bytes), and the kernel's
++ * N41 personality is AppleMultitouchSPIC1F57's, so family 0x57. Answering as the iPod's 0x58, the firmware
++ * still goes down but iOS 10 (which dropped the iPod touch 5) never turns a frame into a touch (a6-step1.md
++ * 15.2). The same 4-inch panel, so the n78's geometry.
++ */
++static const MTSensorProfile mt_profile_n41 = {
++    .family_id = 0x57,
++    .rows = MT_SENSOR_ROWS, .cols = MT_SENSOR_COLUMNS,
++    .bcd_version = 0x266,
++    .surface_width = MT_SENSOR_SURFACE_WIDTH,
++    .surface_height = 8860,
++    .region_desc = { MT_SENSOR_REGION_DESC }, .region_desc_len = 1,
++    .region_param = { MT_SENSOR_REGION_PARAM }, .region_param_len = 1,
++    .frame_x0 = -69, .frame_width = 4748,
++    .frame_y0 = -254, .frame_height = 8709,
++};
++
++/* The sensor's ATN: DT multi-touch interrupts 0x15 on the GPIO controller, pin 0x205 as on the A4. */
++static const N78Board board_n78 = {
++    .name = "n78", .dram_size = 512 * MiB,
++    .i2c_buses = 1 << 0 | 1 << 2, .i2c_pins = { 0x0604, 0x0605, 0x1800, 0x1801 }, .n_i2c_pins = 4,
++    .mt_atn = 0x205, .mt = &mt_profile_n78, .buttons = 4, .console_uart = 1,
++};
++
++/*
++ * The iPhone 5 (14G61's N41 DT): touch interrupt 0xc9, pin 0x1901; i2c0, i2c1 and i2c2 on pins 0x702/0x703,
++ * 0x704/0x705 and 0xb00/0xb01; the ringer switch (button_ringerab) at pin 4.
++ */
++static const N78Board board_n41 = {
++    .name = "n41", .dram_size = 1 * GiB,
++    .i2c_buses = 1 << 0 | 1 << 1 | 1 << 2,
++    .i2c_pins = { 0x0702, 0x0703, 0x0704, 0x0705, 0x0b00, 0x0b01 }, .n_i2c_pins = 6,
++    .mt_atn = 0x1901, .mt = &mt_profile_n41, .buttons = 5, .console_uart = 6, .gauge_mah = 1440,
++    .backlight_addr = 0x63, .clcd_gamma_busy = 0x40,
++    .pmu_adc_ctl = 0x48, .pmu_irq_pin = 0x006,
 +};
 +
 +/* Absolute pointer (QMP input-send-event abs + btn, or a tablet) -> one finger; y runs bottom-up. */
@@ -150,11 +820,28 @@ index 0000000000..e3fc32aed6
 +    .event = n78_kbd_event,
 +};
 +
++/* The iOS app bridge's buttons (contrib/ios-app/qemu-ios-ui.c, ios_press): the same pins, from the main loop;
++ * a no-op on other machines. */
++void ipod_touch_5g_press_button(IPodTouchButton button, bool down)
++{
++    static const int pins[] = {
++        [IPOD_TOUCH_BUTTON_HOME] = N78_GPIO_BTN_MENU,
++        [IPOD_TOUCH_BUTTON_POWER] = N78_GPIO_BTN_HOLD,
++        [IPOD_TOUCH_BUTTON_VOLUP] = N78_GPIO_BTN_VOLUP,
++        [IPOD_TOUCH_BUTTON_VOLDOWN] = N78_GPIO_BTN_VOLDN,
++    };
++    N78MachineState *s = (N78MachineState *)
++        object_dynamic_cast(OBJECT(qdev_get_machine()), TYPE_N78_MACHINE);
++
++    if (!s || !s->gpio || (unsigned)button >= ARRAY_SIZE(pins)) {
++        return;
++    }
++    qemu_set_irq(qdev_get_gpio_in(s->gpio, S5L8930_GPIO_PIN(pins[button])), !down);
++}
++
 +/* The OTG's GHWCFG1-4, as the A4 machine has them (hw/arm/ipad1.c). */
 +static uint32_t n78_usb_hwcfg[] = { 0, 0x7a8f60d0, 0x082000e8, 0x01f08024 };
 +
-+/* i2c0's and i2c2's function-iic_sda/scl GPIOs, as the 7.1.2 and 9.3.5 DTs give them. */
-+static const uint32_t n78_i2c_pins[] = { 0x0604, 0x0605, 0x1800, 0x1801 };
 +
 +/*
 + * The guest-services trap (mcr p15,3,Rn,c15,c15,0, "QEMU_CALL") the GLES front in the system volume
@@ -208,6 +895,14 @@ index 0000000000..e3fc32aed6
 +    uint32_t load_pa, entry_pa, bootargs_pa, image_len;
 +
 +    cpu_reset(cs);
++    if (s->cpu_irq) {
++        /*
++         * The A6 kernel enables its decrementer (CNTV_CTL = 1: 0x80007fc8) before it first sets a deadline.
++         * CNTV_CVAL's reset value is UNKNOWN; start it as far off as it goes, so the first decrementer
++         * interrupt is one the kernel asked for.
++         */
++        s->cpu->env.cp15.c14_timer[GTIMER_VIRT].cval = UINT64_MAX;
++    }
 +    gles_host_reset();
 +    guest_pkg_reset(&s->pkg);
 +
@@ -229,7 +924,7 @@ index 0000000000..e3fc32aed6
 +
 +    if (image_len > size - KBOOT_TRAILER_LEN ||
 +        load_pa < S5L8940_DRAM_BASE ||
-+        (uint64_t)load_pa + image_len > (uint64_t)S5L8940_DRAM_BASE + N78_DRAM_SIZE) {
++        (uint64_t)load_pa + image_len > (uint64_t)S5L8940_DRAM_BASE + s->board->dram_size) {
 +        error_report("n78: kboot bundle does not fit in DRAM "
 +                     "(load 0x%x len 0x%x)", load_pa, image_len);
 +        exit(1);
@@ -262,6 +957,57 @@ index 0000000000..e3fc32aed6
 +    cpu_set_pc(cs, entry_pa);
 +}
 +
++/*
++ * The A6's decrementer. 10.3.4 registers no AIC timebase there, so mach_absolute_time reads CNTVCT and
++ * the decrementer is CNTV_TVAL (the fallbacks at 0x80007ff8 and 0x80008058). Without its interrupt no
++ * thread sleeping on a deadline wakes: the USB arbitrator stops after powering its PHY, a helper's sleep()
++ * never returns (docs/reports/a6-step1.md 7).
++ * Where it comes in: the vector page's 0x1C slot goes to fleh_decirq (0x80005b60), which saves the IRQ
++ * mode's lr and spsr as the interrupted state and only then re-enables FIQ (cpsie af); the AIC's IRQ
++ * handler panics on a timer event (kAICIackVecTypeTimer). So the timer is an IRQ, masked by CPSR.I and
++ * taken in IRQ mode, that vectors through 0x1C instead of 0x18: a decrementer exception of the core's own.
++ * Here it is a level on the core's IRQ line beside the AIC's, and taking an IRQ while it is up enters at
++ * 0x1C. rtclock_intr writes the next deadline (CNTV_TVAL), which drops it. The A5's FIQ (the AIC timer,
++ * fleh_fiq_generic) is left as it is; the A6 kernel never starts that timer.
++ */
++static void n41_irq_update(N78MachineState *s)
++{
++    qemu_set_irq(s->cpu_irq, qatomic_read(&s->aic_irq) || qatomic_read(&s->vtimer));
++}
++
++static void n41_aic_irq(void *opaque, int n, int level)
++{
++    N78MachineState *s = opaque;
++
++    qatomic_set(&s->aic_irq, level);
++    n41_irq_update(s);
++}
++
++static void n41_vtimer(void *opaque, int n, int level)
++{
++    N78MachineState *s = opaque;
++
++    qatomic_set(&s->vtimer, level);
++    n41_irq_update(s);
++}
++
++/*
++ * After the core has taken an exception (no BQL needed): an IRQ with the timer up enters at 0x1C, unless
++ * the AIC has one up too. That one goes first, to fleh_irq, and the timer's comes right after: a timer
++ * that fires again as soon as rtclock_intr returns would otherwise keep the AIC's waiting, and the IOP's
++ * completion with it ("IOP: timed out waiting for workloop to process completed command", a6-step1.md 13).
++ */
++static void n41_irq_taken(ARMCPU *cpu, void *opaque)
++{
++    N78MachineState *s = opaque;
++    CPUARMState *env = &cpu->env;
++
++    if (CPU(cpu)->exception_index == EXCP_IRQ && qatomic_read(&s->vtimer) && !qatomic_read(&s->aic_irq) &&
++        (env->regs[15] & 0x1f) == 0x18) {
++        env->regs[15] += 4;
++    }
++}
++
 +static void n78_init(MachineState *machine)
 +{
 +    N78MachineState *s = N78_MACHINE(machine);
@@ -280,11 +1026,15 @@ index 0000000000..e3fc32aed6
 +    object_property_set_link(cpuobj, "memory", OBJECT(sysmem), &error_abort);
 +    object_property_set_bool(cpuobj, "has_el3", false, NULL);
 +    object_property_set_bool(cpuobj, "has_el2", false, NULL);
++    if (object_property_find(cpuobj, "cntfrq")) {
++        /* Swift's generic timer: it counts the 24 MHz timebase the DT gives (timebase-frequency). */
++        object_property_set_uint(cpuobj, "cntfrq", 24000000, &error_abort);
++    }
 +    object_property_set_bool(cpuobj, "realized", true, &error_fatal);
 +    object_unref(cpuobj);
 +    define_arm_cp_regs(s->cpu, n78_cp_reginfo);
 +
-+    memory_region_init_ram(&s->dram, NULL, "n78.dram", N78_DRAM_SIZE, &error_fatal);
++    memory_region_init_ram(&s->dram, NULL, "n78.dram", s->board->dram_size, &error_fatal);
 +    memory_region_add_subregion(sysmem, S5L8940_DRAM_BASE, &s->dram);
 +    /*
 +     * PA 0: the SecureROM's window on the device. Early kernel init ml_io_maps PA 0 and copies the
@@ -305,6 +1055,8 @@ index 0000000000..e3fc32aed6
 +    memory_region_add_subregion(sysmem, 0, &s->rom_lo);
 +
 +    create_unimplemented_device("s5l8942.periph", S5L8940_IO_BASE, S5L8940_IO_SIZE);
++    /* GL writebacks only into memory a surface's process still maps there (docs/reports/a6-step1.md 13). */
++    gles_host_set_owner_check(true);
 +
 +    dev = qdev_new(TYPE_S5L8940_AIC);
 +    s->aic = dev;
@@ -312,7 +1064,14 @@ index 0000000000..e3fc32aed6
 +    qdev_prop_set_uint32(dev, "num-cpus", 1);
 +    sysbus_realize_and_unref(sbd, &error_fatal);
 +    sysbus_mmio_map(sbd, 0, S5L8940_AIC_BASE);
-+    sysbus_connect_irq(sbd, 0, qdev_get_gpio_in(DEVICE(s->cpu), ARM_CPU_IRQ));
++    if (arm_feature(&s->cpu->env, ARM_FEATURE_GENERIC_TIMER)) {
++        s->cpu_irq = qdev_get_gpio_in(DEVICE(s->cpu), ARM_CPU_IRQ);
++        sysbus_connect_irq(sbd, 0, qemu_allocate_irq(n41_aic_irq, s, 0));
++        qdev_connect_gpio_out(DEVICE(s->cpu), GTIMER_VIRT, qemu_allocate_irq(n41_vtimer, s, 0));
++        arm_register_el_change_hook(s->cpu, n41_irq_taken, s, false);
++    } else {
++        sysbus_connect_irq(sbd, 0, qdev_get_gpio_in(DEVICE(s->cpu), ARM_CPU_IRQ));
++    }
 +    sysbus_connect_irq(sbd, 1, qdev_get_gpio_in(DEVICE(s->cpu), ARM_CPU_FIQ));
 +
 +    sysbus_create_simple(TYPE_S5L8940_PMGR, S5L8940_PMGR_BASE, NULL);
@@ -332,10 +1091,10 @@ index 0000000000..e3fc32aed6
 +    sysbus_realize_and_unref(sbd, &error_fatal);
 +    sysbus_mmio_map(sbd, 0, S5L8940_GPIO_BASE);
 +    sysbus_connect_irq(sbd, 0, qdev_get_gpio_in(s->aic, S5L8940_IRQ_GPIO));
-+    for (int i = 0; i < ARRAY_SIZE(n78_i2c_pins); i++) {
-+        s5l8930_gpio_set_rest_level(dev, S5L8930_GPIO_PIN(n78_i2c_pins[i]), true);
++    for (int i = 0; i < s->board->n_i2c_pins; i++) {
++        s5l8930_gpio_set_rest_level(dev, S5L8930_GPIO_PIN(s->board->i2c_pins[i]), true);
 +    }
-+    for (int pin = N78_GPIO_BTN_MENU; pin <= N78_GPIO_BTN_VOLDN; pin++) {
++    for (int pin = 0; pin < s->board->buttons; pin++) {
 +        s5l8930_gpio_set_rest_level(dev, S5L8930_GPIO_PIN(pin), true);     /* released */
 +    }
 +    qemu_input_handler_register(dev, &n78_kbd_handler);
@@ -354,25 +1113,50 @@ index 0000000000..e3fc32aed6
 +        sysbus_mmio_map(SYS_BUS_DEVICE(spi), 0, S5L8940_SPI_BASE(1));
 +        sysbus_connect_irq(SYS_BUS_DEVICE(spi), 0, qdev_get_gpio_in(s->aic, S5L8940_IRQ_SPI(1)));
 +        s->mt = IPOD_TOUCH_SPI(spi)->mt;
-+        s->mt->profile = &mt_profile_n78;
++        s->mt->profile = s->board->mt;
 +        qdev_connect_gpio_out_named(DEVICE(s->mt), "atn", 0,
-+                                    qdev_get_gpio_in(dev, S5L8930_GPIO_PIN(N78_GPIO_MT_ATN)));
++                                    qdev_get_gpio_in(dev, S5L8930_GPIO_PIN(s->board->mt_atn)));
 +        qemu_add_mouse_event_handler(n78_mouse_event, s->mt, 1, "iPod touch 5G touchscreen");
 +    }
 +
-+    /* i2c0 (the D1881 PMU) and i2c2 (accelerometer, gyro: nothing yet). */
-+    for (int n = 0; n <= 2; n += 2) {
++    /* i2c0 (the PMU) and i2c2 (and the A6's i2c1): sensors, nothing yet. Their AIC lines are 0x12 up. */
++    for (int n = 0; n <= 2; n++) {
++        g_autofree char *name = g_strdup_printf("i2c%d", n);
++
++        if (!(s->board->i2c_buses & (1 << n))) {
++            continue;
++        }
 +        dev = qdev_new(TYPE_S5L8940_I2C);
-+        s->i2c[n / 2] = dev;
++        s->i2c[n] = dev;
 +        sbd = SYS_BUS_DEVICE(dev);
-+        object_property_add_child(OBJECT(machine), n ? "i2c2" : "i2c0", OBJECT(dev));
++        object_property_add_child(OBJECT(machine), name, OBJECT(dev));
 +        sysbus_realize_and_unref(sbd, &error_fatal);
 +        sysbus_mmio_map(sbd, 0, S5L8940_I2C_BASE(n));
-+        sysbus_connect_irq(sbd, 0, qdev_get_gpio_in(s->aic,
-+                           n ? S5L8940_IRQ_I2C2 : S5L8940_IRQ_I2C0));
++        sysbus_connect_irq(sbd, 0, qdev_get_gpio_in(s->aic, S5L8940_IRQ_I2C0 + n));
 +    }
-+    i2c_slave_create_simple(I2C_BUS(qdev_get_child_bus(s->i2c[0], "i2c")),
-+                            TYPE_S5L8940_D1881, S5L8940_D1881_ADDR);
++    {
++        I2CSlave *pmu = i2c_slave_new(TYPE_S5L8940_D1881, S5L8940_D1881_ADDR);
++
++        if (s->board->pmu_adc_ctl) {
++            /* The D1972's ADC and its interrupt, on GPIO pmu_irq_pin (active low): s5l8940_i2c.c. */
++            qdev_prop_set_uint8(DEVICE(pmu), "adc-ctl", s->board->pmu_adc_ctl);
++            qdev_connect_gpio_out_named(DEVICE(pmu), "irq", 0,
++                                        qemu_irq_invert(qdev_get_gpio_in(s->gpio,
++                                                        S5L8930_GPIO_PIN(s->board->pmu_irq_pin))));
++        }
++        i2c_slave_realize_and_unref(pmu, I2C_BUS(qdev_get_child_bus(s->i2c[0], "i2c")), &error_fatal);
++    }
++    if (s->board->backlight_addr) {
++        /*
++         * The iPhone 5's LM3534: AppleLMBacklight::start reads its registers from 0x10 and, unanswered, logs
++         * "could not communicate with controller - tearing down driver". It only needs the read acknowledged,
++         * then writes a few settings back: the D1881 stand-in without its ADC is that register file (a6-step1.md
++         * 16.2). The panel's light itself stays the display model's.
++         */
++        I2CSlave *bl = i2c_slave_new(TYPE_S5L8940_D1881, s->board->backlight_addr);
++
++        i2c_slave_realize_and_unref(bl, I2C_BUS(qdev_get_child_bus(s->i2c[0], "i2c")), &error_fatal);
++    }
 +
 +    /*
 +     * CDMA + AES: the A4 model. bsd_init cannot go on without it: IOSecureBSDRoot
@@ -382,7 +1166,7 @@ index 0000000000..e3fc32aed6
 +     */
 +    dev = qdev_new(TYPE_S5L8930_CDMA);
 +    qdev_prop_set_uint64(dev, "dram-base", S5L8940_DRAM_BASE);
-+    qdev_prop_set_uint64(dev, "dram-size", N78_DRAM_SIZE);
++    qdev_prop_set_uint64(dev, "dram-size", s->board->dram_size);
 +    qdev_prop_set_uint32(dev, "channels", S5L8940_CDMA_CHANNELS);
 +    qdev_prop_set_uint8(dev, "version", 3);
 +    qdev_prop_set_uint32(dev, "paced-ports", 0);
@@ -401,10 +1185,11 @@ index 0000000000..e3fc32aed6
 +     * clcd has no mapper), so the model's dart2 stays unmapped and layer bases are physical.
 +     */
 +    dev = qdev_new(TYPE_S5L8930_DISPLAY);
-+    qdev_prop_set_uint64(dev, "fb-base", N78_VRAM_BASE);
++    qdev_prop_set_uint64(dev, "fb-base", N78_VRAM_BASE(s->board->dram_size));
 +    qdev_prop_set_uint16(dev, "width", N78_FB_WIDTH);
 +    qdev_prop_set_uint16(dev, "height", N78_FB_HEIGHT);
 +    qdev_prop_set_bit(dev, "h4p", true);
++    qdev_prop_set_uint32(dev, "gamma-busy", s->board->clcd_gamma_busy);
 +    sbd = SYS_BUS_DEVICE(dev);
 +    sysbus_realize_and_unref(sbd, &error_fatal);
 +    sysbus_mmio_map(sbd, 0, S5L8940_DISP_PIPE0_BASE);
@@ -463,9 +1248,22 @@ index 0000000000..e3fc32aed6
 +    sysbus_realize_and_unref(sbd, &error_fatal);
 +    sysbus_mmio_map(sbd, 0, S5L8940_IOP_BASE);
 +
-+    /* Console: serial0 on uart1. Its AIC line is wired once the DT gives it. */
-+    exynos4210_uart_create(S5L8940_UART_BASE(N78_CONSOLE_UART), 256, N78_CONSOLE_UART,
++    /* Console: serial0 on the board's console UART. Its AIC line is wired once the DT gives it. */
++    exynos4210_uart_create(S5L8940_UART_BASE(s->board->console_uart), 256, s->board->console_uart,
 +                           serial_hd(0), NULL, false);
++
++    /*
++     * The iPhone 5's gas gauge (uart5/gas-gauge, bq27540 over HDQ): the A4 machine's model (s5l8930_hdq.c, a
++     * 16-byte FIFO as ipad1.c explains), full and on battery. Unanswered, the battery icon showed nearly empty.
++     */
++    if (s->board->gauge_mah) {
++        Chardev *gauge = qemu_chardev_new(NULL, TYPE_CHARDEV_S5L8930_HDQ, NULL, NULL, &error_abort);
++
++        s5l8930_hdq_set_capacity(gauge, s->board->gauge_mah);
++        s5l8930_hdq_set_battery(gauge, 100, false);
++        exynos4210_uart_create(S5L8940_UART_BASE(5), 16, 5, gauge,
++                               qdev_get_gpio_in(s->aic, S5L8940_IRQ_UART(5)), true);
++    }
 +
 +    qemu_register_reset(n78_cpu_reset, s);
 +}
@@ -487,19 +1285,32 @@ index 0000000000..e3fc32aed6
 +{
 +    MachineClass *mc = MACHINE_CLASS(klass);
 +
++    N78_MACHINE_CLASS(klass)->board = &board_n78;
 +    mc->desc = "iPod touch 5G (N78AP, S5L8942X)";
 +    mc->init = n78_init;
 +    mc->max_cpus = 1;
 +    mc->default_cpu_type = ARM_CPU_TYPE_NAME("cortex-a9");
-+    mc->default_ram_size = N78_DRAM_SIZE;
++    mc->default_ram_size = board_n78.dram_size;
 +    object_class_property_add_str(klass, "kboot", n78_get_kboot, n78_set_kboot);
 +    gles_host_class_init(klass);
 +    object_class_property_set_description(klass, "kboot",
-+                                          "K48KBOOT bundle from firmwarekit (board n78)");
++                                          "K48KBOOT bundle from tools/a5/n78_kboot.py (board n78 or n41)");
++}
++
++/* The iPhone 5: the iPod touch 5 with Swift cores and n41's board. */
++static void n41_class_init(ObjectClass *klass, const void *data)
++{
++    MachineClass *mc = MACHINE_CLASS(klass);
++
++    N78_MACHINE_CLASS(klass)->board = &board_n41;
++    mc->desc = "iPhone 5 (N41AP, S5L8950X)";
++    mc->default_cpu_type = ARM_CPU_TYPE_NAME("apple-swift");
++    mc->default_ram_size = board_n41.dram_size;
 +}
 +
 +static void n78_instance_init(Object *obj)
 +{
++    N78_MACHINE(obj)->board = N78_MACHINE_GET_CLASS(obj)->board;
 +    guest_pkg_init(&N78_MACHINE(obj)->pkg, obj);
 +}
 +
@@ -509,12 +1320,20 @@ index 0000000000..e3fc32aed6
 +    .instance_init = n78_instance_init,
 +    .interfaces = arm_machine_interfaces,
 +    .instance_size = sizeof(N78MachineState),
++    .class_size = sizeof(N78MachineClass),
 +    .class_init = n78_class_init,
++};
++
++static const TypeInfo n41_machine_info = {
++    .name = TYPE_N41_MACHINE,
++    .parent = TYPE_N78_MACHINE,
++    .class_init = n41_class_init,
 +};
 +
 +static void n78_machine_types(void)
 +{
 +    type_register_static(&n78_machine_info);
++    type_register_static(&n41_machine_info);
 +}
 +
 +type_init(n78_machine_types)
@@ -793,7 +1612,7 @@ index 45ed7fe972..c28b046368 100644
      DEFINE_PROP_UINT32("paced-base", S5L8930CDMAState, paced_base, S5L8930_I2S_BASE(0)),
      DEFINE_PROP_UINT32("paced-ports", S5L8930CDMAState, paced_ports, 3),
 diff --git a/hw/arm/s5l8930_display.c b/hw/arm/s5l8930_display.c
-index 61a5628e46..0ddd714412 100644
+index 61a5628e46..0706f50183 100644
 --- a/hw/arm/s5l8930_display.c
 +++ b/hw/arm/s5l8930_display.c
 @@ -51,6 +51,22 @@
@@ -827,15 +1646,29 @@ index 61a5628e46..0ddd714412 100644
      unsigned sx, sy, sw, sh;         /* source rectangle */
      unsigned x0, y0, x1, y1;         /* destination rectangle, clipped to the panel */
  } UILayer;
-@@ -106,6 +123,7 @@ struct S5L8930DisplayState {
+@@ -106,6 +123,11 @@ struct S5L8930DisplayState {
      uint16_t width, height;  /* properties: the board's panel, as iBoot programs it */
      uint32_t pw, ph;         /* "panel-width"/"panel-height": panel= override (issue #21), 0 = the board's */
      uint32_t refresh_hz;     /* "refresh-hz": the VBL's rate, 60 as on the devices */
 +    bool h4p;                /* "h4p": the A5's layer registers (H4P_UI_*) */
++    /* "gamma-busy": CLCD_GAMMA_CTRL bits the driver sets to start a gamma table load and then waits to see
++     * clear, which the load here finishes at once. The A6's AppleH5PCLCD uses 0x40 and polls it with no
++     * timeout before the next load: left set, the second load spins in IODelay forever (a6-step1.md 16.2). */
++    uint32_t gamma_busy;
  
      DisplayPipe pipe[2];     /* 0 = DisplayPipe0 (scanned out), 1 = RGBOUT */
      uint32_t clcd[2][CLCD_WORDS];
-@@ -576,6 +594,30 @@ static void fb_read(S5L8930DisplayState *s, uint32_t va, uint8_t *dst, unsigned
+@@ -500,6 +522,9 @@ static void clcd_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
+         clcd_update_irq(s);
+         return;
+     }
++    if (addr == CLCD_GAMMA_CTRL) {
++        val &= ~s->gamma_busy;
++    }
+     regs[addr / 4] = val;
+     if (addr == CLCD_GAMMA_CTRL) {
+         gamma_update(s);
+@@ -576,6 +601,30 @@ static void fb_read(S5L8930DisplayState *s, uint32_t va, uint8_t *dst, unsigned
      }
  }
  
@@ -866,7 +1699,7 @@ index 61a5628e46..0ddd714412 100644
  /* ---- scanout ------------------------------------------------------------- */
  
  static void display_invalidate(void *opaque)
-@@ -604,6 +646,15 @@ static bool scanout_layer(S5L8930DisplayState *s, int layer, unsigned w, unsigne
+@@ -604,6 +653,15 @@ static bool scanout_layer(S5L8930DisplayState *s, int layer, unsigned w, unsigne
      uint32_t org = ui[DP_UI_DST_ORIGIN / 4], end = ui[DP_UI_DST_END / 4];
      uint32_t sorg = ui[DP_UI_SRC_ORIGIN / 4], send = ui[DP_UI_SRC_END / 4];
  
@@ -882,7 +1715,7 @@ index 61a5628e46..0ddd714412 100644
      /*
       * 3.2's AppleDisplayPipe (7B500 0xc058d4de) programs DST_ORIGIN and DST_END only for a layer placed off 0,0 and
       * otherwise sets UNSCALED and leaves them as they were: after an iPhone app's compatibility window (its
-@@ -611,7 +662,7 @@ static bool scanout_layer(S5L8930DisplayState *s, int layer, unsigned w, unsigne
+@@ -611,7 +669,7 @@ static bool scanout_layer(S5L8930DisplayState *s, int layer, unsigned w, unsigne
       * them, and honoring those drew the whole Home screen into the window (LightTouchMac issue 87). 4.x writes 0 to
       * UNSCALED and both corners on every swap (8C148 0x806cf468).
       */
@@ -891,7 +1724,7 @@ index 61a5628e46..0ddd714412 100644
          org = end = 0;
      }
  
-@@ -619,6 +670,7 @@ static bool scanout_layer(S5L8930DisplayState *s, int layer, unsigned w, unsigne
+@@ -619,6 +677,7 @@ static bool scanout_layer(S5L8930DisplayState *s, int layer, unsigned w, unsigne
          return false;
      }
      u->base = ui[DP_UI_ADDR / 4];
@@ -899,7 +1732,7 @@ index 61a5628e46..0ddd714412 100644
      u->fmt = (ui[DP_UI_FORMAT / 4] >> 8) & 7;
      /*
       * The source rectangle: SRC_ORIGIN to SRC_END, 11 bits a coordinate (5.1.1's program_hardware, 9B206
-@@ -627,13 +679,15 @@ static bool scanout_layer(S5L8930DisplayState *s, int layer, unsigned w, unsigne
+@@ -627,13 +686,15 @@ static bool scanout_layer(S5L8930DisplayState *s, int layer, unsigned w, unsigne
       * full-panel layer (and the boot surface, which leaves them 0) covers the panel at 0,0; 4.x CA also places
       * partial layers, e.g. an EAGL surface as an overlay under its UI.
       */
@@ -920,7 +1753,7 @@ index 61a5628e46..0ddd714412 100644
      u->x0 = org >> 16;
      u->y0 = org & 0xffff;
      u->x1 = MIN(end ? end >> 16 : u->x0 + u->sw, w);
-@@ -654,7 +708,7 @@ static bool scanout_layer(S5L8930DisplayState *s, int layer, unsigned w, unsigne
+@@ -654,7 +715,7 @@ static bool scanout_layer(S5L8930DisplayState *s, int layer, unsigned w, unsigne
      if (!(ui[DP_UI_FORMAT / 4] & DP_UI_FORMAT_LINEAR)) {
          u->stride >>= 4;
      }
@@ -929,7 +1762,7 @@ index 61a5628e46..0ddd714412 100644
  }
  
  static size_t layer_row_bytes(const UILayer *u)
-@@ -673,12 +727,12 @@ static size_t layer_fetch(S5L8930DisplayState *s, const UILayer *u, uint8_t *dst
+@@ -673,12 +734,12 @@ static size_t layer_fetch(S5L8930DisplayState *s, const UILayer *u, uint8_t *dst
      uint32_t base = u->base + u->sy * u->stride + u->sx * (u->fmt ? 2 : 4);
  
      if (u->sh == rows && u->stride == row) {
@@ -944,7 +1777,7 @@ index 61a5628e46..0ddd714412 100644
      }
      return row * rows;
  }
-@@ -750,8 +804,8 @@ static bool layers(S5L8930DisplayState *s, unsigned w, unsigned h, UILayer u[2],
+@@ -750,8 +811,8 @@ static bool layers(S5L8930DisplayState *s, unsigned w, unsigned h, UILayer u[2],
      if (key) {
          key[0] = w << 16 | h;
          key[1] = (on[0] ? 1 : 0) | (on[1] ? 2 : 0) | (video ? 4 : 0);
@@ -955,7 +1788,7 @@ index 61a5628e46..0ddd714412 100644
      }
      return on[0] || on[1] || video;
  }
-@@ -1074,7 +1128,11 @@ static void s5l8930_display_reset(DeviceState *dev)
+@@ -1074,7 +1135,11 @@ static void s5l8930_display_reset(DeviceState *dev)
          r[(DP_UI_BASE(0) + DP_UI_STRIDE) / 4] = s->width * 4 | 2;
          /* ARGB and linear, as iBoot programs its framebuffer (iBoot-931 0x5ff01bfc: format << 8 | 1). */
          r[(DP_UI_BASE(0) + DP_UI_FORMAT) / 4] = DP_UI_FORMAT_LINEAR;
@@ -968,11 +1801,12 @@ index 61a5628e46..0ddd714412 100644
      }
      pipes_update_irq(s);
      s->next_vbl = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + VBL_PERIOD_NS(s);
-@@ -1245,6 +1303,7 @@ static const Property s5l8930_display_properties[] = {
+@@ -1245,6 +1310,8 @@ static const Property s5l8930_display_properties[] = {
      DEFINE_PROP_UINT32("panel-height", S5L8930DisplayState, ph, 0),
      /* Faster than the devices' 60 Hz on request (Light Touch's experimental 120 Hz), as ipod_touch_lcd's. */
      DEFINE_PROP_UINT32("refresh-hz", S5L8930DisplayState, refresh_hz, 60),
 +    DEFINE_PROP_BOOL("h4p", S5L8930DisplayState, h4p, false),
++    DEFINE_PROP_UINT32("gamma-busy", S5L8930DisplayState, gamma_busy, 0),
  };
  
  static void s5l8930_display_class_init(ObjectClass *klass, const void *data)
@@ -1554,10 +2388,10 @@ index 0000000000..11f76654be
 +type_init(aic_register_types)
 diff --git a/hw/arm/s5l8940_i2c.c b/hw/arm/s5l8940_i2c.c
 new file mode 100644
-index 0000000000..77dd14195f
+index 0000000000..9a04a42f67
 --- /dev/null
 +++ b/hw/arm/s5l8940_i2c.c
-@@ -0,0 +1,344 @@
+@@ -0,0 +1,410 @@
 +/*
 + * S5L8940 ("A5") I2C controller (DT "i2c,s5l8940x", AppleS5L8940XI2CController)
 + * and a register-file stand-in for the Dialog D1881 PMU on i2c0.
@@ -1591,6 +2425,7 @@ index 0000000000..77dd14195f
 +#include "qemu/log.h"
 +#include "qemu/module.h"
 +#include "hw/core/irq.h"
++#include "hw/core/qdev-properties.h"
 +#include "hw/i2c/i2c.h"
 +#include "hw/arm/s5l8940.h"
 +
@@ -1819,7 +2654,21 @@ index 0000000000..77dd14195f
 +    RESETTABLE_CLASS(klass)->phases.hold = s5l8940_i2c_reset_hold;
 +}
 +
-+/* ---- D1881 PMU: 256 one-byte registers behind a one-byte register address ---- */
++/*
++ * ---- D1881 PMU: 256 one-byte registers behind a one-byte register address ----
++ *
++ * With adc-ctl set (the A6's D1972, "pmu,d1972"), also its ADC and the interrupt that ends a conversion,
++ * read off 14G61's AppleD1972PMU (docs/reports/a6-step1.md 13): _readADCGated (0x810e6440) writes the
++ * channel | 0x20 to adc-ctl (0x48), sleeps until the PMU's interrupt handler has seen the end of the
++ * conversion, reads the 12-bit result from the next two registers ((lo & 0xf) | hi << 4) and writes the
++ * channel back. Without the interrupt every read waited out its second, and AppleEmbeddedTempSensor's,
++ * through backboardd's HID server, kept SpringBoard from its lock screen. The events are nine registers
++ * from 0x01, cleared by reading them (the handler reads all nine and writes none: kept set, it was an
++ * interrupt storm), masked by nine from 0x12; the interrupt (the DT's GPIO, active low) is up while one
++ * is unmasked. The end of a conversion is 0x02 bit 5 (adc-event / adc-event-bit): with it the ADC reads
++ * stopped timing out.
++ */
++#define D1972_EVENTS        9
 +
 +struct S5L8940D1881State {
 +    I2CSlave parent_obj;
@@ -1827,7 +2676,19 @@ index 0000000000..77dd14195f
 +    bool addressing;
 +    uint8_t reg;
 +    uint8_t regs[256];
++    qemu_irq irq;
++    uint8_t adc_ctl, adc_event, adc_event_bit, event_base, mask_base;
 +};
++
++static void d1881_update_irq(S5L8940D1881State *s)
++{
++    bool up = false;
++
++    for (unsigned i = 0; i < D1972_EVENTS; i++) {
++        up |= s->regs[s->event_base + i] & ~s->regs[s->mask_base + i];
++    }
++    qemu_set_irq(s->irq, up);
++}
 +
 +static int d1881_event(I2CSlave *i2c, enum i2c_event event)
 +{
@@ -1843,11 +2704,16 @@ index 0000000000..77dd14195f
 +{
 +    S5L8940D1881State *s = S5L8940_D1881(i2c);
 +    uint8_t reg = s->reg++;
++    uint8_t value = s->regs[reg];
 +
 +    if (i2c_trace()) {
-+        qemu_log("d1881: read  0x%02x -> 0x%02x\n", reg, s->regs[reg]);
++        qemu_log("d1881: read  0x%02x -> 0x%02x\n", reg, value);
 +    }
-+    return s->regs[reg];
++    if (s->adc_ctl && reg >= s->event_base && reg < s->event_base + D1972_EVENTS) {
++        s->regs[reg] = 0;                       /* read to clear: the driver never writes them */
++        d1881_update_irq(s);
++    }
++    return value;
 +}
 +
 +static int d1881_send(I2CSlave *i2c, uint8_t data)
@@ -1862,7 +2728,20 @@ index 0000000000..77dd14195f
 +    if (i2c_trace()) {
 +        qemu_log("d1881: write 0x%02x <- 0x%02x\n", s->reg, data);
 +    }
++    if (s->adc_ctl && s->reg >= s->event_base && s->reg < s->event_base + D1972_EVENTS) {
++        s->regs[s->reg++] &= ~data;
++        d1881_update_irq(s);
++        return 0;
++    }
++    if (s->adc_ctl && s->reg == s->adc_ctl && (data & 0x20)) {
++        s->regs[s->adc_ctl + 1] = 0x00;     /* half scale: 0x800 */
++        s->regs[s->adc_ctl + 2] = 0x80;
++        s->regs[s->adc_event] |= s->adc_event_bit;
++    }
 +    s->regs[s->reg++] = data;
++    if (s->adc_ctl) {
++        d1881_update_irq(s);
++    }
 +    return 0;
 +}
 +
@@ -1873,7 +2752,26 @@ index 0000000000..77dd14195f
 +    s->addressing = false;
 +    s->reg = 0;
 +    memset(s->regs, 0, sizeof(s->regs));
++    if (s->adc_ctl) {
++        memset(s->regs + s->mask_base, 0xff, D1972_EVENTS);
++        d1881_update_irq(s);
++    }
 +}
++
++static void d1881_init(Object *obj)
++{
++    S5L8940D1881State *s = S5L8940_D1881(obj);
++
++    qdev_init_gpio_out_named(DEVICE(obj), &s->irq, "irq", 1);
++}
++
++static const Property d1881_properties[] = {
++    DEFINE_PROP_UINT8("adc-ctl", S5L8940D1881State, adc_ctl, 0),
++    DEFINE_PROP_UINT8("adc-event", S5L8940D1881State, adc_event, 0x02),
++    DEFINE_PROP_UINT8("adc-event-bit", S5L8940D1881State, adc_event_bit, 0x20),
++    DEFINE_PROP_UINT8("event-base", S5L8940D1881State, event_base, 0x01),
++    DEFINE_PROP_UINT8("mask-base", S5L8940D1881State, mask_base, 0x12),
++};
 +
 +static void d1881_class_init(ObjectClass *klass, const void *data)
 +{
@@ -1883,6 +2781,7 @@ index 0000000000..77dd14195f
 +    k->recv = d1881_recv;
 +    k->send = d1881_send;
 +    RESETTABLE_CLASS(klass)->phases.hold = d1881_reset_hold;
++    device_class_set_props(DEVICE_CLASS(klass), d1881_properties);
 +}
 +
 +static const TypeInfo s5l8940_i2c_types[] = {
@@ -1897,6 +2796,7 @@ index 0000000000..77dd14195f
 +        .name = TYPE_S5L8940_D1881,
 +        .parent = TYPE_I2C_SLAVE,
 +        .instance_size = sizeof(S5L8940D1881State),
++        .instance_init = d1881_init,
 +        .class_init = d1881_class_init,
 +    },
 +};
@@ -2788,12 +3688,50 @@ index 0000000000..1f78307009
 +}
 +
 +type_init(s5l8940_pmgr_register_types)
+diff --git a/include/hw/arm/guest-services/gles.h b/include/hw/arm/guest-services/gles.h
+index dcc0118e64..f983f51205 100644
+--- a/include/hw/arm/guest-services/gles.h
++++ b/include/hw/arm/guest-services/gles.h
+@@ -395,6 +395,11 @@ static inline const char *gles_id_name(uint32_t id)
+ #define GLES_SURFACE_LA88               0x32433038  /* '2C08' */
+ /* The same two channels as 7.x QuartzCore names them on its IOSurfaces (text and glyph layers). */
+ #define GLES_SURFACE_LA88_IOS7          0x4c413838  /* 'LA88' */
++/* And as 10.x QuartzCore names them (10.3.4's home screen icon labels and Dock titles). */
++#define GLES_SURFACE_LA88_IOS10         0x4c413038  /* 'LA08' */
++/* Four half floats, R G B A, little-endian (10.x QuartzCore's 256x1 filter lookup tables). Sampled as
++ * 8-bit RGBA, clamped to [0, 1]. */
++#define GLES_SURFACE_RGBA_HALF          0x52476841  /* 'RGhA' */
+ /* 16 bits, A1R5G5B5 little-endian (premultiplied: a clear pixel is 0), in rows: 3.1.3's album
+  * covers (ArtworkCache's 320x320, 16-bit skip-first data) as CoreAnimation hands them over. */
+ #define GLES_SURFACE_ARGB1555           0x35353531  /* '5551' */
+@@ -429,6 +434,9 @@ char *gles_host_rejects(void);
+  * the viewport magenta, so a screenshot shows the gap; off, the least-bad fallback stays. */
+ void gles_host_set_debug(bool on);
+ bool gles_host_debug(void);
++/* Check a surface's kept pages against its process's page tables before each writeback (gles-host.c
++ * gles_surface_owned). The A5/A6 machines turn it on; 4.x unmaps surface pages a process still owns. */
++void gles_host_set_owner_check(bool on);
+ /* The newest write generation the bridge recorded on RAM [addr, addr + len): it clears QEMU's
+  * VGA dirty bits of every surface page it checks (its own write-backs included), so a display
+  * model that scans such pages out through the dirty log compares this too, or misses frames. */
+diff --git a/include/hw/arm/ipod_touch_buttons.h b/include/hw/arm/ipod_touch_buttons.h
+index 4ea555a5bb..789005c255 100644
+--- a/include/hw/arm/ipod_touch_buttons.h
++++ b/include/hw/arm/ipod_touch_buttons.h
+@@ -31,5 +31,7 @@ void ipad1_press_button(IPodTouchButton button, bool down);
+ void ipod_touch_1g_press_button(IPodTouchButton button, bool down);
+ /* The S5L8920 boards' (-M n18, n88) GPIO buttons; no-op on other machines. */
+ void s5l8920_press_button(IPodTouchButton button, bool down);
++/* The iPod touch 5G's (-M iPod-Touch-5G, GPIO pins 0 to 3); no-op on other machines. */
++void ipod_touch_5g_press_button(IPodTouchButton button, bool down);
+ 
+ #endif /* HW_ARM_IPOD_TOUCH_BUTTONS_H */
 diff --git a/include/hw/arm/s5l8940.h b/include/hw/arm/s5l8940.h
 new file mode 100644
-index 0000000000..15a2856c9b
+index 0000000000..7f294ec51f
 --- /dev/null
 +++ b/include/hw/arm/s5l8940.h
-@@ -0,0 +1,114 @@
+@@ -0,0 +1,115 @@
 +/*
 + * Apple S5L8940X/S5L8942X ("A5"): addresses and the models only A5 has.
 + *
@@ -2844,6 +3782,7 @@ index 0000000000..15a2856c9b
 +#define S5L8940_I2C_BASE(n)      A5_IO(0x3200000 + (n) * 0x100000)
 +#define S5L8940_GPIO_BASE        A5_IO(0xFA00000)
 +#define S5L8940_IRQ_I2C0         0x12
++#define S5L8940_IRQ_UART(n)      (0x15 + (n))   /* uart1 0x16 .. uart6 0x1b */
 +#define S5L8940_IRQ_I2C2         0x14
 +#define S5L8940_IRQ_GPIO         0x77
 +#define S5L8940_GPIO_PORTS       28     /* DT #gpio-ports */
@@ -2908,3 +3847,43 @@ index 0000000000..15a2856c9b
 +OBJECT_DECLARE_SIMPLE_TYPE(S5L8940D1881State, S5L8940_D1881)
 +
 +#endif
+diff --git a/target/arm/tcg/cpu32.c b/target/arm/tcg/cpu32.c
+index e788acc736..bdd7c07139 100644
+--- a/target/arm/tcg/cpu32.c
++++ b/target/arm/tcg/cpu32.c
+@@ -575,6 +575,27 @@ static void cortex_a15_initfn(Object *obj)
+     define_arm_cp_regs(cpu, cortexa15_cp_reginfo);
+ }
+ 
++/*
++ * Apple Swift, the A6's (S5L8950X) and A6X's cores: ARMv7s, which is ARMv7-A with VFPv4, the integer divides in
++ * both instruction sets and the multiprocessing extensions, so this is QEMU's Cortex-A15 under Apple's MIDR:
++ * implementer 0x61 (xnu osfmk/arm/cpuid.h CPU_VID_APPLE), part 0 (CPU_PART_SWIFT), which xnu calls
++ * CPUFAMILY_ARM_SWIFT. Used by the iPhone 5 machine (hw/arm/ipod_touch_5g.c).
++ */
++static void apple_swift_initfn(Object *obj)
++{
++    ARMCPU *cpu = ARM_CPU(obj);
++
++    cortex_a15_initfn(obj);
++    cpu->dtb_compatible = "apple,swift";
++    cpu->midr = 0x610f0000;
++    /*
++     * The A6's L2: 1 MiB, 8 ways of 64-byte lines, 2048 sets. xnu's vm_page_set_colors takes the page colours
++     * from it (sets x line / page = 32) and panics on a count that is no power of two, which the A15's L2
++     * (2304 sets x 16 ways: 36 colours) is.
++     */
++    cpu->ccsidr[2] = 0x70ffe03a;
++}
++
+ static const ARMCPRegInfo cortexr5_cp_reginfo[] = {
+     /* Dummy the TCM region regs for the moment */
+     { .name = "BTCM", .cp = 15, .opc1 = 0, .crn = 9, .crm = 1, .opc2 = 0,
+@@ -888,6 +909,7 @@ static const ARMCPUInfo arm_tcg_cpus[] = {
+     { .name = "cortex-a8",   .initfn = cortex_a8_initfn },
+     { .name = "cortex-a9",   .initfn = cortex_a9_initfn },
+     { .name = "cortex-a15",  .initfn = cortex_a15_initfn },
++    { .name = "apple-swift", .initfn = apple_swift_initfn },
+     { .name = "cortex-r5",   .initfn = cortex_r5_initfn },
+     { .name = "cortex-r5f",  .initfn = cortex_r5f_initfn },
+     { .name = "cortex-r52",  .initfn = cortex_r52_initfn },

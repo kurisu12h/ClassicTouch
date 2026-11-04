@@ -116,12 +116,18 @@ int main(void)
         }
     }
 
-    /* 2. Effaceable storage, as it_keybag. */
-    svc = 0;
-    for (i = 0; i < 120 && (!find_data(dev, sizeof(dev)) || !(svc = GetService(0, Matching("AppleEffaceableStorage")))); i++)
+    /* 2. Effaceable storage, as it_keybag. The service and the data volume are waited for apart, so each failure
+     * names itself (from 9.x the platform sandbox refuses /dev/disk*s2 without disk-device-access: it_nandfmt.ent). */
+    for (i = 0; i < 120 && !(svc = GetService(0, Matching("AppleEffaceableStorage"))); i++)
         sleep(1);
-    if (!svc || !find_data(dev, sizeof(dev))) {
-        halt(svc ? "FAILED: no data volume" : "FAILED: no AppleEffaceableStorage");
+    if (!svc) {
+        halt("FAILED: no AppleEffaceableStorage");
+        return 1;
+    }
+    for (i = 0; i < 60 && !find_data(dev, sizeof(dev)); i++)
+        sleep(1);
+    if (i == 60) {
+        halt("FAILED: no data volume (no readable /dev/disk<n>s2 with an HFS+ header)");
         return 1;
     }
     kern_return_t kr = Open(svc, mach_task_self_, 0, &conn);

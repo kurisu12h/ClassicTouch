@@ -6,6 +6,8 @@
 Each ACTION is T:WHAT, T in seconds after connecting:
     T:shot              screendump OUTDIR/in-T.png
     T:key:K[:MS]        press and release QEMU key K (h = Home, l = hold/power, equal/minus = volume) for MS ms
+    T:chord:K1+K2..[:MS]  press keys together, release together after MS ms (default 1500): equal+minus+l is
+                        iOS 10's sysdiagnose, whose stackshot of every process lands in the data volume's logs
     T:tap:X,Y[,MS]      one finger down at panel pixel X,Y (640x1136, top-left origin), held MS ms (default 300)
     T:swipe:X0,Y0,X1,Y1[,MS]   drag from X0,Y0 to X1,Y1 over MS ms (default 600)
 Touches go through input-send-event as an absolute pointer (abs 0..32767) plus the left button, which the
@@ -51,6 +53,14 @@ def main(sock, out, *actions):
             q.cmd("input-send-event", events=[{"type": "key", "data": {"down": True, "key": {"type": "qcode", "data": rest[0]}}}])
             time.sleep(ms / 1000)
             q.cmd("input-send-event", events=[{"type": "key", "data": {"down": False, "key": {"type": "qcode", "data": rest[0]}}}])
+        elif what == "chord":
+            keys = rest[0].split("+")
+            ms = float(rest[1]) if len(rest) > 1 else 1500
+            q.cmd("input-send-event", events=[{"type": "key", "data": {"down": True, "key": {"type": "qcode", "data": k}}}
+                                              for k in keys])
+            time.sleep(ms / 1000)
+            q.cmd("input-send-event", events=[{"type": "key", "data": {"down": False, "key": {"type": "qcode", "data": k}}}
+                                              for k in keys])
         elif what == "tap":
             v = list(map(float, rest[0].split(",")))
             x, y = v[:2]

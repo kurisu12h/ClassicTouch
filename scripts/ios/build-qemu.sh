@@ -46,13 +46,15 @@ esac
 [ -f "$QEMU/configure" ] || { echo "没有 QEMU 工作树：$QEMU（见 docs/reports/m1-stage1.md 的构建命令）" >&2; exit 1; }
 [ -f "$SYSROOT/.stamps/nettle" ] || { echo "没有依赖 sysroot：$SYSROOT，先跑 build-deps.sh $PLATFORM" >&2; exit 1; }
 
-# patches/ios-*.patch（按文件名顺序）打到工作树上。整套一起判断，不逐个反向检查：几个补丁改同一个文件时
-# （ios-eagl-es2 和 ios-gles-perf 都改 gles-host.c），单独反向检查前一个会失败。做法：在临时目录里取这些文件的
+# patches/ios-*.patch（按文件名顺序），再加 A5 的两个（a5-n78-skeleton：iPod touch 5 代机型和 GL 前端的 9.x 补充；
+# a5-n78-ios-ui：App 桥里它的按键、熄屏判断和机型表，docs/reports/a5-app.md）打到工作树上。整套一起判断，不逐个
+# 反向检查：几个补丁改同一个文件时（ios-eagl-es2 和 ios-gles-perf 都改 gles-host.c），单独反向检查前一个会失败。做法：在临时目录里取这些文件的
 # 上游原样、按顺序打上全部补丁，和工作树一致就是已经打好；工作树还是原样就整套打上；两样都不是（工作树里有还没
 # 导出成补丁的改动，或补丁换过）就停下。SKIP_PATCHES=1：工作树里正在改补丁（还没导出），不碰工作树。
+PATCHES=("$ROOT"/patches/ios-*.patch "$ROOT/patches/a5-n78-skeleton.patch" "$ROOT/patches/a5-n78-ios-ui.patch")
 if [ "${SKIP_PATCHES:-0}" != 1 ]; then
     patch_files=()
-    while IFS= read -r f; do patch_files+=("$f"); done < <(grep -h '^+++ b/' "$ROOT"/patches/ios-*.patch | sed 's|^+++ b/||' | sort -u)
+    while IFS= read -r f; do patch_files+=("$f"); done < <(grep -h '^+++ b/' "${PATCHES[@]}" | sed 's|^+++ b/||' | sort -u)
     PT="$(mktemp -d)"
     for f in "${patch_files[@]}"; do
         mkdir -p "$PT/a/$(dirname "$f")" "$PT/b/$(dirname "$f")"
@@ -61,7 +63,7 @@ if [ "${SKIP_PATCHES:-0}" != 1 ]; then
             cp "$PT/a/$f" "$PT/b/$f"
         fi
     done
-    for patch in "$ROOT"/patches/ios-*.patch; do (cd "$PT/b" && git apply "$patch"); done
+    for patch in "${PATCHES[@]}"; do (cd "$PT/b" && git apply "$patch"); done
     same() {   # 临时目录 $1 和工作树里这些文件是否一致（都没有也算）
         local f
         for f in "${patch_files[@]}"; do
@@ -71,13 +73,13 @@ if [ "${SKIP_PATCHES:-0}" != 1 ]; then
     if same "$PT/b"; then
         :
     elif same "$PT/a"; then
-        for patch in "$ROOT"/patches/ios-*.patch; do
+        for patch in "${PATCHES[@]}"; do
             echo "打补丁 $(basename "$patch")"
             git -C "$QEMU" apply "$patch"
         done
     else
         rm -rf "$PT"
-        echo "工作树 $QEMU 里补丁改过的文件既不是上游原样，也不是打完 patches/ios-*.patch 的样子：" >&2
+        echo "工作树 $QEMU 里补丁改过的文件既不是上游原样，也不是打完 patches/ios-*.patch 和 a5-n78-*.patch 的样子：" >&2
         echo "有还没导出成补丁的改动（用 scripts/ios/export-patch.sh 导出，或 SKIP_PATCHES=1 先照工作树编）" >&2
         exit 1
     fi

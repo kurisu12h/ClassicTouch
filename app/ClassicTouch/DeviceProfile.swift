@@ -5,10 +5,14 @@
 //           的 FirmwareKit 做，原版给 2.x 做的是要真 SecureROM 的 bootrom 链，这里不支持）
 //   kboot   3GS、iPhone 4、iPod touch 3/4 代、初代 iPad：直接进内核
 //   s5l8900 初代 iPhone、iPod touch 1 代的 1.x（lock 里没有 boot_strategy，按机型认）：iBoot 加 pflash 的 NOR
+//   n78     iPod touch 5 代（A5，7.1.2、9.3.5）：直接进内核，系统卷和数据卷在一块挂 USB 的两分区盘上，NAND（可擦除
+//           存储、NVRAM、钥匙包靠它）是 IOP 模型的页存储目录（docs/reports/a5-step1.md 3.13 到 3.17，a5-app.md）
 //
 // 目录约定（App 的 Documents 下）：
-//   devices/<id>/            设备本体，只读：device.lock.json、nand/、nor.bin、kboot.bin 或 iBoot.bin（+ gid-blobs.bin）
-//   devices/<id>/state/      可写状态：nor.bin（第一次启动从本体克隆）和 overlay/（NAND 页覆盖层）或 nand/（就地写的 NAND）
+//   devices/<id>/            设备本体，只读：device.lock.json、nand/、nor.bin、kboot.bin 或 iBoot.bin（+ gid-blobs.bin）；
+//                            n78 是 device.lock.json、kboot.bin、disk.img、nand/（ce0.pages、ce0.boot）
+//   devices/<id>/state/      可写状态：nor.bin（第一次启动从本体克隆）和 overlay/（NAND 页覆盖层）或 nand/（就地写的 NAND）；
+//                            n78 是 disk.img 和 nand/ 的克隆
 //   devices/<id>/golden-state/  可选：-resetstate 时克隆成 state/ 的起点
 //   bootrom/bootrom_240_4    iPod touch 2 代的 SecureROM（可选，见 placeholderBootrom）
 //   bootrom/bootrom_s5l8900  S5L8900 的 SecureROM（可选，见 s5l8900Bootrom）
@@ -35,6 +39,8 @@ let boards: [String: BoardInfo] = [
     "k48ap": BoardInfo(machine: "ipad1", hasCellular: false, hasUSBHost: true, width: 1024, height: 768),
     "n81ap": BoardInfo(machine: "iPod-Touch-4G", hasCellular: false, hasUSBHost: true, width: 640, height: 960),
     "n90ap": BoardInfo(machine: "iPhone-4", hasCellular: true, hasUSBHost: true, width: 640, height: 960),
+    // 有 USB 主机口，但上面挂的是根盘（usb-storage，总线 ehci.0），不挂 usb-kbd，所以这里记 false
+    "n78ap": BoardInfo(machine: "iPod-Touch-5G", hasCellular: false, hasUSBHost: false, width: 640, height: 1136),
 ]
 
 struct DeviceProfile {
@@ -69,6 +75,7 @@ struct DeviceProfile {
         case "k48ap": return String(localized: "iPad（初代）")
         case "n81ap": return String(localized: "iPod touch（第 4 代）")
         case "n90ap": return "iPhone 4"
+        case "n78ap": return String(localized: "iPod touch（第 5 代）")
         default: return board
         }
     }
@@ -81,6 +88,9 @@ struct DeviceProfile {
 
     /// 初代 iPhone 和 iPod touch 1 代（S5L8900，iPhone OS 1.x），qemu-ios 的 iPhone-2G / iPod-Touch-1G 机型
     var isS5L8900: Bool { board == "m68ap" || board == "n45ap" }
+
+    /// iPod touch 5 代：根盘在 USB 盘上，NAND 是 IOP 的页存储目录
+    var isN78: Bool { bootStrategy == "n78" }
 
     /// 客体主版本号（iOS 7 在解释器下基本不能用，提示要更重）
     var majorVersion: Int { Int(productVersion.split(separator: ".").first ?? "") ?? 0 }
@@ -145,6 +155,18 @@ struct DeviceProfile {
     func prepareState() throws {
         let fm = FileManager.default
         try fm.createDirectory(at: state, withIntermediateDirectories: true)
+        if isN78 {
+            // 盘和 NAND 都是 QEMU 就地写的：第一次启动各克隆一份（APFS 上是克隆，稀疏文件不展开），先放暂存名再改名
+            for name in ["disk.img", "nand"] {
+                let live = state.appendingPathComponent(name)
+                if fm.fileExists(atPath: live.path) { continue }
+                let staged = state.appendingPathComponent(".staging-\(name)")
+                try? fm.removeItem(at: staged)
+                try fm.copyItem(at: base.appendingPathComponent(name), to: staged)
+                try fm.moveItem(at: staged, to: live)
+            }
+            return
+        }
         let nor = state.appendingPathComponent("nor.bin")
         if !fm.fileExists(atPath: nor.path) {
             try fm.copyItem(at: base.appendingPathComponent("nor.bin"), to: nor)
@@ -210,6 +232,13 @@ struct DeviceProfile {
             if info.hasCellular { m += ",baseband=on" }
             m += options
             argv += ["-M", m]
+        case "n78":
+            // tools/a5/n78_run.sh 的参数：内核加设备树的开机包；根盘是挂在 EHCI 上的 USB 大容量存储（两分区，
+            // fstab 是 disk1s1、disk1s2）；IOP 模型的 NAND 页存储放在 state/nand。内存用机型默认的 512 MB。
+            argv += ["-M", "\(info.machine),kboot=\(path("kboot.bin"))" + options,
+                     "-drive", "if=none,id=root,file=\(statePath("disk.img")),format=raw",
+                     "-device", "usb-storage,bus=ehci.0,drive=root",
+                     "-global", "driver=s5l8940.iop,property=nand,value=\(statePath("nand"))"]
         case "s5l8900":
             // BootRecipe.iPod1G：直接进解密过的 iBoot（初代 iPhone 是 iBoot-159），NOR 是 pflash，内存用机型默认的
             // 128 MB。机型自带基带（初代 iPhone）、Wi-Fi，蓝牙在 UART3。lock 的 machine 里有 imei、wifi-mac。
@@ -221,7 +250,8 @@ struct DeviceProfile {
         }
         argv += ["-accel", accel, "-display", "none", "-no-shutdown", "-audio", "driver=none", "-serial", "file:\(serial)"]
         if info.hasUSBHost && usbKeyboard { argv += ["-device", "usb-kbd,bus=usb-bus.0,max-power=20"] }
-        argv += ["-netdev", restricted]
+        // n78 没有网卡，空的 -netdev 只会让 QEMU 报「has no peer」
+        if !isN78 { argv += ["-netdev", restricted] }
         if info.hasCellular { argv += ["-netdev", restricted.replacingOccurrences(of: "id=wifi0", with: "id=cell0")] }
         return (argv + extra, env)
     }

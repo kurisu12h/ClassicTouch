@@ -18,7 +18,11 @@
 - 图形走手机自己的 GPU（OpenGL ES）。
 - App 打开是系统列表，点一个就开机；换系统时 App 会重新启动。
 
-还没做的：iPhone OS 1、2 和 iOS 4、5 还没在手机上试过；声音；多点触控；在手机上直接下载固件、制作设备。iOS 8 到 10 要模拟 A5/A6 芯片的机型，目前还没有任何模拟器支持，是长期目标。
+**iOS 9：** 我们给 qemu-ios 加了 A5 芯片的 iPod touch（第 5 代）机型，iOS 9.3.5 和 7.1.2 已在 Mac 和 iOS 模拟器的 App 里开到主屏、打开「设置」（模拟器里 9.3.5 约 66 到 73 秒锁屏，7.1.2 约 37 秒），还没上真机。见 `docs/reports/a5-step1.md`、`docs/reports/a5-app.md`。
+
+**iOS 10：** 新加 A6 芯片的 iPhone 5 机型，iOS 10.3.4 在 Mac 上每次开机都进锁屏、主屏，有默认壁纸，能点开「设置」（约 100 秒锁屏），熄屏后按 Home 能叫醒，图形走 GL 前端。见 `docs/reports/a6-step1.md`。
+
+还没做的：iPhone OS 1、2 和 iOS 4、5 还没在手机上试过；iPod touch（第 5 代）还没在手机上试过，触摸纵向有约 100 像素的偏差；声音；多点触控；在手机上直接下载固件、制作设备。iOS 8 还没做；iOS 10 的电池显示不对。
 
 ## 怎么做到的
 
@@ -41,4 +45,4 @@ GPL-2.0-or-later，见 `LICENSE`。
 
 ---
 
-**English:** Classic Touch (working title) aims to run stock iPhone OS 1 through iOS 10 on an iPhone. It builds on [qemu-ios](https://github.com/samhenrigold/qemu-ios). iPhone OS 3.1.3, iOS 6.1.6 and iOS 7.1.2 already boot to the home screen on an iPhone 18 Pro, with JIT from StikDebug and GPU-accelerated graphics. Work in progress; no Apple firmware is included. Licensed GPL-2.0-or-later. Not affiliated with Apple.
+**English:** Classic Touch (working title) aims to run stock iPhone OS 1 through iOS 10 on an iPhone. It builds on [qemu-ios](https://github.com/samhenrigold/qemu-ios). iPhone OS 3.1.3, iOS 6.1.6 and iOS 7.1.2 already boot to the home screen on an iPhone 18 Pro, with JIT from StikDebug and GPU-accelerated graphics. iOS 9.3.5 boots to the home screen on an emulated iPod touch (5th generation, a new A5 machine) on a Mac and in the iOS Simulator, not yet on a phone. iOS 10.3.4 on an emulated iPhone 5 (A6) reaches the lock screen, home screen (with its default wallpaper) and Settings on a Mac. Work in progress; no Apple firmware is included. Licensed GPL-2.0-or-later. Not affiliated with Apple.
