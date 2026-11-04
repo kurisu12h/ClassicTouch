@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
-"""把一台做好的设备打成 .ctpack，拷进手机后由 App 解开（app/ClassicTouch/DevicePack.swift）。
+"""Pack a finished device into a .ctpack, which the app unpacks once it is copied to the phone
+(app/ClassicTouch/DevicePack.swift).
 
-为什么不直接用 devicectl copy：设备的 NAND 文件是稀疏文件（iPod touch 2 代实际 465 MB、表观 8.1 GB；
-3GS 实际 1.8 GB、表观 17 GB），devicectl 会把空洞当零照传（实测约 58 MB/s），手机上也会真的占满。
-.ctpack 只装有数据的区段（SEEK_DATA/SEEK_HOLE，再跳过全零的 64 KiB 块），App 解包时按区段写回，
-文件还是稀疏的。
+Why not plain devicectl copy: a device's NAND files are sparse (the iPod touch 2G's are 465 MB real, 8.1 GB apparent;
+the 3GS's 1.8 GB real, 17 GB apparent), and devicectl sends the holes as zeros (about 58 MB/s measured), which really
+fill up the phone too. A .ctpack holds only the extents with data (SEEK_DATA/SEEK_HOLE, also skipping all-zero 64 KiB
+blocks), and the app writes them back extent by extent when unpacking, so the files stay sparse.
 
-格式（小端）：b"CTPACK1\\n"，然后若干条目，以类型 0 结尾：
-  u8 类型（1 目录，2 文件）  u16 路径长度  路径（UTF-8，相对 App 的 Documents）  u32 权限位
-  文件再加：u64 大小  u32 区段数  每个区段 u64 偏移、u64 长度，紧跟着这么多字节的数据
+Format (little-endian): b"CTPACK1\\n", then entries, ending with type 0:
+  u8 type (1 directory, 2 file)  u16 path length  path (UTF-8, relative to the app's Documents)  u32 mode bits
+  files add: u64 size  u32 extent count  per extent u64 offset, u64 length, followed by that many bytes of data
 
-用法：pack-device.py 输出.ctpack 源目录=包内路径 [源目录=包内路径 ...]
-  例：pack-device.py work/ios/packs/n72ap.ctpack work/ios/devices/n72ap-7E18=devices/n72ap-7E18
+Usage: pack-device.py OUT.ctpack SRC_DIR=PATH_IN_PACK [SRC_DIR=PATH_IN_PACK ...]
+  Example: pack-device.py work/ios/packs/n72ap.ctpack work/ios/devices/n72ap-7E18=devices/n72ap-7E18
 """
 import os
 import stat
@@ -23,7 +24,7 @@ ZERO = bytes(CHUNK)
 
 
 def extents(fd, size):
-    """(偏移, 长度) 的有数据区段，去掉全零的 64 KiB 块。"""
+    """(offset, length) extents with data, dropping all-zero 64 KiB blocks."""
     off = 0
     raw = []
     while off < size:
@@ -79,7 +80,8 @@ def main():
                     fd = os.open(path, os.O_RDONLY)
                     try:
                         ex = list(extents(fd, st.st_size))
-                        # 解包后要可写（QEMU 写 NOR、overlay、就地写的 NAND），只读的本体也没关系
+                        # Writable after unpacking (QEMU writes the NOR, the overlay and the NAND in place); it does
+                        # no harm for the read-only base files either
                         f.write(struct.pack("<BH", 2, len(p)) + p + struct.pack("<IQI", 0o644, st.st_size, len(ex)))
                         for off, n in ex:
                             f.write(struct.pack("<QQ", off, n))
@@ -93,7 +95,7 @@ def main():
                         os.close(fd)
         f.write(b"\0")
     os.rename(out + ".part", out)
-    print("%s：数据 %.0f MB，包 %.0f MB" % (out, total / 1048576, os.path.getsize(out) / 1048576))
+    print("%s: data %.0f MB, pack %.0f MB" % (out, total / 1048576, os.path.getsize(out) / 1048576))
 
 
 if __name__ == "__main__":

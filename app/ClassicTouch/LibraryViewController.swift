@@ -1,8 +1,11 @@
-// 首页：Documents/devices/ 下的系统按年份排成一张「年表」（设计稿见 docs/design/，方案 A）。每台一行：大号年份、机型、
-// 系统版本、构建号、占用空间、线描机身；正在运行的那台（从模拟器画面「返回列表」回来时）年份变红、带「继续」。没导入的年份
-// 是灰色的一行，还开不了的（iPhone OS 1、iOS 8 到 10）标「以后」。导入进度和结果在表头下面，JIT 的状态在最底下。怎么开机、要不要先去 StikDebug
-// 由 RootViewController 决定。右上角齿轮进设置（SettingsViewController.swift）。行的样子在 LibraryCells.swift，颜色和字体在 Theme.swift。
-// 界面文字都走 String Catalog（Localizable.xcstrings，源语言中文）。
+// The home page: the systems under Documents/devices/ sorted by year into a "timeline" (design in docs/design/,
+// option A). One row per device: a large year, model, system version, build, size and a line drawing of the device;
+// the running one (when coming back from the emulator screen with "back to the list") has a red year and "Resume". Years
+// not imported are a gray row, and those that cannot run yet (iPhone OS 1, iOS 8 to 10) are marked "Later". Import
+// progress and results are below the header, JIT status at the very bottom. RootViewController decides how to boot and
+// whether to go to StikDebug first. The gear at the top right opens settings (SettingsViewController.swift). Row looks
+// are in LibraryCells.swift, colors and fonts in Theme.swift.
+// All UI text goes through the String Catalog (Localizable.xcstrings: English source, Simplified Chinese translation).
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 import UIKit
@@ -10,7 +13,7 @@ import UIKit
 struct CurrentSystem {
     let id: String
     let name: String
-    /// QEMU 已经退出（或开机失败）
+    /// QEMU has exited (or the boot failed)
     let stopped: Bool
 }
 
@@ -22,12 +25,12 @@ final class LibraryViewController: UITableViewController {
     private enum Row {
         case header
         case importActive, importCopying(String), importResult(ImportManager.Result)
-        /// 正在运行的那台不在设备目录里了（少见），单独一行
+        /// The running device is no longer in the devices folder (rare), so it gets its own row
         case strayCurrent(CurrentSystem)
         case empty
-        /// showYear 为 false：同一年的第二台，不重复写年份
+        /// showYear is false for the second device of the same year, so the year is not repeated
         case system(DeviceProfile, showYear: Bool)
-        /// 没导入的大版本（连着的合成一行）；later 为 true 是还不能模拟的版本
+        /// Major versions not imported (consecutive ones merged into one row); later is true for versions that cannot be emulated yet
         case missing([Int], later: Bool)
         case note
         case jit
@@ -49,8 +52,8 @@ final class LibraryViewController: UITableViewController {
         self.documents = documents
         self.imports = imports
         super.init(style: .plain)
-        title = String(localized: "选择系统")
-        navigationItem.backButtonTitle = String(localized: "年表")
+        title = String(localized: "Systems")
+        navigationItem.backButtonTitle = String(localized: "Timeline")
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -60,7 +63,7 @@ final class LibraryViewController: UITableViewController {
         tableView.backgroundColor = Theme.paper
         tableView.separatorStyle = .none
         tableView.showsVerticalScrollIndicator = false
-        // 设置里选的外观（跟随系统、浅色、深色），在第一次画出来之前就套上
+        // The appearance chosen in settings (system, light, dark) is applied before the first draw
         AppAppearance.apply()
         for (cell, id) in [(LibraryHeaderCell.self, "header"), (SystemCell.self, "system"), (GhostCell.self, "ghost"),
                            (MessageCell.self, "message"), (NoteCell.self, "note"), (JITCell.self, "jit")] as [(UITableViewCell.Type, String)] {
@@ -70,7 +73,7 @@ final class LibraryViewController: UITableViewController {
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
-        // 标题和导入按钮在表头里，不要系统的导航栏
+        // The title and import button are in the header, so no system navigation bar
         navigationController?.setNavigationBarHidden(true, animated: animated)
         reload()
     }
@@ -80,7 +83,7 @@ final class LibraryViewController: UITableViewController {
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        // 看运行画面新外观的入口（还没接进 EmulatorViewController）：启动参数 -uipreview <设备 id>
+        // Entry point for viewing the new look of the run screen (not yet wired into EmulatorViewController): launch argument -uipreview <device id>
         let args = ProcessInfo.processInfo.arguments
         guard !previewed, let i = args.firstIndex(of: "-uipreview"), i + 1 < args.count else { return }
         previewed = true
@@ -91,7 +94,7 @@ final class LibraryViewController: UITableViewController {
     }
     #endif
 
-    /// 重新扫描设备；占用空间在后台算，算好再刷一次
+    /// Rescans devices; sizes are computed in the background, then the list refreshes again
     func reload() {
         devices = DeviceProfile.all(in: documents)
         rows = buildRows()
@@ -117,7 +120,7 @@ final class LibraryViewController: UITableViewController {
         if let current, !devices.contains(where: { $0.id == current.id }) { list.append(.strayCurrent(current)) }
         if devices.isEmpty { list.append(.empty) }
 
-        // 年表：大版本 1 到 10 依次排，没导入的连着几个合成一行；能开的（还没导入）和「以后」的分开
+        // Timeline: major versions 1 to 10 in order, consecutive missing ones merged into one row; runnable ones (not imported) and "Later" ones kept apart
         var gap: [Int] = []
         var gapLater = false
         let flush = { if !gap.isEmpty { list.append(.missing(gap, later: gapLater)); gap = [] } }
@@ -134,13 +137,13 @@ final class LibraryViewController: UITableViewController {
             list += here.enumerated().map { Row.system($1, showYear: $0 == 0) }
         }
         flush()
-        // 版本号读不懂的放最后
+        // Devices with an unreadable version go last
         list += devices.filter { Era.year($0.majorVersion) == nil }.map { Row.system($0, showYear: true) }
         list += [.note, .jit]
         return list
     }
 
-    // MARK: 表格
+    // MARK: Table
 
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { rows.count }
 
@@ -168,8 +171,8 @@ final class LibraryViewController: UITableViewController {
             if let note = device.experimentalNote { notes.append((note, Theme.accent)) }
             let isCurrent = current?.id == device.id
             let live = isCurrent && current?.stopped == false
-            if live { notes.append((String(localized: "● 运行中，已暂停"), Theme.accent)) }
-            if isCurrent && !live { notes.append((String(localized: "已关机。点这里重新开机（App 会重启）"), Theme.mid)) }
+            if live { notes.append((String(localized: "● Running, paused"), Theme.accent)) }
+            if isCurrent && !live { notes.append((String(localized: "Shut down. Tap here to boot again (the app will restart)"), Theme.mid)) }
             let year = showYear ? Era.year(device.majorVersion).map(String.init) ?? "—" : nil
             cell.configure(year: year, model: device.modelName, detail: detail, notes: notes, board: device.board, live: live)
             return cell
@@ -178,40 +181,40 @@ final class LibraryViewController: UITableViewController {
             let cell = tableView.dequeueReusableCell(withIdentifier: "ghost", for: indexPath) as! GhostCell
             let names = Era.names(majors)
             cell.configure(years: Era.years(majors[0], majors[majors.count - 1]),
-                           text: later ? names : names + " · " + String(localized: "还没导入"), later: later)
+                           text: later ? names : names + " · " + String(localized: "Not imported"), later: later)
             return cell
 
         case .note:
             let cell = tableView.dequeueReusableCell(withIdentifier: "note", for: indexPath) as! NoteCell
-            cell.configure(String(localized: "一次只能开一个系统，换系统时 App 会重新启动。"))
+            cell.configure(String(localized: "Only one system can run at a time. Switching systems restarts the app."))
             return cell
 
         case .jit:
             let cell = tableView.dequeueReusableCell(withIdentifier: "jit", for: indexPath) as! JITCell
             switch jitState {
             case .ready:
-                cell.configure(symbol: "bolt.fill", title: String(localized: "JIT 已开启"), detail: String(localized: "点系统直接开机。"))
+                cell.configure(symbol: "bolt.fill", title: String(localized: "JIT is on"), detail: String(localized: "Tap a system to boot it."))
             case .inUse:
-                cell.configure(symbol: "bolt.fill", title: String(localized: "当前系统在用 JIT"),
-                               detail: String(localized: "换系统时会再经 StikDebug 开一次。"))
+                cell.configure(symbol: "bolt.fill", title: String(localized: "The current system is using JIT"),
+                               detail: String(localized: "Switching systems goes through StikDebug again."))
             case .needStik:
-                cell.configure(symbol: "bolt", title: String(localized: "JIT 还没开"),
-                               detail: String(localized: "点系统后会跳到 StikDebug 开启，开好自动回来开机。要先打开 LocalDevVPN。"))
+                cell.configure(symbol: "bolt", title: String(localized: "JIT is off"),
+                               detail: String(localized: "Tapping a system switches to StikDebug to turn it on, then comes back and boots. Open LocalDevVPN first."))
             case .noStik:
-                cell.configure(symbol: "bolt.slash", title: String(localized: "没有 StikDebug"),
-                               detail: String(localized: "只能用解释器开机，会很慢。点这里看怎么装。"))
+                cell.configure(symbol: "bolt.slash", title: String(localized: "No StikDebug"),
+                               detail: String(localized: "Systems can only boot with the interpreter, which is very slow. Tap here to see how to install it."))
             }
             return cell
         }
     }
 
-    /// 表头下面那行：「按年份排 · 已导入 3 个 · 共 5.8 GB」
+    /// The line under the header: "By year · 3 imported · 5.8 GB total"
     private func summary() -> String {
-        guard !devices.isEmpty else { return String(localized: "按年份排 · 还没有系统") }
-        var text = String(format: String(localized: "按年份排 · 已导入 %d 个"), devices.count)
+        guard !devices.isEmpty else { return String(localized: "By year · No systems yet") }
+        var text = String(format: String(localized: "By year · %d imported"), devices.count)
         let known = devices.compactMap { sizes[$0.id] }
         if known.count == devices.count {
-            text += " · " + String(format: String(localized: "共 %@"), ImportManager.bytes(known.reduce(0, +)))
+            text += " · " + String(format: String(localized: "%@ total"), ImportManager.bytes(known.reduce(0, +)))
         }
         return text
     }
@@ -222,13 +225,13 @@ final class LibraryViewController: UITableViewController {
         case .importActive:
             guard let active = imports.active else { break }
             let fraction = active.total > 0 ? Double(active.done) / Double(active.total) : 0
-            cell.configure(symbol: "arrow.down.circle", title: String(format: String(localized: "正在导入 %@"), active.name),
-                           detail: String(format: String(localized: "%.0f%%（%@ / %@）"), fraction * 100,
+            cell.configure(symbol: "arrow.down.circle", title: String(format: String(localized: "Importing %@"), active.name),
+                           detail: String(format: String(localized: "%.0f%% (%@ of %@)"), fraction * 100,
                                           ImportManager.bytes(Int64(active.done)), ImportManager.bytes(Int64(active.total))),
                            fraction: fraction)
         case .importCopying(let name):
-            cell.configure(symbol: "ellipsis.circle", title: String(format: String(localized: "正在拷入 %@"), name),
-                           detail: String(localized: "拷完会自动开始导入"))
+            cell.configure(symbol: "ellipsis.circle", title: String(format: String(localized: "Copying %@"), name),
+                           detail: String(localized: "Import starts automatically when copying finishes"))
         case .importResult(let result):
             cell.configure(symbol: result.ok ? "checkmark.circle" : "exclamationmark.triangle",
                            tint: result.ok ? Theme.ink : Theme.accent, title: result.text, detail: result.name)
@@ -237,12 +240,12 @@ final class LibraryViewController: UITableViewController {
             cell.configure(symbol: current.stopped ? "stop.circle" : "play.circle", tint: current.stopped ? Theme.mid : Theme.accent,
                            title: current.name,
                            detail: current.stopped
-                               ? String(localized: "已关机。再开一次要重新打开 App，点下面的系统即可。")
-                               : String(localized: "已暂停，点这里继续"))
+                               ? String(localized: "Shut down. To boot again, reopen the app and tap a system below.")
+                               : String(localized: "Paused. Tap here to resume"))
         case .empty:
             cell.selectionStyle = .default
-            cell.configure(symbol: "tray", title: String(localized: "还没有系统"),
-                           detail: String(localized: "把 .ctpack 设备包拷进本 App 的文稿，App 会自动导入。点这里看怎么拷。"))
+            cell.configure(symbol: "tray", title: String(localized: "No Systems Yet"),
+                           detail: String(localized: "Copy a .ctpack device pack into this app's Documents and the app will import it. Tap here to see how."))
         default: break
         }
     }
@@ -272,18 +275,18 @@ final class LibraryViewController: UITableViewController {
         present(Self.importHelpAlert(), animated: true)
     }
 
-    /// 设置页也用
+    /// Also used by the settings page
     static func importHelpAlert() -> UIAlertController {
         let alert = UIAlertController(
-            title: String(localized: "怎么导入系统"),
+            title: String(localized: "How to Import Systems"),
             message: String(localized: """
-                把 .ctpack 设备包放进本 App 的文稿，App 会自动导入，导入完删掉包。
-                · Mac：插线后在 Finder 里选中这台 iPhone，打开「文件」，把包拖到本 App 上。
-                · 手机上：在「文件」App 里打开「我的 iPhone」中本 App 的文件夹，把包移进 import 文件夹（或直接放进来）。
-                导入时留在这一页可以看进度。
+                Put a .ctpack device pack in this app's Documents. The app imports it automatically and deletes the pack when done.
+                · Mac: connect the iPhone with a cable, select it in Finder, open Files, and drag the pack onto this app.
+                · On the phone: in the Files app, open this app's folder under On My iPhone and move the pack into the import folder (or straight into the app's folder).
+                Stay on this page to watch the progress.
                 """),
             preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: String(localized: "好"), style: .default))
+        alert.addAction(UIAlertAction(title: String(localized: "OK"), style: .default))
         return alert
     }
 
@@ -292,10 +295,10 @@ final class LibraryViewController: UITableViewController {
         let alert = UIAlertController(
             title: Era.names(majors),
             message: old
-                ? String(localized: "iPhone OS 1 只能跑在初代 iPhone 和 iPod touch（第 1 代）上，这两种机型本 App 还没支持，所以暂时开不了。以后支持了，导入后会出现在这里。")
-                : String(localized: "iOS 8 要在 A5、A6 芯片的机型（iPod touch 第 5 代、iPhone 5）上跑，这个版本的设备还没做好，所以暂时开不了。以后支持了，导入后会出现在这里。"),
+                ? String(localized: "iPhone OS 1 runs only on the original iPhone and the iPod touch (1st generation), which this app doesn't support yet, so it can't run for now. Once they're supported, imported systems will appear here.")
+                : String(localized: "iOS 8 needs a model with an A5 or A6 chip (iPod touch 5th generation, iPhone 5), and devices for this version aren't ready yet, so it can't run for now. Once it's supported, imported systems will appear here."),
             preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: String(localized: "好"), style: .default))
+        alert.addAction(UIAlertAction(title: String(localized: "OK"), style: .default))
         present(alert, animated: true)
     }
 }

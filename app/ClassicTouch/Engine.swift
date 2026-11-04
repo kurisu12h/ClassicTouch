@@ -1,6 +1,6 @@
-// qemu-ios 引擎：dlopen 嵌在 Frameworks 里的 libqemu-arm-<interp|jit>.dylib，用 dlsym 取它导出的 App ABI
-// （upstream qemu-ios contrib/ios-app/qemu-ios-ui.h，常量照抄在下面）。QEMU 不能在一个进程里起两次，
-// 所以一次启动只开一台设备，换设备要重开 App。
+// The qemu-ios engine: dlopens the libqemu-arm-<interp|jit>.dylib embedded in Frameworks and gets the app ABI it exports
+// with dlsym (upstream qemu-ios contrib/ios-app/qemu-ios-ui.h; the constants are copied below). QEMU cannot start twice
+// in one process, so one launch opens only one device, and switching devices means reopening the app.
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 import Foundation
@@ -55,7 +55,7 @@ final class Engine {
     let buildID: String
     private var sequenceID: UInt64 = 1
     private(set) var started = false
-    /// QEMU 线程退出时（虚拟机停下或启动失败）在主线程上调用，参数是 qemu_ios_main 的返回值。
+    /// Called on the main thread when the QEMU thread exits (the VM stopped or failed to start), with the return value of qemu_ios_main.
     var onExit: ((Int32) -> Void)?
 
     private static func path(_ backend: Backend) -> String? {
@@ -64,7 +64,7 @@ final class Engine {
         }
     }
 
-    /// 提前加载（引用计数，之后 init 里的 dlopen 拿到同一个句柄）。
+    /// Loads early (reference counted; the dlopen in init later gets the same handle).
     static func preload(_ backend: Backend) {
         if let path = path(backend) { _ = dlopen(path, RTLD_NOW | RTLD_LOCAL) }
     }
@@ -72,13 +72,13 @@ final class Engine {
     init(backend: Backend) throws {
         self.backend = backend
         let name = "libqemu-arm-\(backend.rawValue).dylib"
-        guard let path = Engine.path(backend) else { throw EngineError("找不到 App 的 Frameworks 目录") }
+        guard let path = Engine.path(backend) else { throw EngineError("Cannot find the app's Frameworks folder") }
         guard let h = dlopen(path, RTLD_NOW | RTLD_LOCAL) else {
-            throw EngineError("dlopen \(name) 失败：\(String(cString: dlerror()))")
+            throw EngineError("dlopen \(name) failed: \(String(cString: dlerror()))")
         }
         handle = h
         func sym<T>(_ name: String, _: T.Type) throws -> T {
-            guard let p = dlsym(h, name) else { throw EngineError("dylib 里没有 \(name)") }
+            guard let p = dlsym(h, name) else { throw EngineError("\(name) is missing from the dylib") }
             return unsafeBitCast(p, to: T.self)
         }
         qemuMain = try sym("qemu_ios_main", MainFn.self)
@@ -98,16 +98,16 @@ final class Engine {
         buildID = build().map { String(cString: $0) } ?? "?"
     }
 
-    /// 在一条 8 MB 栈的后台线程上跑 qemu_ios_main；它要到虚拟机停下才返回。
+    /// Runs qemu_ios_main on a background thread with an 8 MB stack; it returns only when the VM stops.
     func start(argv: [String], environment: [String: String]) {
-        precondition(!started, "QEMU 一个进程只能起一次")
+        precondition(!started, "QEMU can start only once per process")
         started = true
         for (key, value) in environment { setenv(key, value, 1) }
-        // 显示监听器在虚拟机有控制台后才真正注册；帧由界面按屏幕刷新去取，回调什么也不用做。
+        // The display listener registers only once the VM has a console; the UI pulls frames on each screen refresh, so the callback has nothing to do.
         attach({ _ in }, nil)
         let main = qemuMain
         let thread = Thread { [weak self] in
-            // 故意不释放：QEMU 会一直拿着 argv 里的指针。
+            // Deliberately not freed: QEMU keeps the pointers in argv.
             var cargs: [UnsafeMutablePointer<CChar>?] = argv.map { strdup($0) }
             cargs.append(nil)
             let status = cargs.withUnsafeMutableBufferPointer { main(Int32(argv.count), $0.baseAddress) }
@@ -123,7 +123,7 @@ final class Engine {
     var displaySleeping: Bool { sleepingFn() }
     var backlightLevel: Int32 { backlightFn() }
 
-    /// 最新一帧（紧密排列的 BGRA，不拷贝）。serial 传上次见到的编号，没有更新的帧就返回 nil。
+    /// The latest frame (tightly packed BGRA, not copied). Pass the last serial seen; returns nil if there is no newer frame.
     func frame(after serial: inout UInt64) -> (pixels: UnsafeRawPointer, width: Int, height: Int)? {
         var pixels: UnsafeRawPointer?
         var w: Int32 = 0
@@ -138,15 +138,16 @@ final class Engine {
 
     func button(_ button: QemuButton, down: Bool) { buttonFn(button.rawValue, down) }
 
-    /// iOS 会杀掉在后台发 GL 命令的进程，所以要在 willResignActive 时就清掉。
+    /// iOS kills a process that sends GL commands in the background, so this has to be cleared as early as willResignActive.
     func setForeground(_ foreground: Bool) {
         if started { foregroundFn(foreground) }
     }
 
-    /// 让虚拟机停下或继续跑（App 进后台、回到列表时停）。停的时候先清前台标志：iOS 会杀掉在后台发 GL 命令的进程，
-    /// 而 qemu_ios_ui_pause（QMP stop）是排到 QEMU 主循环上异步做的。继续时 set_foreground(true) 本身就会
-    /// 把停住的虚拟机重新跑起来（qemu-ios-ui.c 的 ios_resume_bh），再发一次 QMP cont 没有副作用。
-    /// 虚拟机还没起来（qemu_ios_ui_ready 之前）时 pause/resume 什么也不做。
+    /// Stops or resumes the VM (it stops when the app goes to the background or back to the list). Stopping clears the
+    /// foreground flag first: iOS kills a process that sends GL commands in the background, and qemu_ios_ui_pause
+    /// (QMP stop) runs asynchronously on the QEMU main loop. On resume, set_foreground(true) by itself restarts the stopped
+    /// VM (ios_resume_bh in qemu-ios-ui.c), and sending QMP cont again has no side effects.
+    /// Before the VM is up (before qemu_ios_ui_ready), pause and resume do nothing.
     func setRunning(_ running: Bool) {
         guard started else { return }
         if running {
@@ -160,13 +161,13 @@ final class Engine {
 
     func quit() { if ready { quitFn() } }
 
-    /// 一指沿折线拖动（各段按长度分时间），每 16 毫秒左右一个点，像手指在 60 Hz 屏幕上；时间按客体的虚拟毫秒算。
+    /// One finger drags along a polyline (each segment timed by its length), a point about every 16 ms, like a finger on a 60 Hz screen; times are in the guest's virtual milliseconds.
     func drag(path: [(Double, Double)], milliseconds: Int64) {
         guard path.count >= 2 else { return }
         var lengths: [Double] = []
         for i in 1..<path.count { lengths.append(hypot(path[i].0 - path[i - 1].0, path[i].1 - path[i - 1].1)) }
         let total = max(lengths.reduce(0, +), 1e-6)
-        let steps = min(max(Int(milliseconds / 16), 2), 250)   // 一个序列最多 256 个事件（IOS_INPUT_MAX_EVENTS）
+        let steps = min(max(Int(milliseconds / 16), 2), 250)   // a sequence holds at most 256 events (IOS_INPUT_MAX_EVENTS)
         var at: [Int64] = [], kind: [Int32] = [], value: [Int32] = [], phase: [Int32] = []
         var xs: [Double] = [], ys: [Double] = []
         for i in 0...steps {
@@ -190,7 +191,7 @@ final class Engine {
         _ = sequenceFn(sequenceID, at.count, at, kind, value, phase, xs, ys)
     }
 
-    /// 一指拖动，时间按客体的虚拟毫秒算（解释器下实际会慢很多，但手势形状不走样）。
+    /// One-finger drag, timed in the guest's virtual milliseconds (much slower in real time under the interpreter, but the gesture keeps its shape).
     func drag(from a: (Double, Double), to b: (Double, Double), milliseconds: Int64 = 600, steps: Int = 20) {
         var at: [Int64] = [], kind: [Int32] = [], value: [Int32] = [], phase: [Int32] = []
         var xs: [Double] = [], ys: [Double] = []
@@ -214,12 +215,26 @@ final class Engine {
     }
 }
 
+/// An error the user may see. `description` is the text in the app's language, for the UI; `english` is the same text
+/// in English, for events.log and import.log (scripts read those).
 struct EngineError: Error, CustomStringConvertible {
     let description: String
-    init(_ description: String) { self.description = description }
+    let english: String
+
+    init(_ message: LocalizedStringResource) {
+        description = String(localized: message)
+        var english = message
+        english.locale = Locale(identifier: "en")
+        self.english = String(localized: english)
+    }
 }
 
-/// 有没有调试器挂着（P_TRACED）。iOS 26 起 TXM 只认调试器「准备」过的代码页，没调试器时 JIT 版会直接报错退出。
+extension Error {
+    /// The error as events.log and import.log record it: English for EngineError, "\(error)" otherwise
+    var logText: String { (self as? EngineError)?.english ?? "\(self)" }
+}
+
+/// Whether a debugger is attached (P_TRACED). Since iOS 26, TXM only accepts code pages a debugger has "prepared"; without a debugger the JIT build reports an error and exits.
 func debuggerAttached() -> Bool {
     var info = kinfo_proc()
     var size = MemoryLayout<kinfo_proc>.stride

@@ -105,7 +105,7 @@
 			buildPhases = (
 				368C9C3753A1E7AD03B9DF09 /* Sources */,
 				F0FD78D5B6AC703C2C6DD668 /* Resources */,
-				E862AAF73D6808644F8FA988 /* 嵌入 qemu-ios dylib */,
+				9A513AE20F5B3480648581A1 /* Embed qemu-ios dylib */,
 			);
 			buildRules = (
 			);
@@ -133,10 +133,11 @@
 				};
 			};
 			buildConfigurationList = C599D7E9BABA2DED953EC5B5 /* Build configuration list for PBXProject "ClassicTouch" */;
-			developmentRegion = "zh-Hans";
+			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
 				Base,
+				en,
 				"zh-Hans",
 			);
 			mainGroup = 0911C2C4FE2AAEB329DE2699;
@@ -165,7 +166,7 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
-		E862AAF73D6808644F8FA988 /* 嵌入 qemu-ios dylib */ = {
+		9A513AE20F5B3480648581A1 /* Embed qemu-ios dylib */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
 			buildActionMask = 2147483647;
@@ -175,7 +176,7 @@
 			);
 			inputPaths = (
 			);
-			name = "嵌入 qemu-ios dylib";
+			name = "Embed qemu-ios dylib";
 			outputFileListPaths = (
 			);
 			outputPaths = (

@@ -1,19 +1,23 @@
 #!/bin/bash
-# M2 性能：在 iOS 模拟器里跑一次滑动测试（App 的 -autodrive -swipetest，见 EmulatorViewController.swipeLock/swipeHome）。
-# 和 sim-boot.sh 一样重置设备状态，带 -perf（IT_PERF=1）开机，App 自己认锁屏、做锁屏段、解锁、做主屏段、待机后退出；
-# 这里只等它退出，把运行目录拷到 work/ios/runs/sim/，再用 summarize-swipe.py 汇总。
-# 注意：模拟器的 OpenGLES 是 CPU 上的软件渲染，GL 的耗时和手机 GPU 完全不同，这里只验证功能和测法。
-# 用法：scripts/ios/sim-swipe.sh <设备id> [最长秒数，默认 400]
-# 环境变量：QEMUENV="A=1 B=2"（给 QEMU 的额外环境变量）
+# M2 performance: run one swipe test in the iOS Simulator (the app's -autodrive -swipetest, see
+# EmulatorViewController.swipeLock/swipeHome).
+# Resets the device state as sim-boot.sh does and boots with -perf (IT_PERF=1); the app recognizes the lock screen, runs
+# the lock-screen segment, unlocks, runs the home-screen segment, idles and quits on its own;
+# here we only wait for it to quit, copy the run directory to work/ios/runs/sim/ and summarize it with
+# summarize-swipe.py.
+# Note: the Simulator's OpenGLES renders in software on the CPU, so the GL times are nothing like a phone GPU's; this
+# only checks the feature and the way of measuring.
+# Usage: scripts/ios/sim-swipe.sh <device id> [maximum seconds, default 400]
+# Environment: QEMUENV="A=1 B=2" (extra environment variables for QEMU)
 set -euo pipefail
-DEVICE="${1:?用法：sim-swipe.sh <设备id> [最长秒数]}"
+DEVICE="${1:?usage: sim-swipe.sh <device id> [maximum seconds]}"
 LIMIT="${2:-400}"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 BUNDLE=org.classictouch.app
 UDID="${SIM_UDID:-$(xcrun simctl list devices -j | jq -r '.devices[][] | select(.name=="ClassicTouch iPhone 18 Pro") | .udid' | head -1)}"
 C="$(xcrun simctl get_app_container "$UDID" "$BUNDLE" data)"
 D="$C/Documents/devices/$DEVICE"
-[ -f "$D/device.lock.json" ] || { echo "App 容器里没有设备 $DEVICE" >&2; exit 1; }
+[ -f "$D/device.lock.json" ] || { echo "No device $DEVICE in the app container" >&2; exit 1; }
 
 xcrun simctl terminate "$UDID" "$BUNDLE" 2>/dev/null || true
 rm -rf "$D/state" "$C/Documents/control"
@@ -30,12 +34,12 @@ for _ in $(seq 40); do
     [ -n "$new" ] && { R="$C/Documents/logs/$new"; break; }
     sleep 0.5
 done
-[ -n "$R" ] || { echo "App 没有建运行目录" >&2; exit 1; }
-echo "运行目录：$R"
+[ -n "$R" ] || { echo "The app did not create a run directory" >&2; exit 1; }
+echo "Run directory: $R"
 t0=$(date +%s)
 until grep -q 'qemu_exit\|boot_failed' "$R/events.log" 2>/dev/null; do
     if [ $(($(date +%s) - t0)) -ge "$LIMIT" ]; then
-        echo "到了 $LIMIT 秒还没退出，发 quit"
+        echo "Still running after $LIMIT seconds; sending quit"
         echo "quit $(date +%s)" > "$C/Documents/control/quit"
         sleep 5
         break

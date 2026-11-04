@@ -1,21 +1,27 @@
 #!/bin/bash
-# E0：在 iOS 模拟器里冷启动一台设备并计时。
-#   1. 重置设备状态：删掉 App 容器里的 state/；work/ios/devices/<id>-golden/state 存在时（3GS 是 M0 走完设置向导的
-#      状态）克隆它，否则 App 第一次启动时从设备本体克隆。
-#   2. 启动 App：-device <id> -tcg <后端> -guestpng 1（每秒存一张客体画面）。
-#   3. 逐张 OCR（M0 的 work/tools/ocr/ocr，Vision 文字识别）：第一次看到「slide to unlock」记为到锁屏，
-#      立刻经 Documents/control/unlock 让 App 按 Home 再滑动；之后看到主屏图标名（Settings、Safari……）记为到主屏，
-#      再空闲 IDLE 秒（默认 20）量主屏待机的 CPU，最后 control/quit 让 QEMU 正常退出。没出锁屏就直接认出三个以上
-#      主屏图标名的，也记为到主屏（锁屏记「未到达」）。
-#   4. 汇总：锁屏、主屏时间，这期间的 CPU 秒和平均 CPU%（占一个核），footprint，主屏待机 CPU%。
-# 时间都是 App 里从调 qemu_ios_main 起算的墙钟秒（stats.csv、guest-NNNN.png 的编号）。
+# E0: cold-boot a device in the iOS Simulator and time it.
+#   1. Reset the device state: delete state/ in the app container; when work/ios/devices/<id>-golden/state exists (for
+#      the 3GS, the state after M0 went through the setup assistant) clone it, otherwise the app clones it from the
+#      device itself on first launch.
+#   2. Start the app: -device <id> -tcg <backend> -guestpng 1 (saves a guest frame every second).
+#   3. OCR each frame (M0's work/tools/ocr/ocr, Vision text recognition): the first "slide to unlock" counts as
+#      reaching the lock screen, and Documents/control/unlock immediately makes the app press Home and then swipe;
+#      after that, home-screen icon names (Settings, Safari...) count as reaching the home screen, then IDLE more idle
+#      seconds (default 20) measure the home-screen idle CPU, and finally control/quit makes QEMU quit cleanly.
+#      Recognizing three or more home-screen icon names without a lock screen first also counts as reaching the home
+#      screen (the lock screen is then "not reached").
+#   4. Summary: lock-screen and home-screen times, the CPU seconds and average CPU% (of one core) up to then,
+#      footprint, home-screen idle CPU%.
+# Times are wall-clock seconds in the app counted from the qemu_ios_main call (stats.csv, the numbers of guest-NNNN.png).
 #
-# 用法：scripts/ios/sim-boot.sh <设备id> interp|jit [最长秒数，默认 900]
-# 环境变量：IDLE（主屏待机秒数，默认 20）、TBSIZE（TCG 代码缓冲 MB，不设就用 App 的默认 256）、
-#          USBKBD=1（有 USB 主机口的机型挂 USB 键盘，默认不挂）
-# 结果：App 容器里 Documents/logs/<时间>-<设备>-<后端>/，摘要另存 work/ios/runs/<同名>.summary
+# Usage: scripts/ios/sim-boot.sh <device id> interp|jit [maximum seconds, default 900]
+# Environment: IDLE (home-screen idle seconds, default 20), TBSIZE (TCG code buffer in MB; the app's default of 256
+#              when unset),
+#              USBKBD=1 (attach a USB keyboard on machines with a USB host port; off by default)
+# Results: Documents/logs/<time>-<device>-<backend>/ in the app container; the summary is also saved as
+# work/ios/runs/<same name>.summary
 set -euo pipefail
-DEVICE="${1:?用法：sim-boot.sh <设备id> interp|jit [最长秒数]}"
+DEVICE="${1:?usage: sim-boot.sh <device id> interp|jit [maximum seconds]}"
 TCG="${2:?}"
 LIMIT="${3:-900}"
 IDLE="${IDLE:-20}"
@@ -23,10 +29,10 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 BUNDLE=org.classictouch.app
 OCR="$ROOT/work/tools/ocr/ocr"
 UDID="${SIM_UDID:-$(xcrun simctl list devices -j | jq -r '.devices[][] | select(.name=="ClassicTouch iPhone 18 Pro") | .udid' | head -1)}"
-[ -n "$UDID" ] || { echo "没有 ClassicTouch iPhone 18 Pro 模拟器" >&2; exit 1; }
+[ -n "$UDID" ] || { echo "No ClassicTouch iPhone 18 Pro simulator" >&2; exit 1; }
 C="$(xcrun simctl get_app_container "$UDID" "$BUNDLE" data)"
 D="$C/Documents/devices/$DEVICE"
-[ -f "$D/device.lock.json" ] || { echo "App 容器里没有设备 $DEVICE" >&2; exit 1; }
+[ -f "$D/device.lock.json" ] || { echo "No device $DEVICE in the app container" >&2; exit 1; }
 
 xcrun simctl terminate "$UDID" "$BUNDLE" 2>/dev/null || true
 rm -rf "$D/state" "$C/Documents/control"
@@ -45,8 +51,8 @@ for _ in $(seq 40); do
     [ -n "$new" ] && { R="$C/Documents/logs/$new"; break; }
     sleep 0.5
 done
-[ -n "$R" ] || { echo "App 没有建运行目录" >&2; exit 1; }
-echo "运行目录：$R"
+[ -n "$R" ] || { echo "The app did not create a run directory" >&2; exit 1; }
+echo "Run directory: $R"
 
 lock="" home="" seen="" quit_at=""
 t0=$(date +%s)
@@ -56,27 +62,29 @@ while [ $(($(date +%s) - t0)) -lt "$LIMIT" ]; do
         seen="$seen $f"
         t=$((10#$(echo "$f" | tr -dc 0-9)))
         text="$("$OCR" "$R/$f" 2>/dev/null | jq -r .text | tr '\n' '|')"
-        # iOS 9 的「slide to unlock」带流光，OCR 常读成「crae to unlotk」之类，所以也认「to unl」
+        # iOS 9's "slide to unlock" has a shimmer, and OCR often reads it as "crae to unlotk" or the like, so "to unl"
+        # counts too
         # iOS 10 has no slider: "Press home to open" (shown for a few seconds) or its date line "Wednesday, December 31"
         if [ -z "$lock" ] && grep -Eqi 'slide to unlock|to unl|press home|day, *(january|february|march|april|may|june|july|august|september|october|november|december)' <<<"$text"; then
             lock=$t
-            echo "锁屏：$t 秒"
+            echo "Lock screen: $t s"
             touch "$C/Documents/control/unlock"
         elif [ -n "$lock" ] && [ -z "$home" ] && ! grep -Eqi 'slide to unlock|to unl|press home|day, *(january|february|march|april|may|june|july|august|september|october|november|december)' <<<"$text" \
             && grep -Eq 'Settings|Safari|App Store|Calendar|Photos' <<<"$text"; then
             home=$t
-            echo "主屏：$t 秒"
+            echo "Home screen: $t s"
             quit_at=$(($(date +%s) + IDLE))
         elif [ -z "$lock" ] && [ -z "$home" ] && ! grep -qi 'slide to' <<<"$text" \
             && [ "$(grep -Eo 'Settings|Safari|Calendar|Photos|Stocks|Maps|Mail|Phone|Notes' <<<"$text" | sort -u | wc -l)" -ge 3 ]; then
-            # iPhone OS 1.0、2.x 有时不经过锁屏直接到主屏（从黄金状态冷启动的 1.0、激活后第一次开机的 2.x）
+            # iPhone OS 1.0 and 2.x sometimes go straight to the home screen without the lock screen (1.0 cold-booted
+            # from the golden state, 2.x on its first boot after activation)
             home=$t
-            echo "主屏（没经过锁屏）：$t 秒"
+            echo "Home screen (no lock screen): $t s"
             quit_at=$(($(date +%s) + IDLE))
         fi
     done
     if [ -n "$lock" ] && [ -z "$home" ] && [ -z "$(ls "$C/Documents/control")" ]; then
-        # 解锁可能没成（屏还没亮就滑了），每 20 秒再来一次
+        # The unlock may not have worked (swiped before the screen was on); try again every 20 seconds
         last=$(grep -c 'control unlock' "$R/events.log" || true)
         if [ $(($(date +%s) - $(stat -f %m "$R/events.log"))) -ge 20 ] && [ "$last" -lt 8 ]; then
             touch "$C/Documents/control/unlock"

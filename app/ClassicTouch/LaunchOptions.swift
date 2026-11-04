@@ -1,10 +1,12 @@
-// 启动选项：启动参数（Xcode、simctl launch、devicectl process launch 传的 -key value）优先，
-// 其次是 Documents/autostart.json。从 StikDebug 拉起时没有启动参数，就靠这个文件决定开哪台设备、
-// 用哪种后端、代码区多大，例如：
+// Launch options: launch arguments (-key value, passed by Xcode, simctl launch or devicectl process launch) come first,
+// then Documents/autostart.json. When StikDebug launches the app there are no launch arguments, so this file decides
+// which device to boot, with which backend and how big a code region, for example:
 //   {"device": "n72ap-7E18", "tcg": "jit", "tbsize": 256, "guestpng": 1, "resetstate": true}
-// 不写 tcg 时：有调试器挂着就用 JIT，否则用解释器（StikDebug 拉起时调试器从一开始就挂着）。
-// autostart.json 只用一次：读过就改名成 autostart.used.json，不然用户以后自己打开 App 也会直接开那台，看不到列表。
-// scripts/ios/device-boot.sh 每次拉起 App 之前都会重写它。
+// Without tcg: JIT if a debugger is attached, otherwise the interpreter (when StikDebug launches the app, the debugger
+// is attached from the start).
+// autostart.json is used once: after reading it is renamed to autostart.used.json, or the app would boot that device
+// every time the user opens it, and the list would never show.
+// scripts/ios/device-boot.sh rewrites it before every launch.
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 import Foundation
@@ -25,7 +27,7 @@ final class LaunchOptions {
         }
     }
 
-    /// 设备是从 autostart.json 而不是启动参数来的
+    /// The device came from autostart.json rather than launch arguments
     var fromFile: Bool { arguments["device"] == nil && file["device"] != nil }
 
     private func value(_ key: String) -> Any? { arguments[key] ?? file[key] }
@@ -49,7 +51,7 @@ final class LaunchOptions {
         (value(key) as? NSNumber)?.doubleValue ?? Double(string(forKey: key) ?? "") ?? 0
     }
 
-    /// 给 QEMU 的额外环境变量：autostart.json 里是对象（{"IT_GLES_STRICT": "0"}），启动参数是「A=1 B=2」
+    /// Extra environment variables for QEMU: an object in autostart.json ({"IT_GLES_STRICT": "0"}), "A=1 B=2" as a launch argument
     func environment(forKey key: String) -> [String: String] {
         if let object = value(key) as? [String: Any] { return object.mapValues { "\($0)" } }
         var out: [String: String] = [:]

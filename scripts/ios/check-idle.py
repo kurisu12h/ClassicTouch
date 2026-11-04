@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""核对一次运行的主屏待机段有没有被人碰过（第二阶段要求：待机 CPU 只用没被干扰的数据）。
+"""Check whether anyone touched the home-screen idle stretch of a run (stage 2 requires idle CPU from undisturbed
+data only).
 
-待机段：主屏时间 + 3 秒，到 control quit（或 autodrive 的 auto_quit、idle_end）之前。看三样：
-- events.log 里这段时间的事件（脚本只发 unlock/home/quit，别的都不该有）；
-- stats.csv 里帧编号的变化（主屏不动时只有状态栏时钟每分钟变一次）；
-- 这段时间存下的客体截图（App 只在画面变了时才存），供人工看。
-用法：check-idle.py 运行目录 主屏秒
+Idle stretch: home-screen time + 3 s, up to control quit (or autodrive's auto_quit, idle_end). Three things are checked:
+- events in events.log during that time (the script only sends unlock/home/quit; nothing else should be there);
+- changes of the frame number in stats.csv (with the home screen still, only the status bar clock changes, once a
+  minute);
+- the guest screenshots saved during that time (the app saves one only when the picture changes), for a human to
+  look at.
+Usage: check-idle.py RUN_DIR HOME_SECONDS
 """
 import csv
 import os
@@ -25,6 +28,6 @@ if rows:
     cpu = (float(rows[-1]["cpu_s"]) - float(rows[0]["cpu_s"])) / max(float(rows[-1]["wall_s"]) - float(rows[0]["wall_s"]), 1)
     print("idle %.0f..%.0f s  frames %d -> %d (+%d)  cpu %.0f%%  events %s  guest_png %d %s" % (
         float(rows[0]["wall_s"]), float(rows[-1]["wall_s"]), s0, s1, s1 - s0, cpu * 100,
-        inside or "无", len(pngs), " ".join(pngs[:6])))
+        inside or "none", len(pngs), " ".join(pngs[:6])))
 else:
-    print("没有待机段数据")
+    print("no idle-stretch data")

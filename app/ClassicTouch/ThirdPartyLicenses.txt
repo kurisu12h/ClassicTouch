@@ -1,11 +1,11 @@
-Classic Touch 和它带的第三方软件的许可证原文。
-App 里的 QEMU（qemu-ios）静态链接了 GLib、PCRE2、proxy-libintl、pixman、libslirp、OpenSSL、Nettle、libffi。
-这份文件由仓库里的 LICENSE、upstream/ 和 scripts/ios/build-deps.sh 收集的许可证（work/ios/sysroot-*/share/licenses/）合成。
-StikDebug（AGPL-3.0）是单独安装的 App，不在本 App 里。
+Classic Touch and third-party license texts.
+The QEMU in the app (qemu-ios) statically links GLib, PCRE2, proxy-libintl, pixman, libslirp, OpenSSL, Nettle and libffi.
+This file is put together from the repository's LICENSE, upstream/, and the licenses collected by scripts/ios/build-deps.sh (work/ios/sysroot-*/share/licenses/).
+StikDebug (AGPL-3.0) is a separately installed app and is not part of this app.
 
 ====================================
-Classic Touch：GNU GPL 2.0 或更新版本
-（LICENSE）
+Classic Touch: GNU GPL 2.0 or later
+(LICENSE)
 ====================================
 
 		    GNU GENERAL PUBLIC LICENSE
@@ -348,8 +348,8 @@ library.  If this is what you want to do, use the GNU Lesser General
 Public License instead of this License.
 
 ====================================
-qemu-ios / QEMU：许可说明
-（upstream/qemu-ios/LICENSE）
+qemu-ios / QEMU: license notes
+(upstream/qemu-ios/LICENSE)
 ====================================
 
 The QEMU distribution includes both the QEMU emulator and
@@ -381,14 +381,14 @@ or directories: bsd-user/, linux-user/, hw/vfio/, hw/xen/xen_pt*.
 Fabrice Bellard and the QEMU team
 
 ====================================
-qemu-ios / QEMU：COPYING
+qemu-ios / QEMU: COPYING
 ====================================
 
-GNU GPL 2.0，全文和第一节相同。
+GNU GPL 2.0; the full text is the same as in the first section.
 
 ====================================
-qemu-ios / QEMU：COPYING.LIB
-（upstream/qemu-ios/COPYING.LIB）
+qemu-ios / QEMU: COPYING.LIB
+(upstream/qemu-ios/COPYING.LIB)
 ====================================
 
                   GNU LESSER GENERAL PUBLIC LICENSE
@@ -894,8 +894,8 @@ necessary.  Here is a sample; alter the names:
 That's all there is to it!
 
 ====================================
-Light Touch（FirmwareKit）
-（upstream/LightTouchMac/LICENSE）
+Light Touch (FirmwareKit)
+(upstream/LightTouchMac/LICENSE)
 ====================================
 
 		    GNU GENERAL PUBLIC LICENSE
@@ -1239,8 +1239,8 @@ library.  If this is what you want to do, use the GNU Lesser General
 Public License instead of this License.
 
 ====================================
-glib：COPYING
-（work/ios/sysroot-iphoneos-arm64/share/licenses/glib/COPYING）
+glib: COPYING
+(work/ios/sysroot-iphoneos-arm64/share/licenses/glib/COPYING)
 ====================================
 
 GNU LESSER GENERAL PUBLIC LICENSE
@@ -1420,8 +1420,8 @@ Ty Coon, President of Vice
 That's all there is to it!
 
 ====================================
-pcre2：LICENCE.md
-（work/ios/sysroot-iphoneos-arm64/share/licenses/pcre2/LICENCE.md）
+pcre2: LICENCE.md
+(work/ios/sysroot-iphoneos-arm64/share/licenses/pcre2/LICENCE.md)
 ====================================
 
 PCRE2 Licence
@@ -1530,8 +1530,8 @@ includes package A, the condition is not imposed on package B unless it uses
 PCRE2 independently.
 
 ====================================
-proxy-libintl：COPYING
-（work/ios/sysroot-iphoneos-arm64/share/licenses/proxy-libintl/COPYING）
+proxy-libintl: COPYING
+(work/ios/sysroot-iphoneos-arm64/share/licenses/proxy-libintl/COPYING)
 ====================================
 
 		  GNU LIBRARY GENERAL PUBLIC LICENSE
@@ -2018,8 +2018,8 @@ necessary.  Here is a sample; alter the names:
 That's all there is to it!
 
 ====================================
-pixman：COPYING
-（work/ios/sysroot-iphoneos-arm64/share/licenses/pixman/COPYING）
+pixman: COPYING
+(work/ios/sysroot-iphoneos-arm64/share/licenses/pixman/COPYING)
 ====================================
 
 The following is the MIT license, agreed upon by most contributors.
@@ -2066,8 +2066,8 @@ possible. They may also add themselves to the list below.
  */
 
 ====================================
-libslirp：COPYRIGHT
-（work/ios/sysroot-iphoneos-arm64/share/licenses/libslirp/COPYRIGHT）
+libslirp: COPYRIGHT
+(work/ios/sysroot-iphoneos-arm64/share/licenses/libslirp/COPYRIGHT)
 ====================================
 
 Slirp was written by Danny Gasparovski.
@@ -2105,8 +2105,8 @@ Please read the top of each source file for the details on the various
 copyrights.
 
 ====================================
-libslirp：LICENSE
-（work/ios/sysroot-iphoneos-arm64/share/licenses/libslirp/LICENSE）
+libslirp: LICENSE
+(work/ios/sysroot-iphoneos-arm64/share/licenses/libslirp/LICENSE)
 ====================================
 
 Copyright (c) 1995,1996 Danny Gasparovski.  All rights reserved.
@@ -2135,8 +2135,8 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ====================================
-openssl：LICENSE.txt
-（work/ios/sysroot-iphoneos-arm64/share/licenses/openssl/LICENSE.txt）
+openssl: LICENSE.txt
+(work/ios/sysroot-iphoneos-arm64/share/licenses/openssl/LICENSE.txt)
 ====================================
 
 
@@ -2318,8 +2318,8 @@ openssl：LICENSE.txt
    END OF TERMS AND CONDITIONS
 
 ====================================
-nettle：COPYING.LESSERv3
-（work/ios/sysroot-iphoneos-arm64/share/licenses/nettle/COPYING.LESSERv3）
+nettle: COPYING.LESSERv3
+(work/ios/sysroot-iphoneos-arm64/share/licenses/nettle/COPYING.LESSERv3)
 ====================================
 
 		   GNU LESSER GENERAL PUBLIC LICENSE
@@ -2489,8 +2489,8 @@ permanent authorization for you to choose that version for the
 Library.
 
 ====================================
-nettle：COPYINGv2
-（work/ios/sysroot-iphoneos-arm64/share/licenses/nettle/COPYINGv2）
+nettle: COPYINGv2
+(work/ios/sysroot-iphoneos-arm64/share/licenses/nettle/COPYINGv2)
 ====================================
 
                     GNU GENERAL PUBLIC LICENSE
@@ -2834,8 +2834,8 @@ library.  If this is what you want to do, use the GNU Lesser General
 Public License instead of this License.
 
 ====================================
-nettle：COPYINGv3
-（work/ios/sysroot-iphoneos-arm64/share/licenses/nettle/COPYINGv3）
+nettle: COPYINGv3
+(work/ios/sysroot-iphoneos-arm64/share/licenses/nettle/COPYINGv3)
 ====================================
 
                     GNU GENERAL PUBLIC LICENSE
@@ -3514,8 +3514,8 @@ Public License instead of this License.  But first, please read
 <https://www.gnu.org/philosophy/why-not-lgpl.html>.
 
 ====================================
-libffi：LICENSE
-（work/ios/sysroot-iphoneos-arm64/share/licenses/libffi/LICENSE）
+libffi: LICENSE
+(work/ios/sysroot-iphoneos-arm64/share/licenses/libffi/LICENSE)
 ====================================
 
 libffi - Copyright (c) 1996-2026  Anthony Green, Red Hat, Inc and others.

@@ -1,29 +1,34 @@
 #!/bin/bash
-# 把 qemu-system-arm 交叉编译到 iOS 真机或 iOS 模拟器。之后 make-dylib.sh 把它重链成 App 能 dlopen 的 dylib。
+# Cross-compile qemu-system-arm for an iOS device or the iOS Simulator. make-dylib.sh then relinks it into a dylib the
+# app can dlopen.
 #
-# 改自上游 qemu-ios 的 contrib/ios-app/build-ios.sh（af4d255637，10-13 作为「Dead contrib tools」删掉）：
-#   - 依赖用 build-deps.sh 自己编的 sysroot，不用 UTM CI 的预编译产物；
-#   - 不要 TCTI（QEMU 11 上从来没编过，上游 10-08 已删）；
-#   - QEMU 11 的写法：--without-default-features 再逐个打开要的（同 LightTouchMac 的 Mac 构建），
-#     不再罗列一长串 --disable-xxx，选项改名也不怕；
-#   - 宿主 GL 默认开（EAGL，ES 1.1 和 ES 2.0 按客体上下文分别建，patches/ios-eagl-es2.patch）。
-#     HOST_GLES=disabled 编 stub（patches/ios-host-gles-option.patch），客体走软件合成，留作对照：
-#     iOS 3、6 可以，iOS 7 的 SpringBoard 会反复崩溃、开不到锁屏（docs/reports/m1-stage4-ios7.md）。
-#     stub 版默认放在 build-qemu-<平台>-<后端>-stub，和 GL 版分开；
-#   - meson 子项目（dtc、keycodemapdb、berkeley-softfloat/testfloat）事先从 upstream/qemu-ios 本地复制到工作树，
-#     meson 不会再去拉源码。不能用 --disable-download：configure 无条件要装 Python 的 tooling 组（qemu.qmp、
-#     setuptools），离线时找不到就失败，所以和 M0 的 Mac 构建一样让 pip 从 PyPI 装这几个构建工具；
-#   - PGO 那套先不带（M1 先求能开机）。
+# Adapted from upstream qemu-ios's contrib/ios-app/build-ios.sh (af4d255637, deleted on 10-13 as "Dead contrib tools"):
+#   - the dependencies come from the sysroot build-deps.sh builds, not UTM CI's prebuilt artifacts;
+#   - no TCTI (it never built on QEMU 11; upstream deleted it on 10-08);
+#   - the QEMU 11 way: --without-default-features, then enable what is needed one by one (as LightTouchMac's Mac
+#     build does) instead of listing a long run of --disable-xxx, so renamed options do no harm;
+#   - host GL on by default (EAGL, with ES 1.1 and ES 2.0 created separately per guest context,
+#     patches/ios-eagl-es2.patch). HOST_GLES=disabled builds the stub (patches/ios-host-gles-option.patch) and the
+#     guest composites in software, kept for comparison: fine for iOS 3 and 6, but iOS 7's SpringBoard crashes over
+#     and over and never gets to the lock screen (docs/reports/m1-stage4-ios7.md). The stub build goes to
+#     build-qemu-<platform>-<backend>-stub by default, apart from the GL build;
+#   - the meson subprojects (dtc, keycodemapdb, berkeley-softfloat/testfloat) are copied from upstream/qemu-ios into
+#     the work tree beforehand, so meson does not fetch sources. --disable-download cannot be used: configure always
+#     installs Python's tooling group (qemu.qmp, setuptools) and fails offline when it cannot find them, so as in the
+#     M0 Mac build pip installs these build tools from PyPI;
+#   - no PGO for now (in M1 it first has to boot).
 #
-# TCG 后端用 TCG=jit（默认）或 TCG=interp 选，两份都要：
-#   jit     原生 arm64 代码生成。iOS 上只有调试器挂着时才有可执行内存，App 要传 -accel tcg,split-wx=on。
-#   interp  TCI 解释器，不要可执行内存，从主屏直接打开也能跑。
-# 协程后端用 COROUTINE=sigaltstack（默认，上游 8 月真机跑过）或 ucontext。
+# The TCG backend is picked with TCG=jit (default) or TCG=interp; both are needed:
+#   jit     native arm64 code generation. iOS has executable memory only while a debugger is attached; the app must
+#           pass -accel tcg,split-wx=on.
+#   interp  the TCI interpreter; needs no executable memory and also runs when opened straight from the home screen.
+# The coroutine backend is picked with COROUTINE=sigaltstack (default, upstream ran it on a device in August) or
+# ucontext.
 #
-# 用法：TCG=jit|interp [HOST_GLES=enabled|disabled] scripts/ios/build-qemu.sh iphoneos|iphonesimulator
-# 输出：work/ios/build-qemu-<平台>-<后端>[-stub]/qemu-system-arm（链接产物，不能直接在 iOS 上跑）
+# Usage: TCG=jit|interp [HOST_GLES=enabled|disabled] scripts/ios/build-qemu.sh iphoneos|iphonesimulator
+# Output: work/ios/build-qemu-<platform>-<backend>[-stub]/qemu-system-arm (a link product; it cannot run on iOS as is)
 set -euo pipefail
-PLATFORM="${1:?用法：TCG=jit|interp build-qemu.sh iphoneos|iphonesimulator}"
+PLATFORM="${1:?usage: TCG=jit|interp build-qemu.sh iphoneos|iphonesimulator}"
 TCG="${TCG:-jit}"
 COROUTINE="${COROUTINE:-sigaltstack}"
 HOST_GLES="${HOST_GLES:-enabled}"
@@ -34,23 +39,26 @@ QEMU="$IOS_ROOT/qemu-ios"
 case "$HOST_GLES" in
     enabled) SUFFIX= ;;
     disabled) SUFFIX=-stub ;;
-    *) echo "HOST_GLES 只能是 enabled 或 disabled" >&2; exit 2 ;;
+    *) echo "HOST_GLES must be enabled or disabled" >&2; exit 2 ;;
 esac
 BUILD="${BUILD_DIR:-$IOS_ROOT/build-qemu-$PLATFORM-$TCG$SUFFIX}"
 
 case "$TCG" in
     jit) TCG_FLAGS=() ;;
     interp) TCG_FLAGS=(--enable-tcg-interpreter) ;;
-    *) echo "TCG 只能是 jit 或 interp" >&2; exit 2 ;;
+    *) echo "TCG must be jit or interp" >&2; exit 2 ;;
 esac
-[ -f "$QEMU/configure" ] || { echo "没有 QEMU 工作树：$QEMU（见 docs/reports/m1-stage1.md 的构建命令）" >&2; exit 1; }
-[ -f "$SYSROOT/.stamps/nettle" ] || { echo "没有依赖 sysroot：$SYSROOT，先跑 build-deps.sh $PLATFORM" >&2; exit 1; }
+[ -f "$QEMU/configure" ] || { echo "No QEMU work tree: $QEMU (see the build commands in docs/reports/m1-stage1.md)" >&2; exit 1; }
+[ -f "$SYSROOT/.stamps/nettle" ] || { echo "No dependency sysroot: $SYSROOT; run build-deps.sh $PLATFORM first" >&2; exit 1; }
 
-# patches/ios-*.patch（按文件名顺序），再加 A5 的两个（a5-n78-skeleton：iPod touch 5 代机型和 GL 前端的 9.x 补充；
-# a5-n78-ios-ui：App 桥里它的按键、熄屏判断和机型表，docs/reports/a5-app.md）打到工作树上。整套一起判断，不逐个
-# 反向检查：几个补丁改同一个文件时（ios-eagl-es2 和 ios-gles-perf 都改 gles-host.c），单独反向检查前一个会失败。做法：在临时目录里取这些文件的
-# 上游原样、按顺序打上全部补丁，和工作树一致就是已经打好；工作树还是原样就整套打上；两样都不是（工作树里有还没
-# 导出成补丁的改动，或补丁换过）就停下。SKIP_PATCHES=1：工作树里正在改补丁（还没导出），不碰工作树。
+# Apply patches/ios-*.patch (in file name order) plus the two A5 ones (a5-n78-skeleton: the iPod touch 5G machine and
+# the 9.x additions to the GL front end; a5-n78-ios-ui: its buttons, screen-off check and machine table rows in the app
+# bridge, docs/reports/a5-app.md) to the work tree. The set is checked as a whole, without reverse-checking each patch:
+# when several patches change the same file (ios-eagl-es2 and ios-gles-perf both change gles-host.c), reverse-checking
+# the earlier one alone fails. How: in a temporary directory, take these files as upstream has them and apply all the
+# patches in order; if the work tree matches that, they are already applied; if the work tree is still pristine, apply
+# the whole set; if it is neither (the work tree has changes not yet exported as patches, or the patches changed), stop.
+# SKIP_PATCHES=1: a patch is being edited in the work tree (not exported yet); leave the work tree alone.
 PATCHES=("$ROOT"/patches/ios-*.patch "$ROOT/patches/a5-n78-skeleton.patch" "$ROOT/patches/a5-n78-ios-ui.patch")
 if [ "${SKIP_PATCHES:-0}" != 1 ]; then
     patch_files=()
@@ -64,7 +72,7 @@ if [ "${SKIP_PATCHES:-0}" != 1 ]; then
         fi
     done
     for patch in "${PATCHES[@]}"; do (cd "$PT/b" && git apply "$patch"); done
-    same() {   # 临时目录 $1 和工作树里这些文件是否一致（都没有也算）
+    same() {   # whether these files in temporary directory $1 match the work tree (missing from both counts as a match)
         local f
         for f in "${patch_files[@]}"; do
             if [ -f "$1/$f" ] || [ -f "$QEMU/$f" ]; then cmp -s "$1/$f" "$QEMU/$f" || return 1; fi
@@ -74,13 +82,13 @@ if [ "${SKIP_PATCHES:-0}" != 1 ]; then
         :
     elif same "$PT/a"; then
         for patch in "${PATCHES[@]}"; do
-            echo "打补丁 $(basename "$patch")"
+            echo "Applying $(basename "$patch")"
             git -C "$QEMU" apply "$patch"
         done
     else
         rm -rf "$PT"
-        echo "工作树 $QEMU 里补丁改过的文件既不是上游原样，也不是打完 patches/ios-*.patch 和 a5-n78-*.patch 的样子：" >&2
-        echo "有还没导出成补丁的改动（用 scripts/ios/export-patch.sh 导出，或 SKIP_PATCHES=1 先照工作树编）" >&2
+        echo "The files the patches touch in work tree $QEMU are neither upstream's originals nor the result of applying patches/ios-*.patch and a5-n78-*.patch:" >&2
+        echo "there are changes not yet exported as patches (export them with scripts/ios/export-patch.sh, or build the work tree as it is with SKIP_PATCHES=1)" >&2
         exit 1
     fi
     rm -rf "$PT"
@@ -91,8 +99,9 @@ COMPILER="$CLANG -target $TARGET -isysroot $SDK"
 mkdir -p "$BUILD"
 cd "$BUILD"
 if [ ! -f build.ninja ] || [ "${RECONFIGURE:-0}" = 1 ]; then
-    # --cross-prefix=（空）让 configure 当作交叉编译又不给工具名加前缀；目标三元组放在 --cc 里。
-    # 真机版的测试程序不能在本机跑，所以 CPU 要明说。
+    # --cross-prefix= (empty) makes configure treat this as a cross build without prefixing the tool names; the target
+    # triple goes in --cc.
+    # The device build's test programs cannot run on this machine, so the CPU has to be given explicitly.
     "$QEMU/configure" \
         --cross-prefix= \
         --cpu=aarch64 \
@@ -113,4 +122,4 @@ if [ ! -f build.ninja ] || [ "${RECONFIGURE:-0}" = 1 ]; then
         --extra-ldflags="-L$SYSROOT/lib $SYSROOT/lib/libcrypto.a"
 fi
 ninja -j"$JOBS" qemu-system-arm
-echo "编好：$BUILD/qemu-system-arm"
+echo "Built: $BUILD/qemu-system-arm"

@@ -1,12 +1,12 @@
-# 经典 iOS 时光机（暂名）的最简 App 壳。用 XcodeGen 生成工程：cd app && xcodegen generate
-# Bundle ID 是不带苹果商标的占位名；App 名字等用户定。
-# 签名团队不写进仓库，装真机时在命令行传 DEVELOPMENT_TEAM=...（见 docs/reports/m1-stage1.md）。
+# The minimal app shell of the classic iOS time machine (working title). The project is generated with XcodeGen: cd app && xcodegen generate
+# The bundle ID is a placeholder without Apple trademarks; the app name and the like are for the user to decide.
+# The signing team is not in the repository; when installing on a phone, pass DEVELOPMENT_TEAM=... on the command line (see docs/reports/m1-stage1.md).
 name: ClassicTouch
 options:
   deploymentTarget:
     iOS: "16.0"
   createIntermediateGroups: true
-  developmentLanguage: zh-Hans
+  developmentLanguage: en
 settings:
   base:
     SWIFT_VERSION: "5.0"
@@ -27,10 +27,10 @@ targets:
         UIStatusBarHidden: true
         UIRequiresFullScreen: true
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
-        # 设备文件放在 Documents，「文件」App 和 Finder 里都能看到；用户把 .ctpack 拷进来就导入（ImportManager）
+        # Device files live in Documents, visible in the Files app and in Finder; copying a .ctpack in imports it (ImportManager)
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
-        # 判断装没装 StikDebug（canOpenURL），没写这个 canOpenURL 一律回 false
+        # Lets the app check whether StikDebug is installed (canOpenURL); without this canOpenURL always returns false
         LSApplicationQueriesSchemes: [stikjit]
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
@@ -44,13 +44,13 @@ targets:
         PRODUCT_NAME: ClassicTouch
         TARGETED_DEVICE_FAMILY: "1"
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks"
-        # 嵌入脚本要读仓库外的 work/ios
+        # The embed script reads work/ios outside the repository
         ENABLE_USER_SCRIPT_SANDBOXING: NO
-        # 界面文字在 ClassicTouch/Localizable.xcstrings（源语言中文），以后加英文只改这个文件
+        # UI text is in ClassicTouch/Localizable.xcstrings (English source, Simplified Chinese translation); a new language only touches that file
         SWIFT_EMIT_LOC_STRINGS: YES
         LOCALIZATION_PREFERS_STRING_CATALOGS: YES
         GENERATE_INFOPLIST_FILE: NO
     postBuildScripts:
-      - name: 嵌入 qemu-ios dylib
+      - name: Embed qemu-ios dylib
         script: '"${SRCROOT}/../scripts/ios/embed-qemu.sh"'
         basedOnDependencyAnalysis: false

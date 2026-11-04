@@ -1,27 +1,40 @@
-// 模拟器画面：客体画面，外面一圈是「年表」外观（EmulatorChromeView：顶上大号年份和机型、一行运行状态（运行时间、CPU、
-// 内存、帧数），底部「年表」「Home」「电源」三个键）。触摸是单指，坐标按客体屏幕归一化。开哪台、什么时候暂停由 RootViewController 管（一个进程只开一台，见 Engine.swift）。
+// The emulator screen: the guest screen inside the "timeline" look (EmulatorChromeView: a large year and the model at
+// the top, a line of run status (uptime, CPU, memory, frames), and the Back, Home and Power buttons at the bottom).
+// Touch is single-finger, in coordinates normalized to the guest screen. RootViewController decides which device runs
+// and when it pauses (one device per process, see Engine.swift).
 //
-// 脚本用的测试入口（启动参数，Xcode 的 Arguments、simctl launch 或 devicectl process launch 都能传；没有参数时读
-// Documents/autostart.json，同名键，见 LaunchOptions.swift，从 StikDebug 拉起时用）。真实用户从列表开机时这些都不开：
-//   -device <id>        直接开 Documents/devices/<id>
-//   -select <id>        像用户在列表里点了这一台（走完整的选系统流程，没有 JIT 时会去 StikDebug），见 RootViewController
-//   -tcg interp|jit     后端；默认有调试器时 JIT，否则解释器。真机上没调试器却要 JIT 时退回解释器
-//   -tbsize <MB>        TCG 代码缓冲，默认 256
-//   -autounlock <秒>    从第几秒起每 20 秒按一次 Home、5 秒后滑动解锁（最多 8 次），0 为关
-//   -guestpng <秒>      每隔几秒把客体画面存成 PNG（画面有变化才存）；测试入口默认 5，从列表开机默认不存
-//   -qemuargs "<...>"   追加给 QEMU 的参数，空格分隔
-//   -resetstate YES     开机前删掉 state/，从 golden-state/（有的话）或设备本体重来，用于冷启动测量
-//   -waitdebugger YES   和 -tcg jit 一起用：先等调试器挂上（最多 120 秒）再起 QEMU
-//   -autodrive YES      App 自己认锁屏和主屏、解锁、待机 -idle 秒（默认 40）后退出（第三阶段，见 autodrive()）
-//   -opensettings YES   和 -autodrive 一起用：待机结束后点开「设置」再按 Home 回主屏，然后退出（第四步，见 settingsTrip()）
-//   -swipetest YES      和 -autodrive 一起用：锁屏和主屏上的滑动测试，分段记帧数和 CPU（M2 性能，见 swipeLock()、swipeHome()）
-//   -perf YES           QEMU 每秒在 qemu.log 里记 GL 桥、显示和发布帧的耗时（IT_PERF=1，patches/ios-gles-perf.patch）
-//   -qemuenv "A=1 B=2"  给 QEMU 的额外环境变量（autostart.json 里写成对象），比如 IT_GLES_STRICT=0
-//   -usbkbd YES         有 USB 主机口的机型挂 USB 键盘（默认不挂，见 DeviceProfile.boot）
-//   -jitprotocol legacy 真机 JIT 用旧的 brk #0x69 协议（默认是通用协议 brk #0xf00d）
-//   -fakejit on|off|nostik  只在模拟器里：假装有没有 JIT、装没装 StikDebug（见 JIT.swift）
-// 每次运行的记录放在 Documents/logs/<时间>-<设备>-<后端>/：qemu.log（stderr）、serial.log、stats.csv、
-// events.log、argv.json、threads.csv（按线程的 CPU），测试入口还有 guest-*.png、app-*.png。宿主可以往 Documents/control/ 放命令文件（见 pollControl）。
+// Test entry points for scripts (launch arguments, passed by Xcode's Arguments, simctl launch or devicectl process
+// launch; without arguments the same keys are read from Documents/autostart.json, see LaunchOptions.swift, which is
+// what a launch by StikDebug uses). None of these are on when a real user boots from the list:
+//   -device <id>        boot Documents/devices/<id> directly
+//   -select <id>        as if the user tapped this device in the list (the full selection flow, which goes to StikDebug
+//                       without JIT), see RootViewController
+//   -tcg interp|jit     backend; by default JIT with a debugger, otherwise the interpreter. On a real phone, asking for
+//                       JIT without a debugger falls back to the interpreter
+//   -tbsize <MB>        TCG code buffer, 256 by default
+//   -autounlock <s>     from this second on, press Home every 20 seconds and swipe to unlock 5 seconds later (at most
+//                       8 times), 0 is off
+//   -guestpng <s>       save the guest screen as PNG every few seconds (only when it changed); 5 by default for test
+//                       entry points, none when booted from the list
+//   -qemuargs "<...>"   extra QEMU arguments, separated by spaces
+//   -resetstate YES     delete state/ before booting and start over from golden-state/ (if any) or the device itself,
+//                       for cold-boot measurements
+//   -waitdebugger YES   with -tcg jit: wait for a debugger to attach (up to 120 seconds) before starting QEMU
+//   -autodrive YES      the app recognizes the lock and home screens itself, unlocks, idles for -idle seconds (40 by
+//                       default) and exits (stage 3, see autodrive())
+//   -opensettings YES   with -autodrive: after idling, open Settings, press Home to return to the home screen, then exit
+//                       (step 4, see settingsTrip())
+//   -swipetest YES      with -autodrive: swipe tests on the lock and home screens, recording frames and CPU per segment
+//                       (M2 performance, see swipeLock(), swipeHome())
+//   -perf YES           QEMU logs GL bridge, display and frame publishing times to qemu.log every second (IT_PERF=1,
+//                       patches/ios-gles-perf.patch)
+//   -qemuenv "A=1 B=2"  extra environment variables for QEMU (an object in autostart.json), such as IT_GLES_STRICT=0
+//   -usbkbd YES         attach a USB keyboard on devices with a USB host port (off by default, see DeviceProfile.boot)
+//   -jitprotocol legacy real-phone JIT uses the old brk #0x69 protocol (the default is the universal brk #0xf00d)
+//   -fakejit on|off|nostik  simulator only: pretend JIT is or is not there and StikDebug is or is not installed (see JIT.swift)
+// Each run's records go to Documents/logs/<time>-<device>-<backend>/: qemu.log (stderr), serial.log, stats.csv,
+// events.log, argv.json, threads.csv (CPU per thread); test entry points also save guest-*.png and app-*.png. The host
+// can drop command files into Documents/control/ (see pollControl).
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 import UIKit
@@ -29,18 +42,18 @@ import UIKit
 final class EmulatorViewController: UIViewController {
     private(set) var engine: Engine?
     private(set) var profile: DeviceProfile?
-    /// QEMU 已经退出，或开机失败
+    /// QEMU has exited, or the boot failed
     private(set) var stopped = false
     var engineStarted: Bool { engine?.started == true }
     var onBackToList: (() -> Void)?
     var onEngineStarted: (() -> Void)?
     var onStopped: (() -> Void)?
-    /// control/ 里 Root 处理的命令：back、resume、select（参数是文件内容）
+    /// Commands in control/ that Root handles: back, resume, select (the argument is the file content)
     var onControl: ((String, String) -> Void)?
 
     private let deviceID: String
     private let requestedBackend: Engine.Backend?
-    /// 脚本的测试入口（-device 或 autostart.json），不是用户从列表开的
+    /// A test entry point for scripts (-device or autostart.json), not a boot the user started from the list
     private let test: Bool
     private let documents: URL
     private let defaults: LaunchOptions
@@ -48,7 +61,7 @@ final class EmulatorViewController: UIViewController {
 
     private let screen = ScreenView()
     private let chrome = EmulatorChromeView()
-    // 状态行和三个键在 chrome 里，这里沿用原来的名字
+    // The status line and the three buttons live in chrome; the old names are kept here
     private var status: UILabel { chrome.status }
     private var backButton: UIButton { chrome.back }
     private var homeButton: UIButton { chrome.home }
@@ -72,14 +85,14 @@ final class EmulatorViewController: UIViewController {
     private var lastUnlock: Double = -1000
     private var sawBacklight = false
     private var waitedForDebugger = false
-    // autodrive：App 自己认锁屏和主屏（GuestText），解锁、待机、退出，全程不用 Mac 插手
+    // autodrive: the app recognizes the lock and home screens itself (GuestText), unlocks, idles and exits, with no help from the Mac
     private let ocrQueue = DispatchQueue(label: "guest-ocr", qos: .utility)
     private var ocrBusy = false
     private var lockSeenAt: Double?
     private var homeSeenAt: Double?
     private var autoUnlocks = 0
     private var lastAutoUnlock: Double = -1000
-    // opensettings：待机结束后点「设置」、认出设置页、按 Home、认回主屏
+    // opensettings: after idling, tap Settings, recognize the Settings page, press Home, recognize the home screen again
     private var idleEndAt: Double?
     private var settingsIcon: CGPoint?
     private var settingsTapAt: Double?
@@ -88,15 +101,16 @@ final class EmulatorViewController: UIViewController {
     private var homePressAt: Double?
     private var homePresses = 0
     private var tripDoneAt: Double?
-    // swipetest：锁屏静止、来回拖动、解锁；主屏静止、翻页、按住来回拖、再静止。每段的起止记进 events.log
-    // （seg <名> begin|end serial= cpu=），scripts/ios/summarize-swipe.py 算每段的帧数和 CPU
+    // swipetest: lock screen still, drag back and forth, unlock; home screen still, page flips, hold and drag back and
+    // forth, still again. Each segment's start and end go into events.log (seg <name> begin|end serial= cpu=), and
+    // scripts/ios/summarize-swipe.py computes frames and CPU per segment
     private var threads: ThreadLog?
     private var swipeLockAt: Double?
     private var swipeLockDoneAt: Double?
     private var swipeHomeStarted = false
     private var swipeDone = false
     private var inSegment = false
-    // 还没认出锁屏时：屏幕变暗就按 Home 叫醒（lockWakeAt），每 5 秒记一次识别到的文字（lastOCRLog）
+    // Before the lock screen is recognized: press Home to wake it when the screen dims (lockWakeAt), and log the recognized text every 5 seconds (lastOCRLog)
     private var maxBacklight: Int32 = 0
     private var lockWakeAt: Double = -1000
     private var lastOCRLog: Double = -1000
@@ -119,7 +133,7 @@ final class EmulatorViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .black
-        // 先加 chrome，客体屏幕盖在上面；chrome 的空白处不接触摸
+        // Add chrome first, with the guest screen on top; chrome's empty areas take no touches
         view.addSubview(chrome)
 
         screen.backgroundColor = UIColor(white: 0.05, alpha: 1)
@@ -151,7 +165,7 @@ final class EmulatorViewController: UIViewController {
         screen.frame = chrome.screenFrame(for: guestSize)
     }
 
-    /// 回到列表或 App 进后台时停（reason 记进 events.log），回来时继续
+    /// Pauses when going back to the list or to the background (reason goes into events.log), resumes on return
     func setRunning(_ running: Bool, reason: String) {
         guard let engine, engine.started, !stopped else { return }
         engine.setRunning(running)
@@ -159,25 +173,26 @@ final class EmulatorViewController: UIViewController {
         event(running ? "vm_resume" : "vm_pause reason=\(reason)")
     }
 
-    /// 让 QEMU 正常退出（qmp quit），退出后调 then；还没起来就直接调
+    /// Lets QEMU exit normally (qmp quit), then calls then; calls it right away if QEMU is not up yet
     func quitEngine(then: @escaping () -> Void) {
         guard let engine, engine.ready, !stopped else { return then() }
         afterExit = then
-        engine.quit()   // 停着的虚拟机也能 quit
+        engine.quit()   // a stopped VM can quit too
 
     }
 
-    // MARK: 开机
+    // MARK: Boot
 
     private func boot(id: String, backend requested: Engine.Backend?) {
-        // JIT 要调试器在 QEMU 分配代码区之前挂上（region.c 那时就要 brk #0x69 请它准备代码区）。
-        // 用 devicectl --start-stopped 挂会留下一个挂起的 SIGSTOP，所以改成 App 正常启动、在这里等。
+        // JIT needs the debugger attached before QEMU allocates its code region (region.c asks it with brk #0x69 to prepare the region right then).
+        // Attaching with devicectl --start-stopped leaves a pending SIGSTOP, so the app starts normally and waits here instead.
         if requested == .jit, defaults.bool(forKey: "waitdebugger"), !debuggerAttached(), !waitedForDebugger {
-            // 等调试器之前先把 JIT 版的库加载好：挂上之后再 dlopen 34 MB 的库，LLDB 要在内部处理 dyld 的加载通知，
-            // 和调试器脚本发的「继续」撞上就会 Resume timed out 卡死（第二阶段约一半的挂载这样失败）。
+            // Load the JIT library before waiting for the debugger: dlopening the 34 MB library after attaching makes LLDB
+            // handle dyld's load notifications internally, and colliding with the debugger script's "continue" hangs on
+            // "Resume timed out" (about half the attaches in stage 2 failed this way).
             Engine.preload(.jit)
             let deadline = ProcessInfo.processInfo.systemUptime + 120
-            status.text = String(localized: "JIT：等待调试器挂上（最多 120 秒）…")
+            status.text = String(localized: "JIT: waiting for the debugger to attach (up to 120 s)…")
             Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] t in
                 guard let self else { return t.invalidate() }
                 if debuggerAttached() || ProcessInfo.processInfo.systemUptime > deadline {
@@ -198,10 +213,10 @@ final class EmulatorViewController: UIViewController {
             #if !targetEnvironment(simulator)
             if backend == .jit && !debuggerAttached() {
                 backend = .interp
-                note = "（没有调试器，JIT 退回解释器）"
+                note = " (no debugger, JIT fell back to the interpreter)"
             }
             #endif
-            chrome.configure(profile, backend: backend == .jit ? "JIT" : String(localized: "解释器"))
+            chrome.configure(profile, backend: backend == .jit ? "JIT" : String(localized: "Interpreter"))
 
             let stamp = DateFormatter()
             stamp.dateFormat = "yyyyMMdd-HHmmss"
@@ -209,7 +224,7 @@ final class EmulatorViewController: UIViewController {
             let dir = documents.appendingPathComponent("logs/\(run)", isDirectory: true)
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             runDir = dir
-            // QEMU 的报错都打在 stderr/stdout；启动失败时它会直接 exit，留下的只有这个文件。
+            // QEMU prints its errors to stderr/stdout; when the boot fails it exits right away, and this file is all that is left.
             freopen(dir.appendingPathComponent("qemu.log").path, "a", stderr)
             freopen(dir.appendingPathComponent("qemu.log").path, "a", stdout)
             setvbuf(stderr, nil, _IONBF, 0)
@@ -222,7 +237,7 @@ final class EmulatorViewController: UIViewController {
             if defaults.bool(forKey: "resetstate") { try profile.resetState() }
             try profile.prepareState()
             let bootrom = try placeholderBootrom(in: documents)
-            // 不用 UserDefaults：它把以「-」开头的值（比如 "-qmp tcp:…"）当成下一个键，这里直接取 -qemuargs 后面那一项
+            // Not UserDefaults: it treats values starting with "-" (such as "-qmp tcp:…") as the next key, so take the item right after -qemuargs
             let launch = ProcessInfo.processInfo.arguments
             let raw = launch.firstIndex(of: "-qemuargs").flatMap { $0 + 1 < launch.count ? launch[$0 + 1] : nil }
             let extra = (raw ?? "").split(separator: " ").map(String.init)
@@ -230,7 +245,7 @@ final class EmulatorViewController: UIViewController {
             let usbKeyboard = defaults.bool(forKey: "usbkbd")
             var (argv, env) = try profile.boot(backend: backend, bootrom: bootrom, logs: dir, run: "0",
                                                tbSize: tb > 0 ? tb : 256, usbKeyboard: usbKeyboard, extra: extra)
-            // tcg/region.c（patches/ios-txm-jit-protocol.patch）：legacy 时用旧的 brk #0x69
+            // tcg/region.c (patches/ios-txm-jit-protocol.patch): legacy uses the old brk #0x69
             if let jitProtocol = defaults.string(forKey: "jitprotocol") { env["QEMU_IOS_JIT_PROTOCOL"] = jitProtocol }
             if defaults.bool(forKey: "perf") { env["IT_PERF"] = "1" }
             env.merge(defaults.environment(forKey: "qemuenv")) { _, new in new }
@@ -244,13 +259,13 @@ final class EmulatorViewController: UIViewController {
                 self.event("qemu_exit status=\(code)")
                 self.stopped = true
                 self.displayLink?.isPaused = true
-                self.status.text = String(format: String(localized: "已关机（%d），记录在 logs/%@/qemu.log"), code, run)
+                self.status.text = String(format: String(localized: "Shut down (%d); log in logs/%@/qemu.log"), code, run)
                 self.onStopped?()
                 self.afterExit?()
                 self.afterExit = nil
             }
             start = ProcessInfo.processInfo.systemUptime
-            // QEMU 的 [perf] 行记的是开机以来的秒数（CLOCK_UPTIME_RAW），减掉这个就是本文件的时间
+            // QEMU's [perf] lines record seconds since boot (CLOCK_UPTIME_RAW); subtract this to get this file's times
             event(String(format: "clock up0=%.3f", start))
             let source = test ? (defaults.fromFile ? "autostart.json" : "arguments") : "list"
             event("boot config=\(source) device=\(id) board=\(profile.board) version=\(profile.productVersion) backend=\(backend.rawValue) "
@@ -261,9 +276,9 @@ final class EmulatorViewController: UIViewController {
             onEngineStarted?()
             #else
             if backend == .jit {
-                // QEMU 一起来就请调试器准备代码区，这期间整个 App 被调试器停住、画面不动（StikDebug 不到 1 秒）。
-                // 先把这句画出来再起 QEMU。
-                status.text = String(localized: "JIT：StikDebug 在准备代码区，画面会停一下")
+                // QEMU asks the debugger to prepare the code region as soon as it starts, and meanwhile the debugger stops
+                // the whole app and the screen freezes (under a second with StikDebug). Draw this line before starting QEMU.
+                status.text = String(localized: "JIT: StikDebug is preparing the code region; the screen will pause briefly")
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
                     engine.start(argv: argv, environment: env)
                     self?.onEngineStarted?()
@@ -283,8 +298,8 @@ final class EmulatorViewController: UIViewController {
             timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.everySecond() }
             view.setNeedsLayout()
         } catch {
-            status.text = String(format: String(localized: "开机失败：%@"), "\(error)")
-            event("boot_failed \(error)")
+            status.text = String(format: String(localized: "Boot failed: %@"), "\(error)")
+            event("boot_failed \(error.logText)")
             stopped = true
             onStopped?()
         }
@@ -295,7 +310,7 @@ final class EmulatorViewController: UIViewController {
         events?.write(Data(line.utf8))
     }
 
-    // MARK: 画面
+    // MARK: Screen
 
     @objc private func tick() {
         guard let engine, engine.started, let f = engine.frame(after: &serial) else { return }
@@ -331,12 +346,12 @@ final class EmulatorViewController: UIViewController {
         let minutes = Int(sample.wall) / 60, seconds = Int(sample.wall) % 60
         if !stopped {
             status.text = String(
-                format: String(localized: "%@ · %@ · %d:%02d\nCPU %.0f%%（累计 %.0f 秒）· 占用 %.0f MB · 可用 %.0f MB · 帧 %d"),
-                profile?.displayName ?? "", engine.backend == .jit ? "JIT" : String(localized: "解释器（慢）"), minutes, seconds,
+                format: String(localized: "%@ · %@ · %d:%02d\nCPU %.0f%% (%.0f s total) · using %.0f MB · %.0f MB free · frame %d"),
+                profile?.displayName ?? "", engine.backend == .jit ? "JIT" : String(localized: "Interpreter (slow)"), minutes, seconds,
                 pct, sample.cpuSeconds, Double(sample.footprint) / 1_048_576, Double(sample.available) / 1_048_576, frames)
         }
 
-        // 存图只给脚本用：测试入口默认每 5 秒存一张客体画面、每 15 秒一张窗口截图；从列表开机时不存（除非指定 -guestpng）
+        // Saved images are only for scripts: test entry points save a guest screen every 5 seconds and a window screenshot every 15 seconds by default; booting from the list saves none (unless -guestpng is given)
         let given = defaults.double(forKey: "guestpng")
         let every = given > 0 ? given : (test ? 5 : 0)
         if every > 0, !inSegment, let image = lastImage, serial != savedSerial, sample.wall - lastGuestPNG >= every {
@@ -363,10 +378,12 @@ final class EmulatorViewController: UIViewController {
         if defaults.bool(forKey: "autodrive") { autodrive(engine, at: sample.wall) }
     }
 
-    /// 锁屏几秒不碰就熄屏，熄屏时滑动无效：先按一下 Home 叫醒，等解释器把屏点亮再滑。
-    /// 每秒认一次客体画面：看到锁屏就解锁（熄屏时 unlock 先按 Home 叫醒），每 12 秒重试；认出主屏后停止识别，
-    /// 待机 idle 秒（默认 40）后让 QEMU 退出（opensettings 时先走一趟 settingsTrip）。
-    /// lock_seen、home_seen 的时间就是开机测量的锁屏、主屏时间。
+    /// The lock screen turns off after a few untouched seconds, and swipes do nothing while it is off: press Home first to
+    /// wake it, and wait for the interpreter to light the screen before swiping.
+    /// Recognizes the guest screen once a second: on the lock screen it unlocks (unlock presses Home first to wake a dark
+    /// screen), retrying every 12 seconds; once the home screen is recognized, recognition stops, and after idling for
+    /// idle seconds (40 by default) QEMU is told to exit (with opensettings, settingsTrip runs first).
+    /// The times of lock_seen and home_seen are the boot measurements for the lock and home screens.
     private func autodrive(_ engine: Engine, at now: Double) {
         let swipe = defaults.bool(forKey: "swipetest")
         if let home = homeSeenAt {
@@ -388,7 +405,7 @@ final class EmulatorViewController: UIViewController {
             swipeLockAt = now
             swipeLock(engine)
         }
-        // 滑动测试的锁屏段自己解锁；它做完 12 秒还没到主屏才照常重试
+        // The swipe test's lock segment unlocks by itself; normal retries resume only if the home screen has not come 12 seconds after it ends
         let swipeHolds = swipe && lockSeenAt != nil && (swipeLockDoneAt.map { now - $0 < 12 } ?? true)
         if !swipeHolds, let lock = lockSeenAt, now - lastAutoUnlock >= 12, now - lock < 300, autoUnlocks < 12 {
             autoUnlocks += 1
@@ -396,7 +413,7 @@ final class EmulatorViewController: UIViewController {
             event("auto_unlock \(autoUnlocks)")
             unlock(engine)
         }
-        // 锁屏亮着却一直没认出来时它会自己变暗、停动画：按一下 Home 叫醒再认（亮着时按 Home 什么也不做）
+        // If the lit lock screen is never recognized, it dims by itself and stops animating: press Home to wake it and try again (Home does nothing while it is lit)
         let backlight = engine.backlightLevel
         maxBacklight = max(maxBacklight, backlight)
         if lockSeenAt == nil, maxBacklight > 0, backlight > 0, backlight * 2 < maxBacklight, now - lockWakeAt >= 15 {
@@ -404,7 +421,7 @@ final class EmulatorViewController: UIViewController {
             event("lock_wake backlight=\(backlight)")
             pressHome(engine)
         }
-        // 锁屏段测量时不跑文字识别（它也算在本进程的 CPU 里）
+        // No text recognition during the lock segment measurement (it counts toward this process's CPU too)
         guard !ocrBusy, !(swipe && lockSeenAt != nil && swipeLockDoneAt == nil), let image = lastImage else { return }
         ocrBusy = true
         ocrQueue.async { [weak self] in
@@ -420,10 +437,10 @@ final class EmulatorViewController: UIViewController {
                 if self.lockSeenAt == nil, GuestText.isLockScreen(texts) {
                     self.lockSeenAt = t
                     self.event(String(format: "lock_seen %.1f", t))
-                    self.lastAutoUnlock = -1000  // 马上解锁，别等到它熄屏进深睡
+                    self.lastAutoUnlock = -1000  // unlock right away, before the screen goes dark and into deep sleep
                 } else if self.homeSeenAt == nil, GuestText.isHomeScreen(texts),
                           self.lockSeenAt != nil || GuestText.homeMarkCount(texts) >= 3 {
-                    // 1.0 从黄金状态冷启动、iPod 的 2.x 激活后第一次开机不经过锁屏（没有 lock_seen）
+                    // 1.0 cold-booting from the golden state and the iPod's 2.x booting for the first time after activation skip the lock screen (no lock_seen)
                     self.homeSeenAt = t
                     self.event(String(format: "home_seen %.1f", t))
                 }
@@ -431,14 +448,14 @@ final class EmulatorViewController: UIViewController {
         }
     }
 
-    /// 滑动测试的分段标记：events.log 记「seg <名> begin|end serial=<帧编号> cpu=<本进程 CPU 秒>」。
+    /// Segment markers for the swipe test: events.log records "seg <name> begin|end serial=<frame serial> cpu=<this process's CPU seconds>".
     private func segment(_ name: String, _ edge: String) {
         inSegment = edge == "begin"
         let cpu = ProcessSample.now(since: start).cpuSeconds
         event(String(format: "seg %@ %@ serial=%llu cpu=%.2f", name, edge, serial, cpu))
     }
 
-    /// 按开始时间排好的一串动作（秒，从现在起）
+    /// A list of actions ordered by start time (seconds from now)
     private func schedule(_ steps: [(Double, () -> Void)]) {
         for (at, step) in steps {
             DispatchQueue.main.asyncAfter(deadline: .now() + at) { [weak self] in
@@ -448,10 +465,12 @@ final class EmulatorViewController: UIViewController {
         }
     }
 
-    /// 滑动测试的锁屏段（认出锁屏后马上开始）：先按一下 Home（锁屏不碰几秒就变暗、停掉动画，文字识别又可能晚几秒，
-    /// 按一下让它亮着；亮着时按 Home 什么也不做）。1.5 秒后 3 次在锁屏底部按住往右拖到 0.55 再拖回来松手（1.6 秒一次，
-    /// 不解锁；iOS 7 整个锁屏跟着手走，3.x、6.x 是滑块）；再静止 4 秒（iOS 7 的「滑动解锁」微光是连续动画）；
-    /// 然后慢慢滑动解锁。期间不做文字识别。
+    /// The swipe test's lock segment (starts right after the lock screen is recognized): press Home first (the lock screen
+    /// dims and stops animating after a few untouched seconds, and recognition may be a few seconds late, so a press keeps
+    /// it lit; Home does nothing while it is lit). 1.5 seconds later, three times: hold at the bottom of the lock screen,
+    /// drag right to 0.55 and back, release (1.6 seconds each, no unlock; on iOS 7 the whole lock screen follows the finger,
+    /// on 3.x and 6.x it is a slider). Then stay still for 4 seconds (iOS 7's "slide to unlock" shimmer is a continuous
+    /// animation), then slowly swipe to unlock. No text recognition meanwhile.
     private func swipeLock(_ engine: Engine) {
         let y = 0.9
         var steps: [(Double, () -> Void)] = [(0, { self.pressHome(engine) }),
@@ -461,7 +480,7 @@ final class EmulatorViewController: UIViewController {
                 engine.drag(path: [(0.15, y), (0.55, y), (0.15, y)], milliseconds: 1600)
             }))
         }
-        // 3.x、6.x 的锁屏不碰几秒就熄，iPod touch 2 代熄久了会进深睡（用占位 SecureROM 时唤不醒），小屏机型只静止 2.5 秒
+        // The 3.x and 6.x lock screens go dark after a few untouched seconds, and an iPod touch 2nd gen that stays dark for long enters deep sleep (no wake with the placeholder SecureROM), so small-screen devices stay still for only 2.5 seconds
         let still = guestSize.width < 640 ? 2.5 : 4.0
         steps.append((7.8, { self.segment("lock_drag", "end"); self.segment("lock_static", "begin") }))
         steps.append((7.8 + still, { self.segment("lock_static", "end") }))
@@ -473,15 +492,16 @@ final class EmulatorViewController: UIViewController {
         schedule(steps)
     }
 
-    /// 滑动测试的主屏段（认出主屏后）：3 秒后静止 6 秒；6 次翻页（左右交替，每次 0.25 秒，间隔 1.5 秒）；
-    /// 按住在 0.3 和 0.7 之间来回拖 4 秒（M0 的拖动测法）；松手 1 秒后再静止 10 秒。然后照常待机、退出。
+    /// The swipe test's home segment (after the home screen is recognized): 3 seconds later, still for 6 seconds; 6 page
+    /// flips (alternating left and right, 0.25 seconds each, 1.5 seconds apart); hold and drag between 0.3 and 0.7 for 4
+    /// seconds (M0's drag measurement); release, and 1 second later stay still for 10 seconds. Then idle and exit as usual.
     private func swipeHome(_ engine: Engine) {
         let y = 0.45
         var steps: [(Double, () -> Void)] = [(3, { self.segment("home_static", "begin") }),
                                               (9, { self.segment("home_static", "end"); self.segment("home_swipe", "begin") })]
         for i in 0..<6 {
             let path = i % 2 == 0 ? [(0.8, y), (0.2, y)] : [(0.2, y), (0.8, y)]
-            // 翻页动画本身的帧数：从手指按下到 0.6 秒后（翻页之间是静止的，整段平均会被拉低）
+            // Frames of the page flip animation itself: from finger down to 0.6 seconds later (between flips the screen is still, which would pull down the average of the whole segment)
             steps.append((9.2 + 1.5 * Double(i), {
                 self.event(String(format: "flip %d begin serial=%llu", i, self.serial))
                 engine.drag(path: path, milliseconds: 250)
@@ -498,10 +518,12 @@ final class EmulatorViewController: UIViewController {
         schedule(steps)
     }
 
-    /// 第四步：确认触摸和 Home 键在客体里能用。待机段到此为止（idle_end，scripts/ios/summarize-run.py 的待机 CPU
-    /// 截到这里）。主屏上认出「Settings」字样就点它上方的图标（M0 bench.py 的做法），认出设置页后存下这张客体画面
-    /// （settings-*.png），2 秒后按 Home，认回主屏再存一张（home-back-*.png），5 秒后退出。
-    /// 点图标和按 Home 各 20 秒没反应就再来一次，最多各 3 次；整段超过 150 秒就记 settings_trip_timeout 照常退出。
+    /// Step 4: confirms touch and the Home button work in the guest. The idle segment ends here (idle_end; the idle CPU in
+    /// scripts/ios/summarize-run.py is cut off here). When "Settings" is recognized on the home screen, tap the icon above
+    /// it (as M0's bench.py does); once the Settings page is recognized, save that guest screen (settings-*.png), press Home
+    /// 2 seconds later, save another once the home screen is back (home-back-*.png), and exit 5 seconds later.
+    /// Tapping the icon and pressing Home are each retried after 20 seconds without response, at most 3 times each; if the
+    /// whole trip takes over 150 seconds, settings_trip_timeout is logged and the app exits as usual.
     private func settingsTrip(_ engine: Engine, at now: Double) {
         if idleEndAt == nil {
             idleEndAt = now
@@ -516,7 +538,7 @@ final class EmulatorViewController: UIViewController {
             if let icon = settingsIcon, settingsTaps < 3, now - (settingsTapAt ?? -1000) >= 20 {
                 settingsTaps += 1
                 settingsTapAt = now
-                // 字样中心往上 0.06：iPhone 4 上约 58 像素，320x480 的机型上约 29 像素，都落在图标里
+                // 0.06 above the label's center: about 58 pixels on iPhone 4 and about 29 on 320x480 devices, inside the icon either way
                 let x = Double(icon.x), y = Double(icon.y) - 0.06
                 event(String(format: "tap_settings %d at %.3f,%.3f", settingsTaps, x, y))
                 engine.touch(.begin, x: x, y: y)
@@ -567,10 +589,12 @@ final class EmulatorViewController: UIViewController {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { engine.button(.home, down: false) }
     }
 
-    /// 宿主（scripts/ios/sim-boot.sh、device-boot.sh）的控制通道：往 Documents/control/ 放一个文件，文件名就是命令。
-    /// unlock：按 Home 后滑动解锁；home：按一下 Home；quit：让 QEMU 正常退出；tap：文件内容是客体屏幕上的归一化坐标
-    /// 「x,y」（左上为原点），在那里点一下（按住 0.3 秒，和 tools/a5/qinput.py 一样），给没有点屏工具的脚本用；
-    /// back：返回列表；resume：从列表回到画面；select：像用户在列表里点了文件内容写的那台（换系统，不弹确认）。
+    /// The host's control channel (scripts/ios/sim-boot.sh, device-boot.sh): drop a file into Documents/control/, and the
+    /// file name is the command. unlock: press Home and swipe to unlock; home: press Home once; quit: let QEMU exit
+    /// normally; tap: the file content is "x,y" in normalized guest screen coordinates (origin at top left), tapped there
+    /// (held 0.3 seconds, as tools/a5/qinput.py does), for scripts with no tap tool; back: return to the list; resume:
+    /// go from the list back to the screen; select: as if the user tapped the device named in the file in the list
+    /// (switches systems with no confirmation).
     private func pollControl(_ engine: Engine) {
         let dir = documents.appendingPathComponent("control", isDirectory: true)
         for command in ["unlock", "home", "quit", "tap", "back", "resume", "select"] {
@@ -589,7 +613,7 @@ final class EmulatorViewController: UIViewController {
                 event(String(format: "tap %.3f,%.3f", xy[0], xy[1]))
                 engine.touch(.begin, x: xy[0], y: xy[1])
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { engine.touch(.end, x: xy[0], y: xy[1]) }
-            // 脚本每次写进不同的内容（devicectl 会跳过没变过的文件），select 取第一个词
+            // Scripts write different content each time (devicectl skips files that have not changed); select takes the first word
             default: onControl?(command, String(argument.split(separator: " ").first ?? ""))
             }
         }
@@ -601,7 +625,7 @@ final class EmulatorViewController: UIViewController {
     }
 }
 
-/// 客体屏幕：单指触摸转成归一化坐标。
+/// The guest screen: single-finger touches converted to normalized coordinates.
 final class ScreenView: UIView {
     var onTouch: ((TouchPhase, Double, Double) -> Void)?
     private weak var tracked: UITouch?

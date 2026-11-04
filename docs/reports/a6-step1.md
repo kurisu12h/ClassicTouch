@@ -1,157 +1,157 @@
-# A6（iPhone 5）第 1 步：iOS 10.3.4（14G61）往锁屏和主屏推
+# A6 (iPhone 5), step 1: pushing iOS 10.3.4 (14G61) to the lock screen and home screen
 
-- 日期：2026-11-04 起
-- 执行会话：a5-nand（接着 `docs/reports/a5-step1.md`、`a5-app.md` 做）。用户原话：「先继续解决iOS10」。
-- 范围：iPhone 5（A6，S5L8950X）新机型，iOS 10.3.4 开到最远的一步，查清卡点。装真机先放一放。
-- 下载：用户批准一个文件（「批准」）：iPhone 5 的 iOS 10.3.4（14G61）Restore IPSW，iPhone5,1 和 iPhone5,2 共用。
-- 不做的：不提交、不推送、不碰真机；苹果固件不进仓库。
+- Date: from 2026-11-04
+- Execution session: a5-nand (continuing from `docs/reports/a5-step1.md` and `a5-app.md`). The user's words: "Keep going on iOS 10 first."
+- Scope: a new iPhone 5 machine (A6, S5L8950X); boot iOS 10.3.4 as far as it will go and pin down the blockers. Installing on a real device is on hold for now.
+- Downloads: the user approved one file ("approved"): the iOS 10.3.4 (14G61) Restore IPSW for iPhone 5, shared by iPhone5,1 and iPhone5,2.
+- Not done: no commits, no pushes, no real device; Apple firmware stays out of the repository.
 
-## 0. 结论
+## 0. Summary of conclusions
 
-**最远到哪（第六轮，2026-11-04）：** iPhone 5（A6，n41）的 iOS 10.3.4 在 Mac 上**每次开机都进锁屏、主屏，有默认海浪壁纸，能点开「设置」，熄屏后按 Home 能叫醒**：壁纸是全新克隆盘单开 3 次里 3 次都有（锁屏、主屏、叫醒后），同一块盘第二次开机也有（17.7，截图 `docs/reports/img/a6-1034-wallpaper-lock.png`、`a6-1034-wallpaper-home.png`）；黑屏第五轮是 5 次里 0 次，这一轮 4 次里 0 次，叫醒 4 次里 4 次；mediaserverd 不再崩，没有 panic（16.7，叫醒截图 `docs/reports/img/a6-1034-wake.png`）。9.3.5 回归照常（17.8）。**仍有缺陷：** 电池显示快没电（15.4）；电话角标没有数字。
+**How far it got (round 6, 2026-11-04):** on the Mac, iOS 10.3.4 on the iPhone 5 (A6, n41) **reaches the lock screen and home screen on every boot, with the default wave wallpaper, opens Settings, and wakes on Home after the screen goes off**: the wallpaper shows in 3 of 3 single boots of a fresh cloned disk (lock screen, home screen, after wake), and also on the second boot of the same disk (17.7, screenshots `docs/reports/img/a6-1034-wallpaper-lock.png`, `a6-1034-wallpaper-home.png`); the black screen happened 0 of 5 times in round 5 and 0 of 4 in this round, and wake worked 4 of 4; mediaserverd no longer crashes, and there is no panic (16.7, wake screenshot `docs/reports/img/a6-1034-wake.png`). The 9.3.5 regression passes as before (17.8). **Remaining defects:** the battery shows as nearly empty (15.4); the Phone badge has no number.
 
-**六轮下来解决的关键问题：**
+**Key problems solved over six rounds:**
 
-1. Swift CPU：Cortex-A15 加苹果 MIDR；L2 组数要是 2 的幂（第 3 节）。
-2. iOS 10 的 AMFI 不放行 ad hoc 签名：把我们的 CDHash 换进内核的静态信任缓存，认第 0 槽的 SHA-1 代码目录（第 5、9 节）。
-3. **A6 的递减器**：CPU 自己的通用虚拟定时器，以 IRQ 级别从 0x1C 入口进来；没接时 USB 不枚举（第 7 节）。
-4. **迁移后的内存改写**：GL 宿主写回 surface 用的是绑定时缓存的物理页，surface 释放后照写；改成写回前按所属进程的页表核对（13.1）。
-5. **D1972 PMU 的 ADC 完成中断**（13.2）；**CommCenter** 没基带就崩、SpringBoard 主线程等它，用 launchd 的 disabled.plist 禁掉（13.3）。
-6. **iOS 10 的文字层格式 `LA08`** 和半精度 `RGhA`：文字、时钟日期回来，花屏线消失（14.1）。
-7. **触摸**：开机包的时钟频率表只填到第 55 槽，spi1 的时钟读到 0，SPI 驱动不打日志就退出（15.1）；触摸模型对 n41 要自报家族 0x57（15.2）。
-8. 锁屏的「存储介质读不了」是 storage_mounter 把 USB 根盘当外接盘，已禁（15.4）。
-9. **缓存里的镜像直接调苹果原版的 gl 函数**（存根被优化成直接跳转，dyld 改绑不到），原版从线程 TLS 第 30 槽取上下文，前端从没放过，所以全是空操作：mediaserverd 的 HDR 因此每几秒崩一次、SpringBoard 等它。前端设当前上下文时把宏上下文也放进这个槽（16.1、16.4）。先试过在缓存里放跳板，盖掉了前端认槽要读的指令，backboardd 反复崩溃，已撤回（16.2）。
-10. **A6 显示的 gamma 装载位**：驱动等 0x40 清零、没有超时，模型不清就忙等到 IOP 超时 panic（16.2、16.3）。
-11. **壁纸**：盘上 SpringBoard 的壁纸缓存（`MappedImageCache/Wallpaper/…-untinted.cpbitmap`）是 GL 画了再读回的，第一轮用旧前端直接写 disk-n3 时读回被丢，存下的整幅图全是不透明黑，之后每次开机都直接读它，修好 GL 也看不出来。`n78_diskfix.sh` 改盘时删掉它，SpringBoard 开机重画（17.1 到 17.5）。被隐藏的缩放器在这条路上，但缺了它 SBF 会退回 CPU（17.3）。
+1. Swift CPU: Cortex-A15 plus Apple's MIDR; the L2 set count must be a power of 2 (section 3).
+2. iOS 10's AMFI no longer allows ad hoc signatures: swap our CDHashes into the kernel's static trust cache, which recognizes the SHA-1 code directory in slot 0 (sections 5 and 9).
+3. **The A6 decrementer**: the CPU's own generic virtual timer, entering at IRQ level through the 0x1C vector; until it was wired up, USB did not enumerate (section 7).
+4. **Memory overwrites after migration**: the GL host wrote surfaces back to the physical pages it cached at bind time, and kept writing after the surface was freed; it now checks against the owning process's page table before writing back (13.1).
+5. **The D1972 PMU's ADC completion interrupt** (13.2); **CommCenter** crashes without a baseband and SpringBoard's main thread waits on it, so it is disabled with launchd's disabled.plist (13.3).
+6. **iOS 10's text layer format `LA08`** and half-float `RGhA`: text and the clock and date are back, and the glitch lines are gone (14.1).
+7. **Touch**: the boot bundle's clock frequency table was filled only up to slot 55, spi1's clock read as 0, and the SPI driver quit without logging anything (15.1); the touch model must report family 0x57 for n41 (15.2).
+8. The lock screen's "cannot read the storage media" came from storage_mounter treating the USB root disk as an external disk; it is disabled (15.4).
+9. **Images in the cache call Apple's stock gl functions directly** (the stubs were optimized into direct jumps, so dyld rebinding cannot reach them). The stock functions take the context from thread TLS slot 30, which the front end never filled, so they were all no-ops: this is why mediaserverd's HDR crashed every few seconds, with SpringBoard waiting on it. When the front end sets the current context, it now also puts the macro context in this slot (16.1, 16.4). Trampolines in the cache were tried first; they overwrote the instructions the front end reads to identify slots, backboardd crashed repeatedly, and they were reverted (16.2).
+10. **The A6 display's gamma load bit**: the driver waits for 0x40 to clear with no timeout; if the model never clears it, the driver busy-waits until the IOP times out and panics (16.2, 16.3).
+11. **Wallpaper**: SpringBoard's wallpaper cache on disk (`MappedImageCache/Wallpaper/…-untinted.cpbitmap`) is drawn with GL and read back. In round 1, when disk-n3 was written directly with the old front end, the readback was dropped, so the stored full-size image was entirely opaque black. Every boot since read it directly, so fixing GL made no visible difference. `n78_diskfix.sh` now deletes it during the disk fix-up, and SpringBoard redraws it at boot (17.1 to 17.5). The hidden scaler is on this path, but without it SBF falls back to the CPU (17.3).
 
-**卡点和下一步：** 电池：电量计模型接上了，驱动没来问（15.4）。TLS 方案之后宿主日志多了几类拒绝（VAO 没实现、一个着色器在宿主上编译失败），和壁纸无关（有壁纸和没壁纸的两次一条不差），是哪个进程没查（17.6）。查壁纸用的 gdbstub 断点脚本（能自己算共享缓存的滑动量）还在会话临时目录，要不要收进 `tools/a5/` 由决策会话定（17.2）。
+**Blockers and next steps:** Battery: the gas gauge model is wired up, but the driver never queries it (15.4). Since the TLS approach, the host log has a few new kinds of refusals (VAO not implemented, one shader failing to compile on the host); they are unrelated to the wallpaper (identical between a run with the wallpaper and one without), and which process issues them was not checked (17.6). The gdbstub breakpoint script used to chase the wallpaper (it computes the shared cache slide itself) is still in the session's temporary directory; whether to move it into `tools/a5/` is for the decision session to decide (17.2).
 
-## 1. 固件
+## 1. Firmware
 
-- IPSW：`iPhone_4.0_32bit_10.3.4_14G61_Restore.ipsw`，2000796302 字节，地址取自 ipsw.me API（`updates.cdn-apple.com/2019/ios/091-25277-…`），sha1 `2f88a216491667ce33e768ab54752d9d0f53dc20` 和批准的一致，放在 `work/firmware/`。【已核实】
-- 一个包给四种板子：n41ap（iPhone5,1，BoardID 0x00）、n42ap（iPhone5,2，0x02）、n48ap、n49ap（iPhone 5c，0x0A、0x0E），芯片号都是 0x8950。iPhone 5 两种板子共用内核 `kernelcache.release.iphone5`、iBoot、LLB，只有设备树不同。选 **n41ap**（没有 CDMA，板号 0x00 和 n78 一样）。【已核实：BuildManifest】
-- **所有镜像都没有 KBAG**（AppleLogo、电池图、设备树、内核、LLB、iBoot、iBEC、iBSS、恢复界面图），和可行性调研说的一样，不用密钥。【已核实】
-- 解包：`tools/a5/n78_unpack.py` 加了两样：板号参数（按 DeviceClass 选清单里的 Erase 身份）；没有 KBAG 的镜像直接取 DATA 段，密钥文件可以写 `-`。`python3 -I -B tools/a5/n78_unpack.py work/firmware/iPhone_4.0_32bit_10.3.4_14G61_Restore.ipsw - work/a6/dec/14G61-n41 n41ap` 得到 `kernelcache.mach`（20566016 字节，Mach-O ARM V7S）、`DeviceTree.bin`（88056）、`iBoot.bin`（iBoot.iphone5，303104）、`RestoreRamDisk.dmg`（24.7 MB，HFSX）、`AppleLogo.bin`。【已核实：`work/a6/dec/14G61-n41/`】
+- IPSW: `iPhone_4.0_32bit_10.3.4_14G61_Restore.ipsw`, 2000796302 bytes, URL taken from the ipsw.me API (`updates.cdn-apple.com/2019/ios/091-25277-…`), sha1 `2f88a216491667ce33e768ab54752d9d0f53dc20`, matching the approved one, stored in `work/firmware/`. **[verified]**
+- One package covers four boards: n41ap (iPhone5,1, BoardID 0x00), n42ap (iPhone5,2, 0x02), n48ap and n49ap (iPhone 5c, 0x0A and 0x0E), all with chip ID 0x8950. The two iPhone 5 boards share the kernel `kernelcache.release.iphone5`, iBoot and LLB; only the device tree differs. **n41ap** was chosen (no CDMA, and board ID 0x00 like n78). **[verified: BuildManifest]**
+- **None of the images has a KBAG** (AppleLogo, battery images, device tree, kernel, LLB, iBoot, iBEC, iBSS, recovery screen image), as the feasibility study said; no keys are needed. **[verified]**
+- Unpacking: `tools/a5/n78_unpack.py` gained two things: a board argument (picks the Erase identity in the manifest by DeviceClass); and images without a KBAG take the DATA section as is, with the key file given as `-`. `python3 -I -B tools/a5/n78_unpack.py work/firmware/iPhone_4.0_32bit_10.3.4_14G61_Restore.ipsw - work/a6/dec/14G61-n41 n41ap` produces `kernelcache.mach` (20566016 bytes, Mach-O ARM V7S), `DeviceTree.bin` (88056), `iBoot.bin` (iBoot.iphone5, 303104), `RestoreRamDisk.dmg` (24.7 MB, HFSX) and `AppleLogo.bin`. **[verified: `work/a6/dec/14G61-n41/`]**
 
-## 2. 清点：A6（n41）和 A5（n78）差在哪
+## 2. Inventory: how the A6 (n41) differs from the A5 (n78)
 
-工具：新写 `tools/a5/dtcmp.py A.bin B.bin [前缀]`，逐个节点比兼容串、第一个 reg、中断和 device_type。对比结果存在 `work/a6/dtcmp-armio.txt`（arm-io 一层）和 `dtcmp-all.txt`（更深的节点）。
+Tool: the new `tools/a5/dtcmp.py A.bin B.bin [prefix]` compares nodes one by one: compatible string, first reg, interrupts and device_type. The results are in `work/a6/dtcmp-armio.txt` (the arm-io level) and `dtcmp-all.txt` (deeper nodes).
 
-**arm-io 地图几乎一样。** AIC（0xF200000）、CDMA（0x7000000）、显示管线（0xA100000）、两个 DART、FMI（0x1200000）、GPIO（0xFA00000）、i2c0 和 i2c2、IOP（0xF300000）、PMGR（0xF100000）、PWM、SGX（0x5100000）、SPI1、UART1 到 4、USB（0xF108000 和 0x6000000）、看门狗，基址和中断号全部相同，只是兼容串从 `s5l8940x` 换成 `s5l8950x`（QEMU 的模型按地址挂，不看兼容串）。【已核实：`work/a6/dtcmp-armio.txt`】
+**The arm-io map is almost identical.** AIC (0xF200000), CDMA (0x7000000), the display pipeline (0xA100000), the two DARTs, FMI (0x1200000), GPIO (0xFA00000), i2c0 and i2c2, IOP (0xF300000), PMGR (0xF100000), PWM, SGX (0x5100000), SPI1, UART1 to 4, USB (0xF108000 and 0x6000000) and the watchdog all keep the same base addresses and interrupt numbers; only the compatible strings change from `s5l8940x` to `s5l8950x` (QEMU's models attach by address and ignore compatible strings). **[verified: `work/a6/dtcmp-armio.txt`]**
 
-| | n78（A5，9.3.5） | n41（A6，10.3.4） |
+| | n78 (A5, 9.3.5) | n41 (A6, 10.3.4) |
 |---|---|---|
-| CPU | 两个 `ARM,cortex-a9` | 两个 `apple,swift` |
-| L2 | `pl310`（0xE000000） | 没有这个节点（集成了） |
-| PMU（i2c0 0x74） | `pmu,d1881`，中断 0xd | `pmu,d1972`，中断 0x6，下面多了振动马达 |
-| i2c1（0x3300000） | 没有 | 新总线：加速度计 ap3dsh、光感 tsl2581、罗盘 akm8963 |
-| i2c0 其他 | tristar | tristar（中断 0x1f）、陀螺仪 ap3gdl、背光 lm3534 |
-| 触摸 | spi1 `multi-touch,n78`，中断 0x15 | spi1 `multi-touch,n41`，中断 0xc9 |
-| 音频编解码器 | cs42l81，控制在 spi2 | cs42l65，控制在 spi3（新） |
-| UART | 1 到 4 | 多了 uart5（电量计 bq27540，HDQ）、uart6（调试口） |
-| 基带 | 没有 | `baseband`（n41）、EHCI 下的 `hsic-baseband` |
-| 其他 | displayport、tv-out、trace、spi2 | i2c1、i2s1、jpeg1、spi3、温度传感器、sacm、cpu-debug-interface |
-| 底座 | 30 针 | Lightning（`dock,9pin`） |
+| CPU | two `ARM,cortex-a9` | two `apple,swift` |
+| L2 | `pl310` (0xE000000) | no such node (integrated) |
+| PMU (i2c0 0x74) | `pmu,d1881`, interrupt 0xd | `pmu,d1972`, interrupt 0x6, with a vibration motor under it |
+| i2c1 (0x3300000) | none | new bus: accelerometer ap3dsh, light sensor tsl2581, compass akm8963 |
+| i2c0 other | tristar | tristar (interrupt 0x1f), gyroscope ap3gdl, backlight lm3534 |
+| Touch | spi1 `multi-touch,n78`, interrupt 0x15 | spi1 `multi-touch,n41`, interrupt 0xc9 |
+| Audio codec | cs42l81, controlled over spi2 | cs42l65, controlled over spi3 (new) |
+| UART | 1 to 4 | adds uart5 (gas gauge bq27540, HDQ) and uart6 (debug port) |
+| Baseband | none | `baseband` (n41), `hsic-baseband` under EHCI |
+| Other | displayport, tv-out, trace, spi2 | i2c1, i2s1, jpeg1, spi3, temperature sensors, sacm, cpu-debug-interface |
+| Dock | 30-pin | Lightning (`dock,9pin`) |
 
-**内核 kext：** 9.3.5 有 165 个，10.3.4 有 178 个（`tools/a5/kexts.py`，清单在 `work/a6/kexts-*.txt`）。【已核实】
+**Kernel kexts:** 9.3.5 has 165, 10.3.4 has 178 (`tools/a5/kexts.py`, lists in `work/a6/kexts-*.txt`). **[verified]**
 
-- 10.3.4 才有：`AppleS5L8950X`（平台）、`AppleD1972PMU`、`AppleH5PCLCD`（显示，A5 是 H4P）、`IOP_s5l8950xiop_firmware`（IOP 固件换了一版）、`IOP_s5l8950xae2_firmware`、`IMGSGX543RC2`、`AppleLMBacklight`、`AppleHDQGasGaugeControl`、`AppleTemperatureSensor`、`AppleCS42L65Audio`、`AppleSongbirdDSP`、`AppleBasebandN41`、`usb.hsic.cellular`、`AppleBCMWLANCoreLegacy`、`AppleEmbeddedGPS`、`AppleEmbeddedPressure`、`hfs.kext` 和 `apfs`（HFS 成了单独的 kext）等。
-- 9.3.5 才有：`AppleS5L8920X`、`AppleD1881PMU`、`AppleH4PCLCD`、`AppleH4PRGBOUT`、`AppleTVOut`、`AppleCS42L81Audio`、`IMGSGX543`、`BasebandSPI` 等。
+- Only in 10.3.4: `AppleS5L8950X` (platform), `AppleD1972PMU`, `AppleH5PCLCD` (display; the A5 has H4P), `IOP_s5l8950xiop_firmware` (a new IOP firmware version), `IOP_s5l8950xae2_firmware`, `IMGSGX543RC2`, `AppleLMBacklight`, `AppleHDQGasGaugeControl`, `AppleTemperatureSensor`, `AppleCS42L65Audio`, `AppleSongbirdDSP`, `AppleBasebandN41`, `usb.hsic.cellular`, `AppleBCMWLANCoreLegacy`, `AppleEmbeddedGPS`, `AppleEmbeddedPressure`, `hfs.kext` and `apfs` (HFS became a separate kext), and others.
+- Only in 9.3.5: `AppleS5L8920X`, `AppleD1881PMU`, `AppleH4PCLCD`, `AppleH4PRGBOUT`, `AppleTVOut`, `AppleCS42L81Audio`, `IMGSGX543`, `BasebandSPI`, and others.
 
-**要新做或要核对的（按开机顺序）：** Swift CPU 型号和双核（先单核）；内存 1 GB；D1972 PMU（先看和 D1881 的寄存器差多少）；i2c1 总线；H5P 显示管线（和 H4P 的差别）；IOP 固件换版后 `cnfg`、FMI 消息是否照旧；触摸的中断脚；基带、音频、电量计先在设备树里隐藏。
+**To build or check (in boot order):** the Swift CPU model and dual core (single core first); 1 GB of RAM; the D1972 PMU (first see how many registers differ from the D1881); the i2c1 bus; the H5P display pipeline (how it differs from H4P); whether `cnfg` and the FMI messages still work after the IOP firmware change; the touch interrupt pin; hide the baseband, audio and gas gauge in the device tree for now.
 
-## 3. CPU 和机型：内核到等根设备（完成）
+## 3. CPU and machine: kernel up to waiting for the root device (done)
 
-**Swift CPU（`target/arm/tcg/cpu32.c`，型号名 `apple-swift`）：** 就是 QEMU 的 Cortex-A15（ARMv7 加 VFPv4、两套指令集的硬件除法、多核扩展，正好是 ARMv7s），换上苹果的 MIDR 0x610F0000（xnu `cpuid.h` 的厂商 0x61、部件号 0 即 Swift）。还改了一处：L2 的 CCSIDR。A15 的 L2 是 2304 组 × 16 路，xnu 的 `vm_page_set_colors` 用「组数 × 行长 ÷ 页大小」算页着色数，得 36，不是 2 的幂，内核在 VM 初始化时 panic `vm_page_set_colors`（`work/a6/runs/r1`）。按 A6 的 1 MiB、8 路、64 字节行设成 0x70FFE03A（2048 组，着色数 32）后过去了。【已核实：`r1/serial.log`、`r2/serial.log`】
+**Swift CPU (`target/arm/tcg/cpu32.c`, model name `apple-swift`):** it is just QEMU's Cortex-A15 (ARMv7 plus VFPv4, hardware divide in both instruction sets, multiprocessing extensions: exactly ARMv7s) with Apple's MIDR 0x610F0000 (vendor 0x61 in xnu's `cpuid.h`, part number 0, i.e. Swift). One more change: the L2 CCSIDR. The A15's L2 is 2304 sets × 16 ways; xnu's `vm_page_set_colors` computes the number of page colors as "sets × line size ÷ page size", which gives 36, not a power of 2, and the kernel panics `vm_page_set_colors` during VM initialization (`work/a6/runs/r1`). Setting it to 0x70FFE03A to match the A6's 1 MiB, 8 ways and 64-byte lines (2048 sets, 32 colors) got past it. **[verified: `r1/serial.log`, `r2/serial.log`]**
 
-**机型：iPhone 5 是 iPod touch 5 机型的子类**（`hw/arm/ipod_touch_5g.c`，`-M iPhone-5`）。两台板子的差别收进 `N78Board`，类里带一个指向它的指针：
+**Machine: the iPhone 5 is a subclass of the iPod touch 5 machine** (`hw/arm/ipod_touch_5g.c`, `-M iPhone-5`). The differences between the two boards are collected in `N78Board`, and the class carries a pointer to it:
 
 | | n78 | n41 |
 |---|---|---|
-| 默认 CPU | cortex-a9 | apple-swift |
-| 内存 | 512 MiB | 1 GiB（vram、CDMA 的内存窗口、开机包的范围检查都跟着走） |
-| I2C | i2c0、i2c2，脚 0x604/0x605、0x1800/0x1801 | i2c0、i2c1、i2c2，脚 0x702 到 0x705、0xb00/0xb01 |
-| 触摸 ATN | GPIO 0x205 | GPIO 0x1901（设备树中断 0xc9） |
-| 按键 | 脚 0 到 3 | 脚 0 到 4（多一个静音拨片） |
-| 控制台 | uart1 | uart6（设备树的 `debug-console`；第一次开机串口没字，QEMU 记下内核在轮询 0x2B00010） |
+| Default CPU | cortex-a9 | apple-swift |
+| RAM | 512 MiB | 1 GiB (vram, the CDMA memory window and the boot bundle's range checks all follow it) |
+| I2C | i2c0, i2c2, pins 0x604/0x605, 0x1800/0x1801 | i2c0, i2c1, i2c2, pins 0x702 to 0x705, 0xb00/0xb01 |
+| Touch ATN | GPIO 0x205 | GPIO 0x1901 (device tree interrupt 0xc9) |
+| Buttons | pins 0 to 3 | pins 0 to 4 (one more for the mute switch) |
+| Console | uart1 | uart6 (the device tree's `debug-console`; on the first boot the serial port printed nothing, and QEMU logged the kernel polling 0x2B00010) |
 
-因为是子类，`object_dynamic_cast(…, TYPE_N78_MACHINE)` 对两台都成立，按键函数 `ipod_touch_5g_press_button`、App 桥的熄屏判断不用改。踩到一个坑：子类的 class_init 里对父类加的 `kboot` 属性调 `object_class_property_set_description`，在子类自己的属性表里找不到，`-M help`、`-cpu help` 启动就段错误，去掉了。【已核实】
+Because it is a subclass, `object_dynamic_cast(…, TYPE_N78_MACHINE)` holds for both, so the button function `ipod_touch_5g_press_button` and the app bridge's screen-off check need no changes. One pitfall: calling `object_class_property_set_description` in the subclass's class_init on the `kboot` property added by the parent class fails to find it in the subclass's own property table, and `-M help` and `-cpu help` segfaulted at startup; the call was removed. **[verified]**
 
-**开机包（`tools/a5/n78_kboot.py`）：** 按设备树的兼容串认板（`ipad1_kboot.dt_board`），n41 用 `iPhone-5`、1 GiB、型号号码 MD297、平台名 `s5l8950x`、芯片号 0x8950，CPU 主频 1.3 GHz；A6 的 pmgr 没有 `cpu-clk-cfgs`（多了 `boost-performance0/1`），这一项跳过；额外隐藏 `baseband`（高通基带没有模型）和两个 JPEG 块（复位轮询一万次后放弃，下一次起生效）。n78 的开机包用新脚本重做，逐字节不变。`tools/a5/n78_run.sh` 加了 `MACHINE`（默认 iPod-Touch-5G）。【已核实】
+**Boot bundle (`tools/a5/n78_kboot.py`):** the board is identified by the device tree's compatible string (`ipad1_kboot.dt_board`); n41 uses `iPhone-5`, 1 GiB, model number MD297, platform name `s5l8950x`, chip ID 0x8950 and a 1.3 GHz CPU clock; the A6's pmgr has no `cpu-clk-cfgs` (it has `boost-performance0/1` instead), so that item is skipped; it also hides `baseband` (there is no model for the Qualcomm baseband) and the two JPEG blocks (they poll reset ten thousand times and give up; this took effect from the next run on). The n78 boot bundle was rebuilt with the new script and is byte-for-byte unchanged. `tools/a5/n78_run.sh` gained `MACHINE` (default iPod-Touch-5G). **[verified]**
 
-**结果（`work/a6/runs/r2`，挂 64 MB 空盘，90 秒）：** 串口从 `iBoot version: iBoot-3406.60.10` 开始（这次没打内核版本行；版本 `Darwin Kernel Version 16.7.0 … xnu-3789.70.16~21/RELEASE_ARM_S5L8950X` 见后来 panic 日志里的 `Kernel version:`，如 `fmt4/serial.log` 第 263 行、`n2/serial.log` 第 768 行），`AppleS5L8950XIO: chip-revision: B1`，AIC（0xc0 个外部中断）、GPIO、显示帧缓冲、I2S、性能控制器（两个性能域，CPU 1300/800/650 MHz 三档）、三条 I2C、PWM、DSI、看门狗、串口都起来了；`AppleD1972PMU::start` 在 D1881 的寄存器替身上也没报错；APFS 和 HFS 的 kext 加载；最后 `Waiting on … IOMedia … Partition ID 1`，等根设备。【已核实：`r2/serial.log`；内核版本见上】
+**Result (`work/a6/runs/r2`, with a 64 MB empty disk attached, 90 seconds):** the serial output starts at `iBoot version: iBoot-3406.60.10` (this run did not print the kernel version line; the version `Darwin Kernel Version 16.7.0 … xnu-3789.70.16~21/RELEASE_ARM_S5L8950X` appears as `Kernel version:` in later panic logs, such as line 263 of `fmt4/serial.log` and line 768 of `n2/serial.log`), then `AppleS5L8950XIO: chip-revision: B1`; the AIC (0xc0 external interrupts), GPIO, the display framebuffer, I2S, the performance controller (two performance domains, CPU at three levels of 1300/800/650 MHz), the three I2C buses, PWM, DSI, the watchdog and the serial ports all come up; `AppleD1972PMU::start` reports no error even on the D1881 register stand-in; the APFS and HFS kexts load; and finally `Waiting on … IOMedia … Partition ID 1`, waiting for the root device. **[verified: `r2/serial.log`; kernel version as above]**
 
-没管的报错：显示管线 `minimum-frequency property not found`、`getClockFrequency(0) (0) < videoClock`；背光 lm3534 `could not communicate`；罗盘 AKM8963 探测不到；tristar 读不到 REV。【已核实】
+Errors left alone: display pipeline `minimum-frequency property not found`, `getClockFrequency(0) (0) < videoClock`; backlight lm3534 `could not communicate`; compass AKM8963 not detected; tristar cannot read REV. **[verified]**
 
-## 4. 根文件系统和 USB 根盘
+## 4. Root file system and the USB root disk
 
-- 14G61 的根文件系统 DMG（`058-74968-065.dmg`，UDZO）里是 **GUID 分区表**（一个 EFI 分区、一个 Apple_HFSX），不再是 9.x 的 Apple 分区图；卷是 HFS+（日志式、大小写敏感），不是 APFS。`tools/a5/n78_volumes.py` 加了 `extract_hfs`：先转成 UDTO，看到 `EFI PART` 就按 GPT 找 HFS 类型（48465300-…）的分区原样拷出，否则照旧走 imgtools。【已核实：`work/a6/vol-14G61/system.img`，2966 MiB】
-- 盘：`n78_volumes.py work/a6/rootfs/14G61-rootfs.dmg work/a6/vol-14G61`，再 `n78_usbroot.py` 拼成 `work/a6/disks/14G61-full.img`（17305 MiB，GPT，System + Data，第二分区从 LBA 6078464 起）。【已核实】
-- 用户态先看到的东西（还没用上）：共享缓存 `dyld_shared_cache_armv7s`（cacheType 1，即发布版缓存；代码签名 ad hoc，CD flags 0x2，CDHash 5c8dad28…）；launchd 是「Darwin Bootstrapper Version 4.0.0」（libxpc_executables-972.70.1）。这两项留到正常开机那一步再查。【已核实：`work/a6/vol-14G61/x/`】
+- 14G61's root file system DMG (`058-74968-065.dmg`, UDZO) holds a **GUID partition table** (one EFI partition, one Apple_HFSX), no longer 9.x's Apple partition map; the volume is HFS+ (journaled, case-sensitive), not APFS. `tools/a5/n78_volumes.py` gained `extract_hfs`: it first converts to UDTO; if it sees `EFI PART`, it finds the partition of HFS type (48465300-…) through the GPT and copies it out as is, otherwise it goes through imgtools as before. **[verified: `work/a6/vol-14G61/system.img`, 2966 MiB]**
+- Disk: `n78_volumes.py work/a6/rootfs/14G61-rootfs.dmg work/a6/vol-14G61`, then `n78_usbroot.py` assembles `work/a6/disks/14G61-full.img` (17305 MiB, GPT, System + Data, the second partition starting at LBA 6078464). **[verified]**
+- First look at user space (not used yet): the shared cache `dyld_shared_cache_armv7s` (cacheType 1, i.e. a release cache; ad hoc code signature, CD flags 0x2, CDHash 5c8dad28…); launchd is "Darwin Bootstrapper Version 4.0.0" (libxpc_executables-972.70.1). Both are left for the normal boot step. **[verified: `work/a6/vol-14G61/x/`]**
 
-## 5. AMFI：iOS 10 不再放行 ad hoc 签名，改内核的静态信任缓存
+## 5. AMFI: iOS 10 no longer allows ad hoc signatures, so patch the kernel's static trust cache
 
-**现象（`work/a6/runs/fmt1`）：** 格式化用的 RAM 盘里，我们自己的助手 `it_nandfmt`（ad hoc 签名）一启动就被杀：`_validateCodeDirectoryHashInDaemon … no registered daemon port`、`AMFI: code signature validation failed.`。9.3.5 那条「Invalid signature but permitting execution」在 10.3.4 里没有了，启动参数 `amfi_allow_any_signature=1`、`cs_enforcement_disable=1` 也不管用：签名不在信任缓存里就去问 amfid，而 RAM 盘和开机早期都没有 amfid。【已核实：`fmt1/serial.log`】
+**Symptom (`work/a6/runs/fmt1`):** in the RAM disk used for formatting, our own helper `it_nandfmt` (ad hoc signed) is killed as soon as it starts: `_validateCodeDirectoryHashInDaemon … no registered daemon port`, `AMFI: code signature validation failed.`. The 9.3.5 message "Invalid signature but permitting execution" is gone in 10.3.4, and the boot arguments `amfi_allow_any_signature=1` and `cs_enforcement_disable=1` do not help either: a signature not in the trust cache goes to amfid, and there is no amfid in the RAM disk or early in boot. **[verified: `fmt1/serial.log`]**
 
-**做法：** AMFI 是预链接进内核的，里面有一份静态信任缓存（REA 反编译 `work/a6/amfi-14G61.elf`；查表 0x807e934c，`vnode_check_signature` 0x807eb810）。布局：0x807EDFD4 起 256 项索引（按 CDHash 首字节，每项 `u16 个数, u16 起点`），0x807EE3D4 起按序排好的条目，每条存其余 19 字节，共 5635 条，后面紧跟一张苹果根证书，没有空位。【已核实】
+**Approach:** AMFI is prelinked into the kernel and contains a static trust cache (REA decompilation of `work/a6/amfi-14G61.elf`; lookup at 0x807e934c, `vnode_check_signature` at 0x807eb810). Layout: from 0x807EDFD4, a 256-entry index (by the first byte of the CDHash, each entry `u16 count, u16 start`); from 0x807EE3D4, the sorted entries, each storing the remaining 19 bytes, 5635 in all, followed directly by an Apple root certificate, with no free space. **[verified]**
 
-- 用新写的 `tools/a5/cdhash.py` 算出 14G61 根文件系统全部 Mach-O 切片（1413 个）和恢复 RAM 盘全部切片（135 个）的 CDHash：RAM 盘的全在表里，根文件系统的 1411 个在表里；表里 **4112 条两边都对不上**（大概是别的机型或别的包的），可以拿来换。【已核实：`work/a6/cdhash-rootfs.txt`、`cdhash-ramdisk.txt`、`trustcache-14G61.txt`】
-- `tools/a5/n41_trustcache.py KERNEL OUT 哈希文件… [--keep …]`：从「两边都对不上」的条目里按顺序从尾部去掉和新哈希一样多的条数，加入新哈希，重新排序，重建索引。条数不变，证书不动。按 VA 换文件偏移要走 LC_SEGMENT（AMFI 在 `__PRELINK_TEXT` 里，第一次按「VA − 0x80001000」算错了位置）。【已核实】
-- `n78_kboot.py` 加了 `N78_TRUST=哈希文件,…`：给内核副本打这个补丁再装进开机包。【已核实】
+- The new `tools/a5/cdhash.py` computed the CDHashes of all Mach-O slices in the 14G61 root file system (1413) and all slices in the restore RAM disk (135): all of the RAM disk's are in the table, and 1411 of the root file system's are; **4112 entries in the table match neither** (probably from other models or other packages) and can be swapped out. **[verified: `work/a6/cdhash-rootfs.txt`, `cdhash-ramdisk.txt`, `trustcache-14G61.txt`]**
+- `tools/a5/n41_trustcache.py KERNEL OUT hashfile… [--keep …]`: from the entries that "match neither", removes as many as there are new hashes, in order from the end, adds the new hashes, re-sorts and rebuilds the index. The entry count stays the same and the certificate is untouched. Converting a VA to a file offset must go through LC_SEGMENT (AMFI is in `__PRELINK_TEXT`; the first attempt computed "VA − 0x80001000" and got the wrong place). **[verified]**
+- `n78_kboot.py` gained `N78_TRUST=hashfile,…`: it applies this patch to a copy of the kernel before packing it into the boot bundle. **[verified]**
 
-**结果（`work/a6/runs/fmt2`、`fmt3`）：** `it_nandfmt`（CDHash 84126ec4…，`work/a6/trust-ramdisk.txt`）正常运行。【已核实】
+**Result (`work/a6/runs/fmt2`, `fmt3`):** `it_nandfmt` (CDHash 84126ec4…, `work/a6/trust-ramdisk.txt`) runs normally. **[verified]**
 
-## 6. NAND 格式化开机
+## 6. NAND format boot
 
-RAM 盘：14G61 的恢复 RAM 盘没有空位（0 字节可用），`hdiutil resize` 加 1 MiB，再照 A5 的做法把 `it_nandfmt` 放成 `restored_external`（属主 root）。开机包 `work/a6/kboot/n41-14G61-nandfmt.bin`：信任缓存补丁、RAM 盘、`nand-enable-reformat=1`，用 `N78_SHOW` 放出 IOP 和闪存控制器。【已核实】
+RAM disk: 14G61's restore RAM disk has no free space (0 bytes available); `hdiutil resize` adds 1 MiB, then, as on the A5, `it_nandfmt` is installed as `restored_external` (owned by root). Boot bundle `work/a6/kboot/n41-14G61-nandfmt.bin`: the trust cache patch, the RAM disk and `nand-enable-reformat=1`, with `N78_SHOW` exposing the IOP and the flash controller. **[verified]**
 
-结果（`fmt3/serial.log`）：
+Result (`fmt3/serial.log`):
 
-- A6 的 IOP 固件（`IOP_s5l8950xiop`，设备树 `iop-version` 2）在现有的 IOP 高层模拟上照样能用：分区表格式化 8 个分区、VFL 和 FTL 格式化、写签名、`VFL_Open`/`FTL_Open` 都 OK，NVRAM 从空白起来，可擦除存储（effaceable）启动。`it_nandfmt: NAND partition format -> 0`。【已核实】
-- 一处不同：`AppleNANDFTL::_publishServices: Creating block device of 0 sectors`（FTL 块设备 0 个扇区）。我们不从 NAND 挂根，暂不影响；记下待查。【已核实：现象；影响是推测】
-- **然后客机就停了**：助手下一步要等 `/dev/disk<n>s2`（USB 盘上的数据卷），最多等 60 秒，超时会打印 `FAILED: no data volume`，但这句一直没出来，串口停在客机时间 11 秒左右。说明不只是没找到盘，客机里的 `sleep(1)` 也没返回过（见第 7 节）。【已核实：现象】
+- The A6 IOP firmware (`IOP_s5l8950xiop`, device tree `iop-version` 2) works on the existing high-level IOP emulation as is: the partition table formats 8 partitions, VFL and FTL format, the signature is written, `VFL_Open`/`FTL_Open` are both OK, NVRAM comes up from blank, and effaceable storage starts. `it_nandfmt: NAND partition format -> 0`. **[verified]**
+- One difference: `AppleNANDFTL::_publishServices: Creating block device of 0 sectors` (the FTL block device has 0 sectors). We do not mount root from NAND, so it does not matter for now; noted for later. **[verified: the symptom; the impact is inferred]**
+- **Then the guest just stopped**: the helper's next step waits up to 60 seconds for `/dev/disk<n>s2` (the data volume on the USB disk) and prints `FAILED: no data volume` on timeout, but that line never appeared; the serial output stops at around 11 seconds of guest time. So it is not only that the disk was not found: the guest's `sleep(1)` never returned either (see section 7). **[verified: the symptom]**
 
-## 7. 卡点：10.3.4 不枚举 USB 盘（已解决：A6 的递减器中断）
+## 7. Blocker: 10.3.4 does not enumerate the USB disk (solved: the A6 decrementer interrupt)
 
-正常开机（`work/a6/runs/r3`，挂 `14G61-full.img`）停在 `Waiting on … IOMedia … Partition ID 1`，整份日志没有一行 USB 的输出；9.3.5 同一位置有 `AppleSynopsysOTGDevice::start`、`AppleUSBHostResources`，接着 `Got boot device = …usb-ehci…QEMU USB HARDDRIVE…`。两个内核里 USB 相关的 kext 和匹配条件一样（`usb-complex,s5l8930x`、`usb-synopsys_ehci,s5l8930x` 等），n41 设备树的兼容串也都带着 s5l8930x 那一项。【已核实：`work/a6/kpers-all.txt`、`DeviceTree.txt`】
+A normal boot (`work/a6/runs/r3`, with `14G61-full.img` attached) stops at `Waiting on … IOMedia … Partition ID 1`, and the whole log has not a single line of USB output; at the same point 9.3.5 has `AppleSynopsysOTGDevice::start` and `AppleUSBHostResources`, followed by `Got boot device = …usb-ehci…QEMU USB HARDDRIVE…`. The USB kexts and their match conditions are the same in both kernels (`usb-complex,s5l8930x`, `usb-synopsys_ehci,s5l8930x` and so on), and the compatible strings in the n41 device tree all still carry the s5l8930x entry. **[verified: `work/a6/kpers-all.txt`, `DeviceTree.txt`]**
 
-打开仲裁器调试日志（启动参数 `AppleEmbeddedUSBArbitrator-debug=0xffffffff AppleS5L8930XUSBArbitrator-debug=0xffffffff AppleEmbeddedUSBNub-debug=0xffffffff AppleUSBPhy-debug=0xffffffff`，`work/a6/runs/u1`）：`AppleS5L8930XUSBArbitrator` 匹配并启动了，读到 `hsic-enabled: true`，按 `no-pmu` 定为 `USBHost`，PHY 起来（`_phyVersion 4`），上电走到 `enableDevicePower: enable index 4` 后再没有下文，EHCI 的 nub 没发布。【已核实：`u1/serial.log` 第 70 到 122 行】
+With the arbitrator's debug logging on (boot arguments `AppleEmbeddedUSBArbitrator-debug=0xffffffff AppleS5L8930XUSBArbitrator-debug=0xffffffff AppleEmbeddedUSBNub-debug=0xffffffff AppleUSBPhy-debug=0xffffffff`, `work/a6/runs/u1`): `AppleS5L8930XUSBArbitrator` matches and starts, reads `hsic-enabled: true`, settles on `USBHost` because of `no-pmu`, the PHY comes up (`_phyVersion 4`), and power-up gets to `enableDevicePower: enable index 4` and then nothing more; the EHCI nub is never published. **[verified: lines 70 to 122 of `u1/serial.log`]**
 
-**对照（`work/a6/runs/u0-n78`，n78 9.3.5 同样的调试参数）：** 9.3.5 在 `enableDevicePower: enable index 4` 之后紧接着 `clearPortReset`、给其余各门上电、`publishing nub … for usb-device`、`… for usb-ehci`。两边差在「上电之后的那一步」：10.3.4 的线程从这里再没醒过。【已核实】
+**Comparison (`work/a6/runs/u0-n78`, n78 9.3.5 with the same debug arguments):** right after `enableDevicePower: enable index 4`, 9.3.5 goes on with `clearPortReset`, powers up the remaining gates, then `publishing nub … for usb-device` and `… for usb-ehci`. The two differ at "the step after power-up": in 10.3.4 the thread never wakes up from there. **[verified]**
 
-**为什么不醒：客机里所有「睡到某个时刻」的线程都醒不了。** r3、fmt3 的串口都停在客机时间 11 秒前后，连 9.x 每隔一阵会打的等根设备提示都没有；格式化助手 `sleep(1)` 等数据卷，60 秒后该打 `FAILED`，也没打。QMP 抓寄存器（`work/a6/runs/u2/regs.txt`），CPU 在空闲循环（0x800d48de）里转，IRQ、FIQ 都屏蔽着，不是死循环。【已核实】
+**Why it does not wake: no thread in the guest that "sleeps until some time" ever wakes.** The serial output of both r3 and fmt3 stops at around 11 seconds of guest time, without even the waiting-for-root-device message that 9.x prints every so often; the format helper loops on `sleep(1)` waiting for the data volume and should print `FAILED` after 60 seconds, but does not. Registers grabbed over QMP (`work/a6/runs/u2/regs.txt`) show the CPU spinning in the idle loop (0x800d48de) with IRQ and FIQ both masked; it is not stuck in an infinite loop. **[verified]**
 
-**根因：A6 的内核用 CPU 自己的通用定时器做时钟，我们没把它的中断送进去。**【已核实】
+**Root cause: the A6 kernel uses the CPU's own generic timer as its clock, and we never delivered its interrupt.** **[verified]**
 
-- 内核的 `mach_absolute_time`（0x80007ff8）、取递减器（0x8000803c）、设递减器（0x80008058）先看 cpu_data 里平台登记的函数（+0x80、+0x74、+0x78），没有就直接读 CNTVCT、读写 CNTV_TVAL。A5 上这三项是 AIC 的定时器；A6 跑起来读出来都是 0（`work/a6/runs/u9`，QMP `x /16wx 0x803ea060`），所以时间和递减器全走 Swift 核的通用虚拟定时器。0x80007fc8 把 CNTV_CTL 置 1 打开它。
-- QEMU 的 Cortex-A15 有这个定时器（计数照走，所以内核时间戳是对的），但机型没接它的中断输出，到点了没人知道。
+- The kernel's `mach_absolute_time` (0x80007ff8), get-decrementer (0x8000803c) and set-decrementer (0x80008058) first look at the functions the platform registered in cpu_data (+0x80, +0x74, +0x78); if there are none, they read CNTVCT and read/write CNTV_TVAL directly. On the A5 these three are the AIC timer; on the A6 they all read as 0 at run time (`work/a6/runs/u9`, QMP `x /16wx 0x803ea060`), so time and the decrementer go entirely through the Swift core's generic virtual timer. 0x80007fc8 sets CNTV_CTL to 1 to enable it.
+- QEMU's Cortex-A15 has this timer (it counts normally, which is why kernel timestamps are right), but the machine never wired up its interrupt output, so nobody noticed when it fired.
 
-**中断从哪进：** 先照 A5 的样子接到 FIQ，两次都崩：
+**Where the interrupt enters:** wiring it to FIQ as on the A5 crashed both times:
 
-1. 复位时 CNTV_CVAL 是 0，内核一打开定时器就到点，0x80007fc8 同时打开 FIQ，FIQ 帧压到引导线程栈外面：`panic … Unexpected abort exception`（`u4`）。
-2. 把 CVAL 复位成最大值后，第一个 FIQ 进去就返回到用户态 PC 0（`u6`，`-d int`）。
+1. At reset CNTV_CVAL is 0, so the timer fires as soon as the kernel enables it; 0x80007fc8 enables FIQ at the same moment, and the FIQ frame is pushed outside the boot thread's stack: `panic … Unexpected abort exception` (`u4`).
+2. With CVAL reset to the maximum value instead, the first FIQ returned to user mode at PC 0 (`u6`, `-d int`).
 
-查向量（QMP 读运行中的 0xffff0000 和 cpu_data+0xa8 指的表 0x80005000）：0x1C 槽跳到 0x80005b60，即 xnu 的 `fleh_decirq`；0x18 槽是 `fleh_irq`（0x80005904）。`fleh_decirq` 从内核态进来时，会切到 IRQ 模式取 lr 和 spsr 当被打断的现场，然后才 `cpsie af` 打开 FIQ。这只有在 IRQ 模式下进入才成立。AIC 驱动的 `handleInterrupt`（REA 反编译，`work/a6/aic-14G61.elf` 0x80fa71b4）遇到定时器类型的 IACK（7）直接 panic，所以定时器也不走普通 IRQ。对照 A5（`-d int`）：它的 FIQ 走 `fleh_fiq_generic`，切回 FIQ 模式取现场，和 A6 这条不同。【已核实：以上各项】
+Checking the vectors (QMP reads of the live 0xffff0000 and of the table at 0x80005000 that cpu_data+0xa8 points to): slot 0x1C jumps to 0x80005b60, which is xnu's `fleh_decirq`; slot 0x18 is `fleh_irq` (0x80005904). When `fleh_decirq` is entered from kernel mode, it switches to IRQ mode to fetch lr and spsr as the interrupted context, and only then runs `cpsie af` to enable FIQ. This only works if it is entered in IRQ mode. The AIC driver's `handleInterrupt` (REA decompilation, `work/a6/aic-14G61.elf` 0x80fa71b4) panics outright on a timer-type IACK (7), so the timer does not go through the ordinary IRQ either. For comparison, on the A5 (`-d int`) the FIQ goes through `fleh_fiq_generic`, which switches back to FIQ mode to fetch the context, unlike this A6 path. **[verified: all of the above]**
 
-结论：**Swift 的递减器是 IRQ 一级的中断（受 CPSR.I 屏蔽、在 IRQ 模式下进入），但有自己的入口 0x1C**，类似 PowerPC 的递减器异常。真机怎么接的没有资料，这是按内核代码反推的。【推测】
+Conclusion: **Swift's decrementer is an IRQ-level interrupt (masked by CPSR.I, entered in IRQ mode), but it has its own vector at 0x1C**, similar to the PowerPC decrementer exception. There is no documentation of how the real device wires it; this is worked backwards from the kernel code. **[inferred]**
 
-**做法（`hw/arm/ipod_touch_5g.c`，只对有通用定时器的 CPU 生效，n78 的 Cortex-A9 不变）：**
+**Approach (`hw/arm/ipod_touch_5g.c`, only for CPUs with a generic timer; n78's Cortex-A9 is unchanged):**
 
-- Swift 的 `cntfrq` 设成 24 MHz（设备树的 timebase-frequency）。
-- 虚拟定时器的输出和 AIC 的 IRQ 取或，接到 CPU 的 IRQ；CPU 接 IRQ 时如果定时器正在请求，用异常后钩子（`arm_register_el_change_hook`，不要大锁）把入口从 0x18 改到 0x1C。`rtclock_intr` 写下一个截止时间（CNTV_TVAL）后电平自然落下。AIC 的 FIQ（A5 的定时器）照旧接 FIQ，A6 内核不会启动它。
-- 复位时 CNTV_CVAL 设成最大值（架构上复位值未定义），第一次中断等内核自己设截止时间。
+- Swift's `cntfrq` is set to 24 MHz (the device tree's timebase-frequency).
+- The virtual timer's output is ORed with the AIC's IRQ and wired to the CPU's IRQ; when the CPU takes an IRQ while the timer is asserting, a post-exception hook (`arm_register_el_change_hook`, without the big lock) moves the vector from 0x18 to 0x1C. Once `rtclock_intr` writes the next deadline (CNTV_TVAL), the level drops by itself. The AIC's FIQ (the A5's timer) is still wired to FIQ; the A6 kernel never starts it.
+- At reset CNTV_CVAL is set to the maximum value (the architectural reset value is undefined), so the first interrupt waits until the kernel sets its own deadline.
 
-**结果（`work/a6/runs/u10`）：** 仲裁器发布 `usb-device`、`usb-ehci`，`Got boot device = …usb-ehci…QEMU USB HARDDRIVE…`，`BSD root: disk0s1`，根卷 HFS 挂上（APFS 先试、失败后改用 HFS，正常），launchd「Darwin Bootstrapper 4.0.0」起来，fsck 两个卷、挂上 `/private/var`（带内容保护）。下一个卡点是 `MKB_INIT: Could not open /private/var/keybags/systembag.kb` → `REBOOTING INTO RECOVERY MODE`：没有系统钥匙包，要靠 NAND 格式化开机建（第 8 节）。【已核实：`u10/serial.log` 第 524 到 560 行】
+**Result (`work/a6/runs/u10`):** the arbitrator publishes `usb-device` and `usb-ehci`, then `Got boot device = …usb-ehci…QEMU USB HARDDRIVE…` and `BSD root: disk0s1`; the root volume mounts as HFS (APFS is tried first and fails, then HFS is used; this is normal); launchd "Darwin Bootstrapper 4.0.0" comes up, fscks both volumes and mounts `/private/var` (with content protection). The next blocker is `MKB_INIT: Could not open /private/var/keybags/systembag.kb` → `REBOOTING INTO RECOVERY MODE`: there is no system keybag, and it has to be created by a NAND format boot (section 8). **[verified: lines 524 to 560 of `u10/serial.log`]**
 
-## 8. NAND 格式化开机（完成）
+## 8. NAND format boot (done)
 
-修好递减器后，同一个格式化开机包重跑（`work/a6/runs/fmt4`，全新盘副本、空 NAND 目录）。助手一路走完：`NAND partition format -> 0`、`effaceable open 0 isFormatted 0 -> 0`、`[effaceable:INIT] format succeeded`、数据卷 `/dev/disk0s2`、`MKBKeyBagCreateSystem -> 0, /mnt2/keybags/systembag.kb 1495 bytes`、`system keybag created; halting`。【已核实：`fmt4/serial.log` 第 200 到 227 行】
+With the decrementer fixed, the same format boot bundle was rerun (`work/a6/runs/fmt4`, a fresh copy of the disk, an empty NAND directory). The helper goes all the way through: `NAND partition format -> 0`, `effaceable open 0 isFormatted 0 -> 0`, `[effaceable:INIT] format succeeded`, data volume `/dev/disk0s2`, `MKBKeyBagCreateSystem -> 0, /mnt2/keybags/systembag.kb 1495 bytes`, `system keybag created; halting`. **[verified: lines 200 to 227 of `fmt4/serial.log`]**
 
-- 和 A5 一样有两行 `[effaceable:ERR ] unable to efface group 0/1 after 3 attempts`，A5 上不影响钥匙包（a5-step1.md 3.17）。【已核实：现象】
-- 停机时 `panic … "Halt/Restart Timed Out"`，之后反复 double panic，串口日志 30 秒涨到几十 MB（已截到前 2 MB）。数据卷在停机前已卸载，钥匙包已落盘。A5 是打出 halting 后约 15 秒按 PID 结束 QEMU，这里照做，以后看到 halting 就结束。【已核实】
-- USB 盘这次是 disk0（NAND 的 FTL 仍是 0 扇区，没有发布成盘），A5 上 USB 盘是 disk1。【已核实：现象】
+- As on the A5, there are two lines of `[effaceable:ERR ] unable to efface group 0/1 after 3 attempts`; on the A5 they did not affect the keybag (a5-step1.md 3.17). **[verified: the symptom]**
+- At halt, `panic … "Halt/Restart Timed Out"`, followed by repeated double panics; the serial log grew to tens of MB in 30 seconds (truncated to the first 2 MB). The data volume had been unmounted before the halt and the keybag was already on disk. On the A5, QEMU was killed by PID about 15 seconds after halting was printed; the same is done here, and from now on QEMU is stopped once halting appears. **[verified]**
+- The USB disk is disk0 this time (the NAND FTL still has 0 sectors and is not published as a disk); on the A5 the USB disk was disk1. **[verified: the symptom]**
 
-成品：盘 `work/a6/nandfmt/disk-1034-formatted.img`，NAND 目录 `work/a6/nandfmt/nand-1034-formatted/`。以后开机都 `cp -c` 克隆。命令：
+Output: the disk `work/a6/nandfmt/disk-1034-formatted.img` and the NAND directory `work/a6/nandfmt/nand-1034-formatted/`. All later boots clone them with `cp -c`. Commands:
 
 ```bash
 cp -c work/a6/disks/14G61-full.img work/a6/nandfmt/disk-1034-formatted.img && mkdir -p work/a6/nandfmt/nand-1034-formatted
@@ -160,21 +160,21 @@ IOP_TRACE=1 MACHINE=iPhone-5 DISK=work/a6/nandfmt/disk-1034-formatted.img SNAP=o
   -D work/a6/runs/fmt4/q.log
 ```
 
-## 9. 改盘：fstab、激活、开发版缓存、GL 前端、信任缓存
+## 9. Disk fix-up: fstab, activation, development cache, GL front end, trust cache
 
-**第一次正常开机（`work/a6/runs/n1`，盘没改）：** 接上 NAND 后 FTL 占了 disk0（0 扇区），USB 盘变成 disk1，和 A5 一样；14G61 自带的 fstab 写的是 disk0，`fsck timed out. Can't stat /dev/disk0s1`。所以 `n78_diskfix.sh` 的 fstab（disk1）照用。【已核实：`n1/serial.log` 第 162、196 行】
+**First normal boot (`work/a6/runs/n1`, disk unmodified):** with NAND attached, the FTL takes disk0 (0 sectors) and the USB disk becomes disk1, as on the A5; 14G61's own fstab says disk0, giving `fsck timed out. Can't stat /dev/disk0s1`. So the fstab from `n78_diskfix.sh` (disk1) is used as is. **[verified: lines 162 and 196 of `n1/serial.log`]**
 
-**激活：** 10.3.4 的 mobileactivationd 改成了 ObjC，9.3.5 那处 `cmp r0,#1; bne` 没了。短路判断看 `-[DeviceType should_hactivate]`（0x245e6，文件偏移 0x205e6），它就是一个读成员的属性方法，改成 `movs r0,#1; bx lr`。`n78_activate.py` 按 SHA-1（8f3a3b82…）认文件，每一项带自己的补丁字节。【已核实：REA，`work/a6/x14/mobileactivationd`；效果待开机验证】
+**Activation:** 10.3.4's mobileactivationd was rewritten in ObjC, and 9.3.5's `cmp r0,#1; bne` is gone. The short-circuit check looks at `-[DeviceType should_hactivate]` (0x245e6, file offset 0x205e6), which is just a property getter that reads a member; it is changed to `movs r0,#1; bx lr`. `n78_activate.py` identifies the file by SHA-1 (8f3a3b82…), and each entry carries its own patch bytes. **[verified: REA, `work/a6/x14/mobileactivationd`; the effect is to be verified at boot]**
 
-**签名：** 改过的文件页哈希对不上，10.x 的 AMFI 会杀。改完用 `ldid -e` 取出原来的授权、`ldid -S授权` 重新做 ad hoc 签名，写回原文件（属主不变）。ldid 签出来有两个代码目录：第 0 槽 SHA-1，0x1000 槽 SHA-256。**10.3.4 认的是第 0 槽那个**：第一次按 xnu 源码的「SHA-256 优先」只加了 SHA-256 截断的哈希，开机后 launchd 直接 panic `initproc exited … unexpected exec of non-platform binary: /usr/libexec/mobileactivationd`（内核没在信任缓存里找到它，不算平台二进制）；而格式化助手 it_nandfmt 当初加的是第 0 槽哈希，能跑。`cdhash.py` 保持取第 0 槽。【已核实：`work/a6/runs/n2/serial.log` 的 panic；it_nandfmt 见第 5 节】
+**Signing:** the page hashes of a modified file no longer match, and 10.x's AMFI kills it. After patching, `ldid -e` extracts the original entitlements and `ldid -S<entitlements>` re-signs it ad hoc, writing back to the original file (owner unchanged). ldid produces two code directories: slot 0 is SHA-1, slot 0x1000 is SHA-256. **10.3.4 recognizes the one in slot 0**: the first attempt followed the xnu source's "SHA-256 first" and added only the truncated SHA-256 hash, and after boot launchd panicked straight away with `initproc exited … unexpected exec of non-platform binary: /usr/libexec/mobileactivationd` (the kernel did not find it in the trust cache, so it does not count as a platform binary); the format helper it_nandfmt, by contrast, had its slot 0 hash added and ran. `cdhash.py` keeps taking slot 0. **[verified: the panic in `work/a6/runs/n2/serial.log`; for it_nandfmt see section 5]**
 
-**开发版缓存：** dyld-433.8 的 `loadPhase5` 和 dyld-390 一样：通信页 0xffff4084 第 0 位置位且缓存头 +0x68 的 cacheType 为 0，才先找磁盘上的文件（REA 反编译 `work/a6/vol-14G61/x/dyld` 0x7f28）。`n78_devcache.py` 加认 `dyld_v1  armv7s` 的头，最后打印改后的 CDHash。【已核实】
+**Development cache:** dyld-433.8's `loadPhase5` works like dyld-390's: only when bit 0 of commpage 0xffff4084 is set and the cacheType at cache header +0x68 is 0 does it look for files on disk first (REA decompilation of `work/a6/vol-14G61/x/dyld` 0x7f28). `n78_devcache.py` now also recognizes the `dyld_v1  armv7s` header and prints the new CDHash at the end. **[verified]**
 
-**GL 前端：** 10.3.4 缓存里 OpenGLES 导出的 489 个符号，现有的 9.x 前端（`work/a5/guest/OpenGLES`，armv6 和 armv7）全有（`work/a6/gles-missing-14G61.txt` 为空）。ObjC 方法没比成（`cacheinfo.py methods` 解析 armv7s 缓存出错），留到开机看。【已核实：导出】
+**GL front end:** all 489 symbols exported by OpenGLES in the 10.3.4 cache are present in the existing 9.x front end (`work/a5/guest/OpenGLES`, armv6 and armv7) (`work/a6/gles-missing-14G61.txt` is empty). The ObjC methods could not be compared (`cacheinfo.py methods` errors out parsing the armv7s cache); left for the boot to show. **[verified: exports]**
 
-**信任缓存：** `n78_diskfix.sh` 的 14G61 分支把三样东西的 CDHash 写到盘镜像旁边的 `DISK.img.trust`：重签后的 mobileactivationd、改后的缓存、GL 前端（两个切片）；做开机包时 `N78_TRUST=DISK.img.trust`。`n41_trustcache.py` 换掉 4 条两边都对不上的条目。【已核实：`work/a6/nandfmt/disk-n2.img.trust`、`trust cache: 4 hashes added`】
+**Trust cache:** the 14G61 branch of `n78_diskfix.sh` writes the CDHashes of three things to `DISK.img.trust` next to the disk image: the re-signed mobileactivationd, the modified cache and the GL front end (two slices); the boot bundle is then built with `N78_TRUST=DISK.img.trust`. `n41_trustcache.py` swaps out 4 entries that match neither side. **[verified: `work/a6/nandfmt/disk-n2.img.trust`, `trust cache: 4 hashes added`]**
 
-Setup 完成状态照用 9.x 的 `n78_setupdone.py`（35 个键，ForceNoBuddy），10.x 是否还认待开机看。
+The Setup-completed state reuses 9.x's `n78_setupdone.py` (35 keys, ForceNoBuddy); whether 10.x still honors it is left for the boot to show.
 
 ```bash
 cp -c work/a6/nandfmt/disk-1034-formatted.img work/a6/nandfmt/disk-n2.img && tools/a5/n78_diskfix.sh work/a6/nandfmt/disk-n2.img
@@ -185,367 +185,367 @@ MACHINE=iPhone-5 DISK=work/a6/nandfmt/disk-n2.img SNAP=off tools/a5/n78_run.sh w
   -global driver=s5l8940.iop,property=nand,value=work/a6/nandfmt/nand-n2
 ```
 
-**第二次正常开机（`work/a6/runs/n2`，改过的盘，信任缓存错加了 SHA-256 哈希）：** 系统钥匙包载入（`MKB_INIT: System Keybag loaded`），屏幕上是苹果标志加进度条（第一次开机的数据迁移，A5 上也有），SpringBoard、backboardd、lockdownd、mediaserverd 等都起来了；约 270 秒时 launchd 因上面的 mobileactivationd 不是平台二进制而 panic。期间串口有 60 多行 `AMFI: code signature validation failed.`，不带文件名。【已核实：`n2/shot-100.png`、`n2/serial.log`】
+**Second normal boot (`work/a6/runs/n2`, modified disk, the trust cache wrongly given the SHA-256 hash):** the system keybag loads (`MKB_INIT: System Keybag loaded`), the screen shows the Apple logo with a progress bar (the data migration on first boot, also seen on the A5), and SpringBoard, backboardd, lockdownd, mediaserverd and others all come up; at about 270 seconds launchd panics because the mobileactivationd above is not a platform binary. Before that, the serial port shows more than 60 lines of `AMFI: code signature validation failed.`, with no file names. **[verified: `n2/shot-100.png`, `n2/serial.log`]**
 
-**第三次（`work/a6/runs/n3`，信任缓存改用第 0 槽哈希）：** 串口上一条 `AMFI: code signature validation failed` 都没有了（n2 的 60 多条看来都是这几个文件）。数据迁移从头做到满格（约 260 秒）。**GL 前端在 iOS 10 上原样能用**：QEMU 输出 `[gles] host GL up: 2.1 Metal … Apple M4 Max`、`OpenGLES front end (contrib/gles-public): 508 gl exports`、`CoreAnimation composites through the host`，随后贴了几十张纹理、画了 ES2 的 `glDrawElements`；SpringBoard 打出 `creating global IOSurfaces`。【已核实：`n3/qemu.out`、`n3/serial.log`】
+**Third (`work/a6/runs/n3`, the trust cache using the slot 0 hashes):** not a single `AMFI: code signature validation failed` on the serial port any more (so the 60-odd in n2 were apparently all these few files). The data migration runs from start to a full bar (about 260 seconds). **The GL front end works on iOS 10 as is**: QEMU prints `[gles] host GL up: 2.1 Metal … Apple M4 Max`, `OpenGLES front end (contrib/gles-public): 508 gl exports`, `CoreAnimation composites through the host`, then uploads dozens of textures and draws ES2 `glDrawElements`; SpringBoard prints `creating global IOSurfaces`. **[verified: `n3/qemu.out`, `n3/serial.log`]**
 
-迁移满格后约 90 秒，第二个 SpringBoard（pid 201，迁移结束后重启的那个）里内核 panic：`pmap_page_protect: bad pve entry pte_p=0x8ecef000 … pte=0xff6ac1b0, va=0x3000000 ppnum: 0x8e6a1`。这个「页表项」低两位是 00，不是有效项，说明该页表所在的物理页被写坏了。嫌疑：宿主侧 GL 桥（或别的直接写客机内存的模型）在第一个 SpringBoard 退出后还往它用过的物理地址写，那些页被回收成了页表。【已核实：panic 内容；原因是推测】A5 的 9.3.5 第一次开机也是做完迁移后「从这块盘再开」。
+About 90 seconds after the migration bar fills, the kernel panics in the second SpringBoard (pid 201, the one restarted after the migration): `pmap_page_protect: bad pve entry pte_p=0x8ecef000 … pte=0xff6ac1b0, va=0x3000000 ppnum: 0x8e6a1`. The low two bits of this "page table entry" are 00, so it is not a valid entry, meaning the physical page holding that page table was overwritten. Suspect: the host-side GL bridge (or another model that writes guest memory directly) kept writing to the physical addresses the first SpringBoard had used after it exited, and those pages had been reclaimed as page tables. **[verified: the panic contents; the cause is inferred]** On the A5 too, 9.3.5's first boot did the migration and was followed by "booting again from this disk".
 
-## 10. 卡点：迁移之后内核内存被改写（已解决，见 13.1）
+## 10. Blocker: kernel memory overwritten after migration (solved, see 13.1)
 
-迁移完成后从同一块盘再开（`n4`、`n5`），每次都在锁屏出来之前 panic，panic 的种类每次不同，共同点是内核的内存被别人改了：【已核实：各 `serial.log`】
+After the migration finished, booting again from the same disk (`n4`, `n5`) panicked every time before the lock screen appeared, with a different kind of panic each time; what they have in common is that the kernel's memory was changed by someone else: **[verified: each `serial.log`]**
 
-| 运行 | panic |
+| Run | panic |
 |---|---|
-| n3 | `pmap_page_protect: bad pve entry … pte=0xff6ac1b0`（页表项被写成 0xff6ac1b0，低两位 00，不是有效项；在第二个 SpringBoard 里） |
-| n4 | `kernel abort type 4 … fault_addr=0xc2dd3000`，在 IRQ 处理里（AIC → IOCPUInterruptController → 驱动） |
+| n3 | `pmap_page_protect: bad pve entry … pte=0xff6ac1b0` (the page table entry was overwritten with 0xff6ac1b0, low two bits 00, not a valid entry; in the second SpringBoard) |
+| n4 | `kernel abort type 4 … fault_addr=0xc2dd3000`, during IRQ handling (AIC → IOCPUInterruptController → driver) |
 | n5 | `a freed zone element has been modified in zone kalloc.192: expected 0x38618738 but found 0x70007` |
 
-排查到现在：
+Findings so far:
 
-- **开机包的内存布局没问题。** 1 GiB 时 memSize 0x3F700000，vram 0xBF700000（和 QEMU 帧缓冲的地址一致），pram 在最顶上。【已核实：`ipad1_kboot.layout`、`N78_VRAM_BASE`】
-- **设备模型里没有写死 512 MiB 的地址掩码。**（CDMA 的 dram-size 跟着板子走，IOP 模拟把 IOP 侧 0xC0000000 起的地址换回 0x80000000，1 GiB 正好覆盖。）格式化开机的 IOP 跟踪里，FMI 命令带的缓冲区地址都是合理的物理地址。【已核实：`fmt4/q.log`】
-- **GL 写回的几何没问题。** 临时加了日志（`IT_GLES_PAGELOG`），记 GL 宿主把 surface 写回客机内存时落在哪些页：两张 640×1136 的落在 vram 里，一张 744×1392（行距 3008 字节）落在 0x9C/0x9D 一带的零散页上，页数和尺寸对得上。但写回用的是缓存的页表（按 surface 的内核 ID 记住、只在同一调用进程里核对），进程退出、页被回收后再写就会写坏别人的页，这一点还没排除。【已核实：几何；陈旧页是推测】
-- 对照实验 `n6`：`IT_GLES_NULL=1`（所有 GL 调用不做事，宿主完全不写客机内存），同一块盘开 300 秒，看内存损坏还在不在。
+- **The boot bundle's memory layout is fine.** At 1 GiB, memSize is 0x3F700000, vram is 0xBF700000 (matching QEMU's framebuffer address), and pram is at the very top. **[verified: `ipad1_kboot.layout`, `N78_VRAM_BASE`]**
+- **No device model has an address mask hardcoded for 512 MiB.** (CDMA's dram-size follows the board, and the IOP emulation maps IOP-side addresses from 0xC0000000 back to 0x80000000, which covers exactly 1 GiB.) In the format boot's IOP trace, the buffer addresses in FMI commands are all sensible physical addresses. **[verified: `fmt4/q.log`]**
+- **The GL writeback geometry is fine.** Temporary logging (`IT_GLES_PAGELOG`) recorded which pages the GL host's surface writebacks into guest memory land on: two 640×1136 surfaces land in vram, and one 744×1392 (row stride 3008 bytes) lands on scattered pages around 0x9C/0x9D, with page counts matching the sizes. But the writeback uses a cached page table (remembered by the surface's kernel ID and only checked within the same calling process), so writing after the process exits and its pages are reclaimed would corrupt someone else's pages; this has not been ruled out yet. **[verified: the geometry; the stale pages are inferred]**
+- Control experiment `n6`: `IT_GLES_NULL=1` (every GL call does nothing, so the host never writes guest memory), the same disk booted for 300 seconds, to see whether the memory corruption remains.
 
-对照 `n6` 的结果：300 秒里没有出现内存被改写，但约 150 秒时换成 IOP 控制消息超时（`IOP::_sendControlMessageGated: timed out with partially completed command - granting grace period 1` 到 5），随后 panic `IOP: timed out waiting for workloop to process completed command`。别的运行里都没有这条。所以这次对照不够干净：不能说明 GL 写回就是元凶，也不能排除。【已核实：`n6/serial.log` 第 236 到 255 行】
+Result of control `n6`: no memory overwrite in 300 seconds, but at about 150 seconds IOP control message timeouts appeared instead (`IOP::_sendControlMessageGated: timed out with partially completed command - granting grace period 1` to 5), followed by panic `IOP: timed out waiting for workloop to process completed command`. None of the other runs has this. So this control is not clean enough: it neither shows that the GL writeback is the culprit nor rules it out. **[verified: lines 236 to 255 of `n6/serial.log`]**
 
-## 11. 回归 n78 的 9.3.5
+## 11. n78 9.3.5 regression
 
-改过的公共代码：`ipod_touch_5g.c`（N78Board 重构、iPhone 5 子类、Swift 的定时器接线，后两样只对带通用定时器的 CPU 生效）、`n78_kboot.py`、`n78_unpack.py`、`n78_activate.py`、`n78_devcache.py`、`n78_diskfix.sh`、`cdhash.py`。
+Shared code that changed: `ipod_touch_5g.c` (the N78Board refactor, the iPhone 5 subclass and the Swift timer wiring; the last two only take effect for CPUs with a generic timer), `n78_kboot.py`, `n78_unpack.py`, `n78_activate.py`, `n78_devcache.py`, `n78_diskfix.sh`, `cdhash.py`.
 
-- 9.3.5 格式化后的盘新克隆一份，用新的 `n78_diskfix.sh` 改盘：13G36 分支照常（激活补丁、开发版缓存、GL 前端、属主、Setup 35 个键），不生成 trust 文件。【已核实】
-- 第一次开机（`work/a6/runs/reg935`）：数据迁移，迁移后在 ReportCrash 里 panic `kernel abort type 4 … fault_addr=0xffffffff`。A5 阶段的做法本来就是迁移后从这块盘再开。【已核实】
-- 第二次开机（`work/a6/runs/reg935b`）：**88 秒锁屏**，OCR 认出「iPod」「Wednesday, December 31」「slide to unlock」（截图 `docs/reports/img/a6-regress-935-lock.png`）。【已核实】
-- 锁屏之后约一两分钟，SpringBoard 里内核 panic `kernel abort type 4 … far 0xf`。A5 阶段 9.3.5 到「设置」的那几次在各自的时长里没有 panic，这次对 n78 实际生效的 QEMU 改动只有 N78Board 重构（值和原来一样），所以更像原来就有、偶发的问题，和 A6 的几次内存改写可能同源。【已核实：现象；同源是推测】
+- A fresh clone of the formatted 9.3.5 disk was fixed up with the new `n78_diskfix.sh`: the 13G36 branch behaves as before (activation patch, development cache, GL front end, ownership, the 35 Setup keys), and no trust file is generated. **[verified]**
+- First boot (`work/a6/runs/reg935`): data migration, then after the migration a panic in ReportCrash, `kernel abort type 4 … fault_addr=0xffffffff`. In the A5 stage the practice was already to boot again from the disk after migration. **[verified]**
+- Second boot (`work/a6/runs/reg935b`): **lock screen at 88 seconds**; OCR reads "iPod", "Wednesday, December 31", "slide to unlock" (screenshot `docs/reports/img/a6-regress-935-lock.png`). **[verified]**
+- A minute or two after the lock screen, the kernel panics in SpringBoard with `kernel abort type 4 … far 0xf`. In the A5 stage, the 9.3.5 runs that reached Settings had no panic within their durations, and the only QEMU change that actually affects n78 this time is the N78Board refactor (with the same values as before), so this looks more like a pre-existing intermittent problem, possibly with the same origin as the A6 memory overwrites. **[verified: the symptom; the common origin is inferred]**
 
-## 12. 补丁、文档
+## 12. Patches, documentation
 
-- **补丁并进 `patches/a5-n78-skeleton.patch`**（现在 13 个文件）：iPhone 5 是同一个 `ipod_touch_5g.c` 里 n78 机型的子类，用的是重构后的 `N78Board`，单独出补丁也只能叠在它上面、不能单打；`cpu32.c` 的 `apple-swift` 只有二十来行。文件名不改，`build-qemu.sh` 和工作树的流程不用动。在上游原样的临时克隆里按 `build-qemu.sh` 的顺序打四个 iOS 补丁、这个补丁、`a5-n78-ios-ui.patch`，都打得上。【已核实】
-- 注意：`work/ios/qemu-ios`（App 用的 iOS 工作树）打的还是旧的 skeleton 补丁，下次编 App 前要从上游重建这个工作树再打全套补丁。
-- `docs/plan.md` 加了一行，`README.md`、`tools/a5/README.md`（A6 一节）同步。临时诊断代码（`IT_GLES_PAGELOG`）已删。
+- **The patch is merged into `patches/a5-n78-skeleton.patch`** (now 13 files): the iPhone 5 is a subclass of the n78 machine in the same `ipod_touch_5g.c` and uses the refactored `N78Board`, so a separate patch could only stack on top of it, not apply on its own; the `apple-swift` in `cpu32.c` is only about twenty lines. The file name is unchanged, so neither `build-qemu.sh` nor the work tree workflow needs to change. In a temporary clone of pristine upstream, the four iOS patches, this patch and `a5-n78-ios-ui.patch` all apply in `build-qemu.sh` order. **[verified]**
+- Note: `work/ios/qemu-ios` (the iOS work tree the app uses) still has the old skeleton patch; before the next app build, rebuild that work tree from upstream and apply the full set of patches.
+- `docs/plan.md` got one new line; `README.md` and `tools/a5/README.md` (the A6 section) were brought in line. The temporary diagnostic code (`IT_GLES_PAGELOG`) has been removed.
 
-## 13. 锁屏和主屏（第二轮）
+## 13. Lock screen and home screen (round 2)
 
-决策会话核对后要求继续查迁移后的内存改写，目标锁屏和主屏。这一轮依次解决了三件事，`work/a6/runs/n15` 开到了锁屏和主屏。
+After review, the decision session asked to keep chasing the post-migration memory overwrites, with the lock screen and home screen as the goal. This round solved three things in turn, and `work/a6/runs/n15` reached the lock screen and home screen.
 
-### 13.1 内存改写：GL 写回往已释放的 surface 页里写
+### 13.1 Memory overwrites: GL writeback into freed surface pages
 
-- n3 那个坏页表项 0xff6ac1b0，按内存字节序是 B=0xb0、G=0xc1、R=0x6a、A=0xff，一个不透明的青蓝色像素；n5 的 0x00070007 不像像素，n4 是读到坏指针。【已核实：数值】
-- 嫌疑对象：GL 宿主的 surface 写回（`gles_surface_writeback`）。绑定时按调用进程的页表把 surface 的物理页记下来，之后任何进程 glFlush/glFinish 都会把所有「脏」surface 按这张缓存的页表写回客机内存，从不再核对。surface 被释放或所属进程退出后，这些页回到内核，再写就写进了别人的页。
-- 修法（`hw/arm/gles-host.c`）：绑定时记下所属进程的 TTBR0；写回前用这张页表（短描述符，按当时的 TTBCR.N）重走 surface 的首、中、尾三页，任一页已不映射或换了物理页就丢掉这次写回、作废缓存。没有缓存页的 surface（按虚拟地址写）只许所属进程自己写。这个核对由机型打开（`gles_host_set_owner_check`，n78/n41 打开），因为 4.x 内核只给进程留最后碰过的那页映射，老机型照旧。【已核实：代码】
-- 验证：n7 起每次都有一条 `[gles] surface tex 1 (744x1392 at 0x02e66000) no longer its process's: frame not written back`。临时诊断（已删）显示当时所属进程就是调用者本身（TTBR0 相同、ASID 0x29），第一页在它自己的页表里已没有映射，QEMU 自己的地址翻译也给出同样结论（`qemu 0 0`）。744×1392 正是 iPhone 5 带视差边距的壁纸尺寸，和青蓝色像素对得上。之后 n7 到 n15 都没再出现内存改写型 panic。【已核实：`n7/qemu.out`、`n10/qemu.out`、各 `serial.log`】
+- The bad page table entry 0xff6ac1b0 from n3, in memory byte order, is B=0xb0, G=0xc1, R=0x6a, A=0xff: an opaque cyan-blue pixel; n5's 0x00070007 does not look like a pixel, and n4 read a bad pointer. **[verified: the values]**
+- Suspect: the GL host's surface writeback (`gles_surface_writeback`). At bind time it records the surface's physical pages using the calling process's page table; after that, any process's glFlush/glFinish writes all "dirty" surfaces back to guest memory through this cached page table, never checking again. Once a surface is freed or its owning process exits, those pages go back to the kernel, and further writes land in someone else's pages.
+- Fix (`hw/arm/gles-host.c`): record the owning process's TTBR0 at bind time; before writing back, use that page table (short descriptors, with TTBCR.N as of that moment) to walk the surface's first, middle and last pages again; if any page is no longer mapped or now maps another physical page, drop this writeback and invalidate the cache. Surfaces without cached pages (written by virtual address) may only be written by their owning process. The machine turns this check on (`gles_host_set_owner_check`, on for n78/n41), because 4.x kernels only keep a process's mapping for the page it touched last, so older machines keep the old behavior. **[verified: code]**
+- Verification: from n7 on, every run has one `[gles] surface tex 1 (744x1392 at 0x02e66000) no longer its process's: frame not written back`. Temporary diagnostics (removed) showed that the owning process at that moment was the caller itself (same TTBR0, ASID 0x29), and its first page no longer had a mapping in its own page table; QEMU's own address translation came to the same conclusion (`qemu 0 0`). 744×1392 is exactly the iPhone 5 wallpaper size with parallax margins, which fits the cyan-blue pixel. After that, n7 to n15 had no more memory-overwrite panics. **[verified: `n7/qemu.out`, `n10/qemu.out`, each `serial.log`]**
 
-### 13.2 PMU 的 ADC 不完成：backboardd 的 HID 服务被拖住
+### 13.2 The PMU's ADC never completes: backboardd's HID service is held up
 
-- 改写消失后，画面停在苹果标志、随后熄屏，后来还出 IOP 控制消息超时 panic。数据卷上的崩溃报告（`stacks+backboardd`，看门狗抓的全体线程栈）用新写的符号化脚本（按共享缓存的镜像和导出符号）看：backboardd 的 HID 事件服务线程卡在 `IOHIDServiceCopyEvent` → 内核里 `AppleEmbeddedTempSensor` → `AppleDialogPMU` → `AppleD1972PMU::_readADCGated`。【已核实：`n12/crash/`】
-- D1972 读 ADC（REA 反编译 0x810e6440）：往 0x48 写「通道 | 0x20」启动，最多等 1 秒等中断处理把状态改成 2，再读 0x49、0x4A 拼成 12 位结果。我们的 PMU 替身只是寄存器表，没有中断，每次读都干等满 1 秒（串口里的 `ADC read bad state: 1`），温度传感器一次取数要读好几个通道，HID 服务是串行的，后面的请求全被堵住。A5 的 9.3.5 也有同样的报错，只是没堵到这个程度。【已核实】
-- I2C 跟踪（`I2C_TRACE=1`）看到 D1972 用一字节寄存器地址；0x12 到 0x1A 是 9 个中断屏蔽字节（开机全写 0xFF，之后只在 0x13 打开 bit7 和 bit5）；中断处理读 0x01 起 9 个事件字节，从不往里写。PMU 中断按设备树是 GPIO 6 号脚。【已核实：`work/a6/runs/i2c1/q.log`、`DeviceTree.txt`】
-- 修法（`hw/arm/s5l8940_i2c.c`，只对 n41 打开，n78 的 PMU 不变）：0x48 写入带 0x20 时填结果（半量程 0x800）、置事件 0x02 的 bit5；事件寄存器读即清；有未屏蔽事件就拉 GPIO 6（低电平有效）。先试的「写 1 清」不对：驱动读了 26 万次事件、从不清，成了中断风暴；改成读即清后每次转换正好一次中断。ADC 报错从 12 条变成 0 条。【已核实：`i2c2`、`i2c3` 的 `q.log` 和 `serial.log`】
-- 同时把递减器转发改成 AIC 的中断先走（两者同时挂起时不转到 0x1C）。这一条是为 IOP 超时加的，单独看没有解决它（n11 仍超时），保留是因为更合理；IOP 超时在 13.2 修好之后再没出现过。【已核实：n11 仍超时；n13 到 n15 没有】
+- With the overwrites gone, the screen stopped at the Apple logo and then went off, and later there were IOP control message timeout panics. The crash reports on the data volume (`stacks+backboardd`, all-thread stacks captured by the watchdog), read with a newly written symbolication script (using the shared cache's images and exported symbols), show backboardd's HID event service thread stuck in `IOHIDServiceCopyEvent` → in the kernel, `AppleEmbeddedTempSensor` → `AppleDialogPMU` → `AppleD1972PMU::_readADCGated`. **[verified: `n12/crash/`]**
+- D1972 ADC reads (REA decompilation 0x810e6440): write "channel | 0x20" to 0x48 to start, wait up to 1 second for the interrupt handler to set the state to 2, then read 0x49 and 0x4A and combine them into a 12-bit result. Our PMU stand-in is only a register table with no interrupt, so every read waited the full 1 second (`ADC read bad state: 1` on the serial port); the temperature sensor reads several channels per sample, the HID service is serial, and every request behind it was blocked. 9.3.5 on the A5 has the same error, just not blocked to this extent. **[verified]**
+- The I2C trace (`I2C_TRACE=1`) shows that the D1972 uses one-byte register addresses; 0x12 to 0x1A are 9 interrupt mask bytes (all written 0xFF at boot, after which only bit7 and bit5 of 0x13 are unmasked); the interrupt handler reads 9 event bytes starting at 0x01 and never writes to them. According to the device tree, the PMU interrupt is GPIO pin 6. **[verified: `work/a6/runs/i2c1/q.log`, `DeviceTree.txt`]**
+- Fix (`hw/arm/s5l8940_i2c.c`, only enabled for n41; n78's PMU is unchanged): when a write to 0x48 has 0x20 set, fill in the result (half scale, 0x800) and set bit5 of event 0x02; event registers clear on read; whenever an unmasked event is pending, assert GPIO 6 (active low). "Write 1 to clear", tried first, was wrong: the driver read the events 260,000 times without ever clearing them, an interrupt storm; with clear-on-read, each conversion produces exactly one interrupt. ADC errors went from 12 to 0. **[verified: `q.log` and `serial.log` of `i2c2`, `i2c3`]**
+- At the same time, the decrementer forwarding was changed so that the AIC's interrupt goes first (when both are pending, it does not redirect to 0x1C). This was added for the IOP timeouts and on its own did not fix them (n11 still timed out); it is kept because it is more sensible. The IOP timeouts have not appeared again since the 13.2 fix. **[verified: n11 still timed out; n13 to n15 did not]**
 
-### 13.3 CommCenter：SpringBoard 主线程等基带
+### 13.3 CommCenter: SpringBoard's main thread waits on the baseband
 
-- PMU 修好后 backboardd 的看门狗报告里，等的是 SpringBoard：`BKWatchdogService isAlive` → `BKSystemAppSentinel ping` → `pingSystemApp:timeout:`。SpringBoard 主线程卡在 UIApplicationMain 的运行循环里，经 PersistentConnection 定时器向 CommCenter 发同步 XPC（CoreTelephony 查数据连接状态）。iPhone 5 的基带我们藏掉了，CommCenter 一启动就段错误，崩溃报告每次运行十几二十份。【已核实：`n14/crash/stacks+backboardd-…160244.543.ips`，backboardd 的方法名来自 REA 解析 `/usr/libexec/backboardd`】
-- 修法：iOS 10 的 launchd 从 `/private/var/db/com.apple.xpc.launchd/disabled.plist` 读禁用的任务（launchd 里的字符串，文件已由 launchd 自己建好），加上 `com.apple.CommCenter: true`。服务名不再注册，CoreTelephony 的请求立刻失败。先手工改了 disk-n2 的数据卷验证。【已核实】
-- 已并进 `n78_diskfix.sh` 的 14G61 分支：全新的数据卷上只有这个目录（属 root、755），没有文件，所以这一步用 `noowners` 重挂后写入（已有就合并），卸载后用 `build_nand.set_owner` 把属主改回 root。【已核实：`disk-n3.img` 上 `launchd disabled: ['com.apple.CommCenter']`、`owner root: 1 record`】
-- `n78_run.sh` 加了 `QEMU=` 变量，指定用哪个 qemu-system-arm（做新旧版对照用）。
+- With the PMU fixed, backboardd's watchdog report showed it waiting on SpringBoard: `BKWatchdogService isAlive` → `BKSystemAppSentinel ping` → `pingSystemApp:timeout:`. SpringBoard's main thread was stuck in UIApplicationMain's run loop, sending a synchronous XPC to CommCenter from a PersistentConnection timer (CoreTelephony querying the data connection state). We hid the iPhone 5's baseband, so CommCenter segfaults as soon as it starts, leaving ten to twenty crash reports per run. **[verified: `n14/crash/stacks+backboardd-…160244.543.ips`; backboardd's method names come from REA parsing `/usr/libexec/backboardd`]**
+- Fix: iOS 10's launchd reads disabled jobs from `/private/var/db/com.apple.xpc.launchd/disabled.plist` (a string in launchd; the file had already been created by launchd itself); add `com.apple.CommCenter: true`. The service name is no longer registered, and CoreTelephony's requests fail immediately. First verified by editing disk-n2's data volume by hand. **[verified]**
+- Merged into the 14G61 branch of `n78_diskfix.sh`: a brand-new data volume has only this directory (owned by root, 755) and no file, so this step remounts with `noowners` and writes it (merging if it already exists), then after unmounting uses `build_nand.set_owner` to set the owner back to root. **[verified: on `disk-n3.img`, `launchd disabled: ['com.apple.CommCenter']`, `owner root: 1 record`]**
+- `n78_run.sh` gained a `QEMU=` variable that selects which qemu-system-arm to run (for old-versus-new comparisons).
 
-### 13.4 结果（`work/a6/runs/n15`）
+### 13.4 Result (`work/a6/runs/n15`)
 
-- **82 秒锁屏**：状态栏「Searching…」、电量图标，中间一条通知「CONTENTS NOT AVAILABLE / Cannot read the connected storage media.」（iOS 把我们的 USB 根盘当成了外接存储设备），底部翻页点和相机图标（`docs/reports/img/a6-1034-lockscreen.png`）。【已核实：OCR 和截图】
-- **按 Home 进主屏**（175 秒按下，178 秒截图）：iOS 10 主屏，时间 4:03 PM，Mail、Calendar（Wednesday 31）、Photos、Camera、Maps、Clock、Weather、Stocks、Wallet、Notes、Reminders、News、iTunes Store、App Store、iBooks、TV、Home、Health、Settings，Dock 上 Phone、Safari、Messages、Music（`docs/reports/img/a6-1034-home.png`）。【已核实】
-- 瑕疵：壁纸没出来（黑底加几道彩色横纹，大概就是 13.1 被丢掉的那张壁纸 surface），图标下没有文字，Dock 的文字位置是黑块。没有 panic，也没有 IOP 超时。【已核实：截图】
+- **Lock screen at 82 seconds**: status bar "Searching…", battery icon, a notification in the middle "CONTENTS NOT AVAILABLE / Cannot read the connected storage media." (iOS treats our USB root disk as an external storage device), page dots and the camera icon at the bottom (`docs/reports/img/a6-1034-lockscreen.png`). **[verified: OCR and screenshot]**
+- **Home goes to the home screen** (pressed at 175 seconds, screenshot at 178): the iOS 10 home screen, time 4:03 PM, Mail, Calendar (Wednesday 31), Photos, Camera, Maps, Clock, Weather, Stocks, Wallet, Notes, Reminders, News, iTunes Store, App Store, iBooks, TV, Home, Health, Settings, with Phone, Safari, Messages and Music in the Dock (`docs/reports/img/a6-1034-home.png`). **[verified]**
+- Flaws: no wallpaper (a black background with a few colored horizontal stripes, probably the wallpaper surface dropped in 13.1), no text under the icons, and black blocks where the Dock text should be. No panic and no IOP timeout. **[verified: screenshot]**
 
-### 13.5 9.3.5 锁屏后的 `far 0xf`：新旧两版对照
+### 13.5 9.3.5's `far 0xf` after the lock screen: old versus new
 
-- 旧版：334612f 时的 `a5-n78-skeleton.patch` 打在同一个上游版本上，另建工作树 `work/a6/qemu-old`、另编 `work/a6/build-old`（子项目从现有工作树本地复制，没有下载）。新版：现在的工作树（含 N78Board 重构、GL 所属进程核对）。
-- 两版用同一块 9.3.5 盘（`work/a6/regress/disk-935.img`，迁移后的状态，快照模式，起点完全相同）、各自一份 NAND 副本，同时开 300 秒，85、150、250 秒按 Home 截图。【已核实：`work/a6/runs/c935-old`、`c935-new`】
+- Old: `a5-n78-skeleton.patch` as of 334612f, applied to the same upstream version in a separate work tree `work/a6/qemu-old` and built separately in `work/a6/build-old` (subprojects copied locally from the existing work tree, nothing downloaded). New: the current work tree (with the N78Board refactor and the GL owning-process check).
+- Both used the same 9.3.5 disk (`work/a6/regress/disk-935.img`, post-migration state, snapshot mode, identical starting point), each with its own NAND copy, run side by side for 300 seconds, pressing Home and taking screenshots at 85, 150 and 250 seconds. **[verified: `work/a6/runs/c935-old`, `c935-new`]**
 
-| | 锁屏（OCR） | panic |
+| | Lock screen (OCR) | panic |
 |---|---|---|
-| 旧版 334612f | 153、253 秒 | 无 |
-| 新版 | 88、153、253 秒 | 无 |
+| Old 334612f | 153, 253 seconds | none |
+| New | 88, 153, 253 seconds | none |
 
-- 两版都没复现 `far 0xf`，新版里 GL 所属进程核对一次都没触发。reg935b 那次 panic 用的是加核对之前的版本，盘是迁移后第一次重开。所以这次不能说它是这轮改动引入的，也没能归因，记为偶发。【已核实：上表；归因未定】
+- Neither reproduced `far 0xf`, and the GL owning-process check never fired in the new version. The reg935b panic was on the version before the check was added, on the first reboot of the disk after migration. So it cannot be said to have been introduced by this round's changes, and it could not be attributed either; recorded as intermittent. **[verified: the table above; attribution undetermined]**
 
 
-## 14. 画面缺陷和解锁（第三轮）
+## 14. Display defects and unlocking (round 3)
 
-决策会话看了 13.4 的截图：系统确实起来了，但壁纸全黑、中间有横向花屏线、文字没画出来、锁屏没有时间日期，要求如实记下、修完再算「进锁屏、进主屏」，然后照 A5 的路解锁、进「设置」。这一轮的结果：文字、时钟日期、花屏线修好了；**壁纸仍是黑的，触摸驱动链在 n41 上没起来，所以没能解锁进「设置」**。
+The decision session looked at the 13.4 screenshots: the system really is up, but the wallpaper is all black, there are horizontal glitch lines across the middle, text is not drawn, and the lock screen has no time or date. It asked for this to be recorded as it is, and for "reached the lock screen and home screen" to count only once these are fixed; then to unlock and get into Settings following the A5's route. This round's result: text, the clock and date, and the glitch lines are fixed; **the wallpaper is still black, and the touch driver chain did not come up on n41, so unlocking into Settings was not possible**.
 
-### 14.1 文字、时钟、花屏线：iOS 10 的 `LA08` 表面格式（已修）
+### 14.1 Text, clock, glitch lines: iOS 10's `LA08` surface format (fixed)
 
-- n15 的宿主日志里有两条格式拒绝：`REFUSED surface:LA08`、`REFUSED surface:RGhA`。iOS 10 的文字层（CoreText 画好的字形）用的 IOSurface 像素格式四字码是 `LA08`（亮度加透明度各 8 位），宿主只认 iOS 7 的 `LA88` 和更早的 `2C08` 两种写法，这种 surface 绑不上，文字层就是空的：图标名、Dock 文字（黑块）、锁屏的大时钟和日期都在这一类里。【已核实：`n15/qemu.out`】
-- 修法（`hw/arm/gles-host.c`、`gles.h`）：`LA08` 按 `LA88` 同样处理（每像素 2 字节，以 GL_LUMINANCE_ALPHA 上传）。`RGhA` 是半精度浮点的 RGBA（每像素 8 字节），见到的是一张 256×1 的查找表，上传时转成 8 位 RGBA；绑定和刷新两处的像素缓冲按 `MAX(4, 每像素字节数)` 分配。【已核实：代码】
-- 修后锁屏有「4:02」和「Wednesday, December 31」，主屏图标名、Dock 文字都在，中间的横向花屏线也没了（花屏线是哪一层没画出来留下的，没单独核对，按修后消失推断与此同源）。之后 p3、p6、p10、s1、f2 的截图都是这样，日志里不再有这两条拒绝。【已核实：截图和 OCR；花屏线的来源是推测】
+- n15's host log has two format refusals: `REFUSED surface:LA08` and `REFUSED surface:RGhA`. iOS 10's text layers (glyphs drawn by CoreText) use the IOSurface pixel format fourcc `LA08` (8 bits each of luminance and alpha), while the host only knew iOS 7's `LA88` and the earlier `2C08` spellings, so these surfaces failed to bind and the text layers were empty: icon names, the Dock text (black blocks), and the lock screen's large clock and date all fall into this category. **[verified: `n15/qemu.out`]**
+- Fix (`hw/arm/gles-host.c`, `gles.h`): `LA08` is handled the same as `LA88` (2 bytes per pixel, uploaded as GL_LUMINANCE_ALPHA). `RGhA` is half-float RGBA (8 bytes per pixel); the one seen is a 256×1 lookup table, converted to 8-bit RGBA on upload; the pixel buffers at bind and at refresh are allocated at `MAX(4, bytes per pixel)`. **[verified: code]**
+- After the fix the lock screen shows "4:02" and "Wednesday, December 31", the home screen icon names and the Dock text are there, and the horizontal glitch lines across the middle are gone too (the glitch lines were left by some layer that was not drawn; this was not checked separately, and the common origin is inferred from their disappearing after the fix). The p3, p6, p10, s1 and f2 screenshots since then all look like this, and the log no longer has these two refusals. **[verified: screenshots and OCR; the source of the glitch lines is inferred]**
 
-### 14.2 壁纸：合成器用的 surface 从来没被写过（未解决）
+### 14.2 Wallpaper: the surface the compositor uses was never written (unsolved)
 
-- 渲染进程这一侧是对的：p15 用 `-trace gles_surface_log` 看，处理壁纸的进程把 744×1392 的 surface（客体地址 0x02e66000）画好后写回，采样和 6279561，不是空的。【已核实：`p15/qemu.out` 第 66、67 行】
-- 同一进程后来又往这张纹理画了一次，这次写回被所属进程核对挡下：它自己的页表里第一页已经没有映射（`probe 0/4089 r 0`，当前 TTBR0 就是绑定时那个），前面刚有 `glDeleteTextures(1)`。也就是这块 surface 已被它自己的进程释放，挡下是对的；放开核对就会出 13.1 那种内存改写（见 14.4 的 p7）。【已核实：`p14/qemu.out` 第 53 到 80 行，诊断代码已删】
-- 合成器（backboardd 的上下文）绑的是另一块 744×1392：IOSurface 号 5 被重用了，但物理页完全不同（第一页 0x3cdb3000，渲染进程那块是 0x18b1e000），采样和 2722635，屏上就是黑底。整个运行里没有任何 GL 调用往这块内存里画过，所以从渲染进程的结果到合成器的 surface 之间少了一步复制，而这一步不经过我们桥接的 GL。【已核实：`p13/qemu.out` 的 `[surf]` 诊断行】
-- 少的这步是什么还没查实。【推测】嫌疑一：M2 缩放器（IOSurfaceAccelerator 的 transfer），开机包把两个缩放器藏了（A5 时 9.3.5 碰它就 panic）；GL 前端为 4.x 接过有条件的 transfer，但 10.3.4 的日志里一条 transfer 记录都没有。嫌疑二：CPU 侧拷贝（锁住 IOSurface 再 memcpy）发生在我们把帧写回之前。试过让前端的 `clientWaitSync` 先把上下文刷一遍，让帧在 CPU 读之前写回（p13），壁纸照样黑，已撤回，前端恢复原样（`work/a6/OpenGLES.before-sync`，CDHash 不变）。9.3.5 在同样隐藏缩放器的情况下壁纸正常，说明 iOS 10 换了壁纸的出图路径。
-- 下一步建议：在 backboardd 绑那块 surface 之前，按 IOSurface 号追谁写过它的物理页（QEMU 里给这几页设写监视），看是内核驱动（缩放器）还是用户态拷贝。
+- The rendering process's side is correct: p15, viewed with `-trace gles_surface_log`, shows the process handling the wallpaper drawing the 744×1392 surface (guest address 0x02e66000) and writing it back, with sample sum 6279561, not empty. **[verified: lines 66 and 67 of `p15/qemu.out`]**
+- The same process later drew into this texture again, and that writeback was blocked by the owning-process check: the first page no longer had a mapping in its own page table (`probe 0/4089 r 0`, the current TTBR0 being the one from bind time), right after a `glDeleteTextures(1)`. So this surface had been freed by its own process, and blocking it was correct; lifting the check brings back the 13.1 kind of memory overwrite (see p7 in 14.4). **[verified: lines 53 to 80 of `p14/qemu.out`; the diagnostic code has been removed]**
+- The compositor (backboardd's context) binds a different 744×1392: IOSurface ID 5 was reused, but the physical pages are completely different (first page 0x3cdb3000, versus 0x18b1e000 for the rendering process's), sample sum 2722635, which is the black background on screen. Throughout the run, no GL call ever drew into this memory, so a copy step is missing between the rendering process's result and the compositor's surface, and that step does not go through our bridged GL. **[verified: the `[surf]` diagnostic lines in `p13/qemu.out`]**
+- What this missing step is has not been confirmed. **[inferred]** Suspect one: the M2 scaler (IOSurfaceAccelerator's transfer); the boot bundle hides both scalers (on the A5, 9.3.5 panicked as soon as it touched one); the GL front end wired up a conditional transfer for 4.x, but 10.3.4's log has not a single transfer record. Suspect two: a CPU-side copy (lock the IOSurface, then memcpy) happens before we write the frame back. Making the front end's `clientWaitSync` flush the context first, so the frame is written back before the CPU reads it, was tried (p13); the wallpaper stayed black, so it was reverted and the front end restored (`work/a6/OpenGLES.before-sync`, CDHash unchanged). With the scalers hidden in the same way, 9.3.5's wallpaper is fine, which suggests iOS 10 changed the path the wallpaper image takes.
+- Suggested next step: before backboardd binds that surface, use the IOSurface ID to find who wrote its physical pages (set write watches on those pages in QEMU), to see whether it is a kernel driver (the scaler) or a user-space copy.
 
-### 14.3 触摸：n41 的 SPI 控制器没起来（未解决，所以没进「设置」）
+### 14.3 Touch: n41's SPI controller does not come up (unsolved, so Settings was not reached)
 
-- s1：120 秒锁屏，135 秒按 Home 进主屏；150 秒、190 秒两次点「设置」图标（(396,918)、(396,818)，按 640×1136 的屏幕坐标），之后的截图一直是主屏，串口里没有一行多点触控的日志。【已核实：`s1/in-160.png` 到 `in-215.png`、`s1/serial.log`】
-- 往上查：n78 的串口里有 `AppleSamsungSPIController::start: spi1 …`、`spi2 …`，随后 `multi-touch@0:AppleARMSPIDevice::initWithRegistryEntry`；n41 上一行 SPI 日志都没有，控制器本身就没起来，触摸驱动（`AppleMultitouchN1SPI`，「C1,N41」那份人格是有的）自然轮不到。【已核实：`work/a5/runs/s317/b4/serial.log` 第 63 到 171 行对照 `s1/serial.log`】
-- 两版的驱动和匹配条件一样（`com.apple.driver.AppleSamsungSPI`，IONameMatch `spi-1,samsung`，n41 的 spi1 节点也是这个 compatible），开机包没有藏 spi 节点。两边 spi1 节点的差别：n41 的 `clock-gates` 是 0x1b（n78 是 0x44），`dma-channels` 用 0x11、0x12（n78 是 0x0b、0x0c），`dma-parent` 指向另一个节点。【已核实：两份 `DeviceTree.txt`】
-- 【推测】控制器卡在它依赖的东西上：A6 的时钟门 0x1b 或 DMA 控制器在我们的模型里没就绪，驱动在 start 之前就放弃了，所以连 `start` 那行都没打。还没查实。
-- 所以决策会话说的触摸中断脚 0x1901 这一轮验不了，「设置」也没能点开（A5 的路是滑动解锁、点「设置」，都靠触摸）。
+- s1: lock screen at 120 seconds, Home to the home screen at 135 seconds; tapped the Settings icon twice at 150 and 190 seconds ((396,918) and (396,818), in 640×1136 screen coordinates); the screenshots after that stay on the home screen, and the serial port has not a single line of multitouch logging. **[verified: `s1/in-160.png` to `in-215.png`, `s1/serial.log`]**
+- Going further up: n78's serial output has `AppleSamsungSPIController::start: spi1 …` and `spi2 …`, followed by `multi-touch@0:AppleARMSPIDevice::initWithRegistryEntry`; on n41 there is not a single line of SPI logging, so the controller itself never came up, and the touch driver (`AppleMultitouchN1SPI`, which does have the "C1,N41" personality) never gets its turn. **[verified: lines 63 to 171 of `work/a5/runs/s317/b4/serial.log` versus `s1/serial.log`]**
+- The driver and match conditions are the same in both versions (`com.apple.driver.AppleSamsungSPI`, IONameMatch `spi-1,samsung`, and n41's spi1 node has this compatible too), and the boot bundle does not hide the spi nodes. Differences between the two spi1 nodes: n41's `clock-gates` is 0x1b (n78: 0x44), `dma-channels` uses 0x11 and 0x12 (n78: 0x0b, 0x0c), and `dma-parent` points to another node. **[verified: both `DeviceTree.txt`]**
+- **[inferred]** The controller is stuck on something it depends on: the A6 clock gate 0x1b or the DMA controller is not ready in our model, and the driver gives up before start, so even the `start` line is never printed. Not confirmed yet.
+- So the touch interrupt pin 0x1901 that the decision session mentioned could not be verified this round, and Settings could not be opened either (the A5 route is slide to unlock, then tap Settings, both relying on touch).
 
-### 14.4 其他问题
+### 14.4 Other issues
 
-- **开机后整段黑屏（偶发）**：这一轮 14 次带截图的开机里（不算关掉核对的 p7）有 4 次（p5、p12、f1、g1）从头黑到尾、按 Home 也不亮，没有 panic，同一块盘、同一个开机包再开就正常。原因没查。【已核实：现象】
-- **关掉所属进程核对的对照（p7）**：用当时的诊断开关关掉核对，开机后 panic `kernel abort type 4: fault_type=0x1, fault_addr=0xff006764`，说明 13.1 的核对仍然必要。【已核实：`p7/serial.log` 第 335 行；开关已随诊断代码删掉】
-- **电话图标的红色角标里没有数字**：角标本身画出来了，数字没有；可能还是某种没认出的文字层，但日志里已没有格式拒绝，没查。【已核实：现象】
-- **锁屏通知「CONTENTS NOT AVAILABLE / Cannot read the connected storage media.」**：iOS 把我们挂根用的 USB 盘当成了外接存储配件。这一轮没去设备树或配件服务那边压它，不影响开机和进主屏。【已核实：现象；没查】
-- 电池图标是红色（快没电）：PMU 的 ADC 现在一律回半量程，电量读数大概由此而来，没查。【推测】
+- **Black screen for the whole boot (intermittent)**: of this round's 14 boots with screenshots (not counting p7 with the check turned off), 4 (p5, p12, f1, g1) were black from start to finish, and Home did not light the screen either; no panic, and booting again with the same disk and the same boot bundle was fine. The cause was not investigated. **[verified: the symptom]**
+- **Control with the owning-process check turned off (p7)**: with the check turned off by the diagnostic switch of the time, the boot panicked with `kernel abort type 4: fault_type=0x1, fault_addr=0xff006764`, showing that the 13.1 check is still needed. **[verified: line 335 of `p7/serial.log`; the switch was removed along with the diagnostic code]**
+- **No number in the Phone icon's red badge**: the badge itself is drawn, but the number is not; possibly another unrecognized kind of text layer, but the log no longer has format refusals; not investigated. **[verified: the symptom]**
+- **Lock screen notification "CONTENTS NOT AVAILABLE / Cannot read the connected storage media."**: iOS treats the USB disk we mount root from as an external storage accessory. This round did not suppress it on the device tree or accessory service side; it does not affect booting or reaching the home screen. **[verified: the symptom; not investigated]**
+- The battery icon is red (nearly empty): the PMU's ADC now always returns half scale, which is probably where the charge reading comes from; not investigated. **[inferred]**
 
-### 14.5 最终验证（快照模式，同一块迁移过的盘 `disk-n3.img`）
+### 14.5 Final verification (snapshot mode, the same migrated disk `disk-n3.img`)
 
-| 运行 | QEMU | 锁屏（OCR） | 按 Home 后 | panic |
+| Run | QEMU | Lock screen (OCR) | After Home | panic |
 |---|---|---|---|---|
-| f2 | 删完诊断代码的版本 | 100、120 秒：「4:02」「Wednesday, December 31」 | 140、170 秒主屏，图标名齐 | 无 |
-| f1 | 同上 | 整段黑屏（14.4） | 黑 | 无 |
-| g1 | 补丁改写法之后（14.6） | 整段黑屏 | 黑 | 无 |
-| g2 | 同上 | 100、120 秒 | 140、170 秒主屏 | 无 |
+| f2 | version with the diagnostic code removed | 100, 120 seconds: "4:02" "Wednesday, December 31" | home screen at 140, 170 seconds, all icon names present | none |
+| f1 | same | black for the whole boot (14.4) | black | none |
+| g1 | after the patch rewrite (14.6) | black for the whole boot | black | none |
+| g2 | same | 100, 120 seconds | home screen at 140, 170 seconds | none |
 
-- 锁屏和主屏的截图换成 f2 的（`docs/reports/img/a6-1034-lockscreen.png`、`a6-1034-home.png`）：有大时钟、日期、图标名和 Dock 文字，没有花屏线；壁纸黑、电话角标没有数字、锁屏那条存储通知还在。【已核实】
-- 黑屏的几次里有的带一条「GL 调用访问客体页四次缺页后被丢弃」（slot 237），但 n15、p2、p11、p13 也有这条却正常，p12 黑屏却没有，所以和黑屏对不上。【已核实：各次 `qemu.out`】
-- 9.3.5 回归（n78，`work/a6/regress/disk-935.img`）：f935 和 g935 都是 88、153 秒锁屏，没有 panic，所属进程核对一次没触发。【已核实：`f935`、`g935`】
-- 结束时没有 QEMU 进程。
+- The lock screen and home screen screenshots were replaced with f2's (`docs/reports/img/a6-1034-lockscreen.png`, `a6-1034-home.png`): large clock, date, icon names and Dock text, no glitch lines; the wallpaper is black, the Phone badge has no number, and the storage notification on the lock screen is still there. **[verified]**
+- Some of the black-screen runs have one "GL call accessing a guest page dropped after four faults" line (slot 237), but n15, p2, p11 and p13 have it too and were fine, while p12 was black without it, so it does not match the black screen. **[verified: each run's `qemu.out`]**
+- 9.3.5 regression (n78, `work/a6/regress/disk-935.img`): f935 and g935 both reached the lock screen at 88 and 153 seconds with no panic, and the owning-process check never fired. **[verified: `f935`, `g935`]**
+- No QEMU processes were left at the end.
 
-### 14.6 补丁
+### 14.6 Patches
 
-- 这三轮的 QEMU 改动仍并在 `patches/a5-n78-skeleton.patch`（16 个文件）：iPhone 5 是 `ipod_touch_5g.c` 里 n78 的子类，PMU 和 GL 宿主的改动都由机型打开（所属进程核对 n78/n41 都开；PMU 的 ADC 只给 n41），拆成单独补丁也只能叠在它上面。
-- 这一轮 GL 宿主的改动一开始和 `ios-gles-perf.patch` 碰到同几行（`GLESSurface` 里 `detached` 后面、绑定时找可复用纹理的循环），按 `build-qemu.sh` 的顺序打不上。改了写法：新字段 `ttbr`、`unwritten` 放到 `gen` 前面（在快照保存的 36 字节之外，恢复时清零，即「不知道」）；「渲染了但没写回」的 surface 在原循环之前单独过一遍，同一块物理内存被另一个进程绑定时把它改记成按这个进程地址的「已脱离」副本，原循环一行不动。【已核实：代码】
-- 在上游原样的两个临时工作树里核对：按 `build-qemu.sh` 的顺序打四个 iOS 补丁、`a5-n78-skeleton.patch`、`a5-n78-ios-ui.patch` 全部打得上；只打 skeleton 得到的 `gles-host.c` 和 Mac 工作树逐字节相同。Mac 版重编通过。临时工作树已删。【已核实】
-- `work/ios/qemu-ios`（App 用的 iOS 工作树）还是旧补丁，下次编 App 前要重建（同第 12 节）。iOS 版这一轮没有编。
-- 新工具 `tools/a5/stacksym.py`：把看门狗的全体线程栈报告按共享缓存命名（13.2、13.3 就是用它看出谁在等谁），`tools/a5/README.md` 的 A6 一节已加，并补了 CommCenter、`QEMU=` 和从迁移过的盘开到主屏的命令。
-- 旧版对照用的 `work/a6/qemu-old`（上游的 git 工作树，334612f 时的补丁）和 `work/a6/build-old` 留着，以后再做新旧对照不用重建；不要了用 `git -C upstream/qemu-ios worktree remove work/a6/qemu-old` 删。
+- These three rounds' QEMU changes are still merged into `patches/a5-n78-skeleton.patch` (16 files): the iPhone 5 is n78's subclass in `ipod_touch_5g.c`, and the PMU and GL host changes are both turned on per machine (the owning-process check on for both n78/n41; the PMU's ADC only for n41), so a separate patch could only stack on top of it.
+- This round's GL host changes at first touched the same lines as `ios-gles-perf.patch` (after `detached` in `GLESSurface`, and the loop that looks for a reusable texture at bind time), and did not apply in `build-qemu.sh` order. They were rewritten: the new fields `ttbr` and `unwritten` go before `gen` (outside the 36 bytes saved in snapshots, cleared on restore, i.e. "unknown"); surfaces that are "rendered but not written back" get a separate pass before the original loop, and when the same physical memory is bound by another process, the surface is re-recorded as a "detached" copy addressed through that process; the original loop is not changed by a single line. **[verified: code]**
+- Checked in two temporary work trees of pristine upstream: the four iOS patches, `a5-n78-skeleton.patch` and `a5-n78-ios-ui.patch` all apply in `build-qemu.sh` order; the `gles-host.c` obtained by applying only skeleton is byte-for-byte identical to the Mac work tree's. The Mac build rebuilt fine. The temporary work trees have been deleted. **[verified]**
+- `work/ios/qemu-ios` (the iOS work tree the app uses) still has the old patch and must be rebuilt before the next app build (as in section 12). The iOS version was not built this round.
+- New tool `tools/a5/stacksym.py`: names the frames in the watchdog's all-thread stack reports using the shared cache (this is how 13.2 and 13.3 found who was waiting on whom); it has been added to the A6 section of `tools/a5/README.md`, along with CommCenter, `QEMU=`, and the commands for booting a migrated disk to the home screen.
+- The old-version comparison's `work/a6/qemu-old` (a git work tree of upstream, with the patch as of 334612f) and `work/a6/build-old` are kept so later old-versus-new comparisons need no rebuild; when they are no longer needed, delete them with `git -C upstream/qemu-ios worktree remove work/a6/qemu-old`.
 
-## 15. 触摸、「设置」、壁纸（第四轮）
+## 15. Touch, Settings, wallpaper (round 4)
 
-决策会话核对第 14 节后定的顺序：先修触摸（挡着进「设置」），再查壁纸，再查偶发黑屏；顺手看存储通知和电池；补查 g2 里另外三条 REFUSED。
+The order the decision session set after reviewing section 14: fix touch first (it blocks getting into Settings), then investigate the wallpaper, then the intermittent black screen; look at the storage notification and the battery along the way; and also check the other three REFUSED lines in g2.
 
-### 15.1 触摸：时钟频率表只填到第 55 槽（已修）
+### 15.1 Touch: the clock frequency table only filled up to slot 55 (fixed)
 
-- 先排除了 PMGR 和 DMA：t1 带 `-d unimp` 开机，未建模设备里访问最多的是 `0xf800438`、`0xf80020c`（各五千多次），在 n41 设备树里是 `perfcounter`（和 pmgr 的第二段同址），写入值在一组固定配置和 0 之间来回切，像空闲进出时开关性能计数器，与 SPI 无关；spi1 的 `dma-parent` 两边都指向 `cdma`，CDMA 驱动在 n41 上照常起来（`CDMA::_mapKeyID` 那行两边都有）。t1 里 spi1 一次片选都没有。【已核实：`work/a6/runs/t1/qemu.out`、两份设备树】
-- 反编译 10.3.4 的 `AppleSamsungSPIController::start`（kext 包成 ELF，`work/a6/dis/spi-14G61.elf`，REA，0x807df4e0）：读完 `spi-version` 后向父设备要名为 `nclk` 的时钟频率（vtable +0x34c，64 位返回），**为 0 就直接返回，什么都不打**，打 `_spiBaseAddress` 那行在这之后。【已核实：反编译】
-- 时钟频率来自 `arm-io/clock-frequencies`，按 clock-id 的低字节取槽。开机包用的是 imgtools 里 A4 的 55 项表 `CLOCKS`；n41 的设备树有 96 个槽，后 41 个留成 0。n41 的 spi1 时钟是 0x12b、0x13b，spi3 是 0x13d，0x3b、0x3d 都在第 55 槽之后；n78 的 spi1 是 0x130、0x133，在表内，所以 A5 没事。【已核实：设备树】
-- 修法（`tools/a5/n78_kboot.py`，只对 n41）：把表按设备树的槽数补满，多出的槽给外设时钟（和表的默认值一样，100 MHz）。n78 的开机包不变。【已核实：代码】
-- 修后（t2 起）：串口出现 `AppleSamsungSPIController::start: spi1: _spiBaseAddress = 0x32100000…` 和 spi3 的同一行，`AppleMultitouchN1SPI: successfully started`，下发 32 字节接近感应校准、32 字节触摸校准和固件 `0x0266.bin`（114 ms），和 A5 的 9.3.5 一样；QEMU 侧 spi1 有 250 次片选、触摸模型 1221 条日志，150 秒那次点按被收成一次按下和抬起。【已核实：`t2/serial.log` 第 62 到 225 行、`t2/qemu.out`】
+- PMGR and DMA were ruled out first: t1 booted with `-d unimp`, and the most-accessed unmodeled addresses were `0xf800438` and `0xf80020c` (over five thousand times each), which in the n41 device tree are `perfcounter` (at the same address as pmgr's second range); the written values switch back and forth between a fixed configuration and 0, like performance counters being turned on and off around idle entry and exit, unrelated to SPI; spi1's `dma-parent` points to `cdma` on both, and the CDMA driver comes up normally on n41 (the `CDMA::_mapKeyID` line is present on both). In t1, spi1 had not a single chip select. **[verified: `work/a6/runs/t1/qemu.out`, both device trees]**
+- Decompiling 10.3.4's `AppleSamsungSPIController::start` (kext packed as ELF, `work/a6/dis/spi-14G61.elf`, REA, 0x807df4e0): after reading `spi-version`, it asks its parent for the frequency of the clock named `nclk` (vtable +0x34c, 64-bit return), and **if it is 0 it returns right away without printing anything**; the line that prints `_spiBaseAddress` comes after this. **[verified: decompilation]**
+- Clock frequencies come from `arm-io/clock-frequencies`, with the slot chosen by the low byte of the clock-id. The boot bundle used imgtools' 55-entry A4 table `CLOCKS`; n41's device tree has 96 slots, and the last 41 were left at 0. n41's spi1 clocks are 0x12b and 0x13b and spi3's is 0x13d, and 0x3b and 0x3d are both past slot 55; n78's spi1 clocks are 0x130 and 0x133, within the table, so the A5 was fine. **[verified: device tree]**
+- Fix (`tools/a5/n78_kboot.py`, n41 only): pad the table to the device tree's slot count, giving the extra slots the peripheral clock (the same as the table's default, 100 MHz). The n78 boot bundle is unchanged. **[verified: code]**
+- After the fix (from t2 on): the serial port shows `AppleSamsungSPIController::start: spi1: _spiBaseAddress = 0x32100000…` and the same line for spi3, then `AppleMultitouchN1SPI: successfully started`, and 32 bytes of proximity calibration, 32 bytes of touch calibration and the firmware `0x0266.bin` (114 ms) are sent down, as with 9.3.5 on the A5; on the QEMU side spi1 had 250 chip selects and the touch model 1221 log lines, and the tap at 150 seconds was received as one press and release. **[verified: lines 62 to 225 of `t2/serial.log`, `t2/qemu.out`]**
 
-### 15.2 触摸的家族号，进「设置」（已修）
+### 15.2 The touch family number, getting into Settings (fixed)
 
-- t2 到 t5：驱动链起来了，点按也被收到（t5 的 145 秒、205 秒两次按下抬起），但主屏毫无反应。【已核实：`t5/qemu.out` 的 `FINGER` 行、截图】
-- 原因在传感器自报的家族号。触摸模型对 n41 用的还是 n78 那份参数，自报家族 0x58（iPod touch 5 的 C1F58）。14G61 系统卷上的 `N41.mtprops` 只有一项 `C1F57,1`（固件 `0x0266.bin`，64340 字节），内核里 N41 的人格也在 `AppleMultitouchSPIC1F57` 下，所以 iPhone 5 是家族 0x57。固件照样下发（mtmergeprops 只认文件名），但 iOS 10 已不支持 iPod touch 5，按 0x58 报上来的帧没被变成触摸事件。这是推断：没有去拆 MultitouchSupport 核对，依据是改了家族号就好了。【已核实：mtprops 内容（只读挂载 `work/a6/vol-14G61/system.img`）；「0x58 被丢掉」是推测】
-- 修法（`hw/arm/ipod_touch_5g.c`）：给 n41 单独一份 `mt_profile_n41`，家族 0x57、固件版本 0x266，几何参数沿用 n78 的（同是 4 英寸屏）。【已核实：代码】
-- t6：100 秒锁屏，120 秒按 Home 进主屏；135 秒左滑翻到第二页（FaceTime、Calculator、Podcasts、Watch、Extras），150 秒右滑回来；**170 秒点「设置」图标（396,860），「设置」打开**，显示「Sign in to your iPhone」、飞行模式、蓝牙、通知、控制中心、勿扰、通用。【已核实：`t6/in-145.png`、`in-180.png`，存为 `docs/reports/img/a6-1034-home-page2.png`、`a6-1034-settings.png`】
-- 触摸中断脚 0x1901（设备树 interrupts 0xc9 = 0x19 × 8 + 1）由此验过：中断不对的话驱动收不到帧。点按的位置见 15.3。
+- t2 to t5: the driver chain is up and taps are received (two press-and-release pairs at 145 and 205 seconds in t5), but the home screen does not react at all. **[verified: the `FINGER` lines in `t5/qemu.out`, screenshots]**
+- The cause is the family number the sensor reports. The touch model still used n78's parameters for n41, reporting family 0x58 (the iPod touch 5's C1F58). `N41.mtprops` on the 14G61 system volume has only one entry, `C1F57,1` (firmware `0x0266.bin`, 64340 bytes), and N41's personality in the kernel is also under `AppleMultitouchSPIC1F57`, so the iPhone 5 is family 0x57. The firmware is sent regardless (mtmergeprops only looks at the file name), but iOS 10 no longer supports the iPod touch 5, and frames reported as 0x58 were not turned into touch events. This is inferred: MultitouchSupport was not taken apart to check; the evidence is that changing the family number fixed it. **[verified: mtprops contents (read-only mount of `work/a6/vol-14G61/system.img`); "0x58 is dropped" is inferred]**
+- Fix (`hw/arm/ipod_touch_5g.c`): a separate `mt_profile_n41` for n41, with family 0x57 and firmware version 0x266, and the geometry carried over from n78 (both are 4-inch screens). **[verified: code]**
+- t6: lock screen at 100 seconds, Home to the home screen at 120 seconds; swiped left to the second page at 135 seconds (FaceTime, Calculator, Podcasts, Watch, Extras) and right back at 150 seconds; **tapped the Settings icon (396,860) at 170 seconds, and Settings opened**, showing "Sign in to your iPhone", Airplane Mode, Bluetooth, Notifications, Control Center, Do Not Disturb, General. **[verified: `t6/in-145.png`, `in-180.png`, saved as `docs/reports/img/a6-1034-home-page2.png`, `a6-1034-settings.png`]**
+- This also verifies the touch interrupt pin 0x1901 (device tree interrupts 0xc9 = 0x19 × 8 + 1): with the wrong interrupt the driver would receive no frames. For the tap positions, see 15.3.
 
-### 15.3 整段黑屏：一熄就叫不醒（定性：不是 GL 宿主或显示管线，在用户态；未修）
+### 15.3 Whole-boot black screen: once the screen goes off it cannot be woken (characterized: not the GL host or the display pipeline, but in user space; not fixed)
 
-- **黑屏和 LCD 关闭一一对应**：到 t3 为止 15 次带截图的开机里，5 次黑屏（p5、p12、f1、g1、t2）的串口都有 `ApplePinotLCD::_lcdEnable: enable: 0`，10 次正常的都没有；之后的 t3、t9 也一样。注册顺序（USB 盘先于背光）对不上。【已核实：各次 `serial.log`】
-- **10.3.4 熄屏后按 Home 叫不醒**：t8 在锁屏出来后 125 秒按电源键，LCD 关；140、155 秒两次按 Home，截图一直是黑的，DSI 上除了 125 秒那串关屏命令再没有任何写入，内核根本没收到开屏请求。9.3.5 同样的操作是 `_lcdEnable: 0` 后跟 `_lcdEnable: 1`（`g935`、`c935-new`）。【已核实：`t8/qemu.out` 的 DSI 跟踪（带时间戳）、`t8/serial.log`】
-- t4 是正常的一次：40 到 70 秒苹果标志，80 秒起锁屏一直亮到 150 秒，160 秒按 Home 进主屏。所以黑屏那几次不是锁屏超时熄掉的，而是锁屏还没画出来，屏就关了。【已核实：`t4/in-*.png`】
-- 不是系统睡眠：熄屏后内核日志照常（温度传感器每隔几秒一行），「prevent idle sleep」计数没到 0（背光那个断言还在）。【已核实：`t8/serial.log`】
-- **卡在 SpringBoard**：t9 用可写克隆盘开机（正好黑屏），数据卷上留下 backboardd 看门狗的三份全进程栈（bug_type 288，原因「Watchdog: taking a stackshot」）。用 `tools/a5/stacksym.py` 看，SpringBoard 主线程两次都卡在同步等待：一次在 FrontBoard 经 LaunchServices 发的同步 XPC 里，一次在 Widgets 里等信号量。Widgets 那个函数（0x320c85b2，选择子按 iOS 10 缓存的 v2 滑动信息还原）是取小组件图标：`[[widget extension] objectForInfoDictionaryKey:]`、`[LSPlugInKitProxy pluginKitProxyForIdentifier:]`、`bundleURL`、`[NSBundle bundleWithURL:]`、`[UIImage imageNamed:inBundle:…]`，返回地址落在 `objectForInfoDictionaryKey:` 之后。同一时刻 pkd、lsd 都闲着，所以不是哪个服务卡死，是 SpringBoard 在等一个不会来的回复或信号。backboardd 主线程正常待在 run loop 里。【已核实：`work/a6/runs/t9/crash-sym/stk-160031.406.txt`、`stk-160118.805.txt`（符号化后的全文；原始 .ips 在克隆盘上，克隆盘做 t10 时已删）；选择子名的还原方法见 15.6】
-- 所以按决策会话要的三分法，黑屏属于「SpringBoard 没起来」，不是 GL 宿主没出帧、也不是显示管线没刷新。为什么只是偶发（同一块盘、同一个开机包）、等的到底是什么，还没查到。【推测】和启动时各服务的先后有关：先起来的服务没准备好时，同步请求就一直等。
-- 同一次 t9 里 mediaserverd 崩了 10 次（`HDR.videoprocessor` 插件里抛出未捕获的 C++ 异常后 abort，相机和视频处理那一路），disk-n3 上之前的崩溃报告里也有，和黑屏不一定有关，先记下。【已核实：崩溃报告】
-- **熄屏后叫不醒也是 SpringBoard 主线程卡住，等的是 mediaserverd**：t10 用可写克隆盘开机，120 秒正常锁屏，125 秒按电源键熄屏，140 秒按 Home 没亮。这次留下四份看门狗全进程栈，SpringBoard 主线程四次都卡在同步等 mediaserverd：`Celestial` → `FigSharedPlayerCreate` → `FigPlayerRemoteCreate` → `FigSandboxReacquireServer`（CoreMedia 重连媒体服务的那一步）或 `CMSessionMgr…`，调用方是 SpringBoard 自己（按电源键锁屏时要建播放器，大概是播锁屏音）。同一次开机 mediaserverd 崩了 13 次，SpringBoard 一直在等一个不停重启的服务，主线程处理不了 Home。【已核实：`work/a6/runs/t10/crash/`（原始 .ips 和符号化文本）】
-- **mediaserverd 为什么崩**：每次都是 `HDR.videoprocessor`（相机 HDR 合成，只在共享缓存里，系统卷上 `/System/Library/VideoProcessors/` 只有 BarcodeScanner）初始化时 `bad_alloc` 后 abort。反编译（`work/a6/dis/HDR-14G61.elf`）：0x30f78704 用 `[[EAGLContext alloc] initWithAPI:2]` 建 ES2 上下文，成功后最后一步 `glGetIntegerv(GL_MAX_TEXTURE_IMAGE_UNITS, &this[4])`；建不成只打一句「couldn't create the eagl context」，`this[4]` 不写。构造函数 0x30f78ac4 随后按 `this[4] × 4` 字节 `new[]`，未初始化的值一乘溢出成 0xffffffff，`new[]` 抛 `bad_alloc`。宿主日志里「OpenGLES front end」只有 4 行（每个用上前端的进程一行），mediaserverd 重启 13 次一行没有，说明它在建上下文之前就被前端拒了。【已核实：反编译、`t10/qemu.out`；「在哪一步被拒」是推测】
-- 前端（`contrib/gles-public/opengles.c`）里 ES2 上下文要过 `fe_es2()`：用 `access()` 看 `OpenGLES.framework/GLEngine.bundle` 在不在。【推测】mediaserverd 的沙盒不许它看这个路径，`access()` 失败，前端就当没有 ES2，`initWithAPI:2` 直接返回 nil。改法：只有 `ENOENT` 才算没有。前端重编（`work/a5/guest/OpenGLES`，旧的留在 `work/a6/OpenGLES.before-es2`），`n78_diskfix.sh` 装回 disk-n3、信任缓存换上新 CDHash，开机包重做。
+- **The black screen corresponds one-to-one with the LCD being turned off**: of the 15 boots with screenshots up to t3, the serial logs of the 5 black ones (p5, p12, f1, g1, t2) all have `ApplePinotLCD::_lcdEnable: enable: 0`, and none of the 10 normal ones do; the later t3 and t9 follow the same pattern. The registration order (USB disk before backlight) does not line up with it. **[verified: each run's `serial.log`]**
+- **On 10.3.4, Home cannot wake the screen after it goes off**: in t8, the power button was pressed 125 seconds after the lock screen appeared, and the LCD turned off; Home was pressed twice at 140 and 155 seconds, the screenshots stayed black, and apart from the screen-off command sequence at 125 seconds there was no further write on DSI, so the kernel never even received a request to turn the screen on. On 9.3.5 the same actions give `_lcdEnable: 0` followed by `_lcdEnable: 1` (`g935`, `c935-new`). **[verified: the DSI trace (with timestamps) in `t8/qemu.out`, `t8/serial.log`]**
+- t4 was a normal run: Apple logo from 40 to 70 seconds, the lock screen lit from 80 seconds all the way to 150 seconds, Home to the home screen at 160 seconds. So in the black-screen runs the screen was not turned off by the lock screen timeout; it was turned off before the lock screen had even been drawn. **[verified: `t4/in-*.png`]**
+- It is not system sleep: after the screen goes off the kernel log continues as usual (a temperature sensor line every few seconds), and the "prevent idle sleep" count did not reach 0 (the backlight assertion is still held). **[verified: `t8/serial.log`]**
+- **Stuck in SpringBoard**: t9 booted from a writable cloned disk (and happened to go black), and the data volume kept three all-process stackshots from the backboardd watchdog (bug_type 288, reason "Watchdog: taking a stackshot"). Read with `tools/a5/stacksym.py`, SpringBoard's main thread was stuck in a synchronous wait both times: once in a synchronous XPC that FrontBoard sent via LaunchServices, once in Widgets waiting on a semaphore. That Widgets function (0x320c85b2; selectors recovered using the iOS 10 cache's v2 slide info) fetches a widget icon: `[[widget extension] objectForInfoDictionaryKey:]`, `[LSPlugInKitProxy pluginKitProxyForIdentifier:]`, `bundleURL`, `[NSBundle bundleWithURL:]`, `[UIImage imageNamed:inBundle:…]`, and the return address falls right after `objectForInfoDictionaryKey:`. At the same moment pkd and lsd were both idle, so no service was hung; SpringBoard was waiting for a reply or a signal that would never come. backboardd's main thread was sitting normally in its run loop. **[verified: `work/a6/runs/t9/crash-sym/stk-160031.406.txt`, `stk-160118.805.txt` (the full symbolicated text; the original .ips were on the cloned disk, which was deleted when t10 was made); for how the selector names were recovered, see 15.6]**
+- So by the three-way split the decision session asked for, the black screen belongs to "SpringBoard did not come up", not to the GL host producing no frames or the display pipeline not refreshing. Why it is only intermittent (same disk, same boot bundle) and what exactly it is waiting for are not yet known. **[inferred]** It has to do with the order in which services start at boot: when a service that came up first is not ready yet, the synchronous request waits forever.
+- In the same t9, mediaserverd crashed 10 times (an uncaught C++ exception thrown in the `HDR.videoprocessor` plug-in, followed by abort; the camera and video processing path); the earlier crash reports on disk-n3 have it too. Not necessarily related to the black screen; noted for now. **[verified: crash reports]**
+- **Failing to wake after screen off is also SpringBoard's main thread being stuck, waiting on mediaserverd**: t10 booted from a writable cloned disk, reached the lock screen normally at 120 seconds, the power button turned the screen off at 125 seconds, and Home at 140 seconds did not light it. This time four watchdog all-process stackshots were left, and in all four SpringBoard's main thread was stuck synchronously waiting on mediaserverd: `Celestial` → `FigSharedPlayerCreate` → `FigPlayerRemoteCreate` → `FigSandboxReacquireServer` (the step where CoreMedia reconnects to the media server) or `CMSessionMgr…`, called by SpringBoard itself (locking with the power button creates a player, probably to play the lock sound). In the same boot mediaserverd crashed 13 times; SpringBoard kept waiting on a service that kept restarting, and its main thread could not handle Home. **[verified: `work/a6/runs/t10/crash/` (original .ips and symbolicated text)]**
+- **Why mediaserverd crashes**: every time it is `HDR.videoprocessor` (camera HDR compositing, only in the shared cache; `/System/Library/VideoProcessors/` on the system volume only has BarcodeScanner) hitting `bad_alloc` during initialization and aborting. Decompilation (`work/a6/dis/HDR-14G61.elf`): 0x30f78704 creates an ES2 context with `[[EAGLContext alloc] initWithAPI:2]`, and on success the last step is `glGetIntegerv(GL_MAX_TEXTURE_IMAGE_UNITS, &this[4])`; if creation fails it only prints "couldn't create the eagl context" and does not write `this[4]`. The constructor 0x30f78ac4 then does a `new[]` of `this[4] × 4` bytes; the uninitialized value, once multiplied, overflows to 0xffffffff, and `new[]` throws `bad_alloc`. The host log has only 4 "OpenGLES front end" lines (one per process that uses the front end), and none for mediaserverd's 13 restarts, suggesting it was refused by the front end before the context was created. **[verified: decompilation, `t10/qemu.out`; "at which step it is refused" is inferred]**
+- In the front end (`contrib/gles-public/opengles.c`), an ES2 context has to pass `fe_es2()`, which uses `access()` to check whether `OpenGLES.framework/GLEngine.bundle` exists. **[inferred]** mediaserverd's sandbox does not let it look at this path, `access()` fails, the front end assumes there is no ES2, and `initWithAPI:2` returns nil right away. Change: only `ENOENT` counts as absent. The front end was rebuilt (`work/a5/guest/OpenGLES`, the old one kept at `work/a6/OpenGLES.before-es2`), `n78_diskfix.sh` installed it back on disk-n3, the trust cache got the new CDHash, and the boot bundle was rebuilt.
 
-- **mediaserverd 为什么崩（续）**：上面「前端拒了 ES2」的推测不对。前端握手行带上进程名后（t15、t16）看到：三个进程里失败的都是 `initWithAPI:3`（ES 3.0，A6 本来就不支持，真机也返回 nil、调用方退回 ES2，属正常）；mediaserverd 的 ES2 上下文建成了三次。再看 HDR 的初始化：单例已经在别的线程建过时，构造函数走「拷贝单例的上下文」那条分支，紧接着 `glGetIntegerv(GL_MAX_TEXTURE_IMAGE_UNITS, &this[4])`，却没有把那个上下文设成本线程的当前上下文。我们的前端对「没有当前上下文」的 GL 调用一律什么都不做，`this[4]` 就是堆里的旧数据，`new[]` 溢出抛 `bad_alloc`。【已核实：反编译 0x30f78704 的两条分支、`t15/qemu.out`、`t16/qemu.out`】
-- 试过的修法（前端加 `fe_no_context`：没有当前上下文时，`glGetIntegerv` 查实现限值就按设备回答）**没用**：t21 里 mediaserverd 照样崩了 5 次，位置一模一样。已撤回（真机的 GL 在没有当前上下文时也什么都不做，留着只会和真机不一致）。`fe_es2()` 的改动也证明无关，已撤回。留下的只有两行日志：握手行带进程名；建上下文因 API 之外的原因失败时记一行。【已核实：`t21/crash/` 5 份 mediaserverd 报告】
-- 【推测】HDR 的 `glGetIntegerv` 根本没走我们的前端：它在共享缓存里，调的是存根，存根指针原本指向缓存里苹果自己的 OpenGLES（0x1d0a33e8）。开发版缓存下 dyld 应当把它改绑到磁盘上的前端，若这个镜像没被改绑，调用就进了苹果原版、没有它认的上下文，什么都不写。下一步：在 mediaserverd 里看 HDR 镜像的懒绑定指针实际指向哪里。
-- **熄屏后叫不醒（续）**：t17（mediaserverd 这次没崩）里 SpringBoard 主线程只在开机早期卡过几次同步调用（lockdown、偏好设置 XPC、CoreTelephony），**熄屏之后一直闲在 run loop 里**，backboardd 各线程也都闲着，屏照样叫不醒。所以熄屏后的问题不是谁卡住。【已核实：`t17/crash/` 九份栈】
-- 不是系统空闲睡眠：熄屏后内核日志照常；加启动参数 `noidle=1`（内核里有这个字符串，IOPMrootDomain 的）也叫不醒（t19）。t18 的 PMU 跟踪里熄屏时有一串背光相关的写（0x6d、0x22、0x23），之后温度 ADC 不再轮询，是传感器随屏关了，不是睡眠。【已核实：`t18/qemu.out`（`I2C_TRACE=1`）、`t19/serial.log`】
-- **熄屏后按 Home，内核收到了**：t20 给 GPIO 模型加了临时记录（已删），亮屏时两次按 Home、熄屏后两次按 Home，每次都看到中断处理程序清 0 号脚的挂起位、重写配置字（`0x880 <- 1`、`0x000 <- 0x20d`），熄屏前后一模一样。所以中断没丢，设备树里的 `function-wake_button_menu`（指向 PMU，`'STAT'` 0x180）这条 PMU 唤醒路也不是必经的。按键进了内核，用户态却没有去点亮屏幕，下一步要沿 HID 事件追：backboardd 有没有收到 Home 的事件、收到后为什么不点亮。【已核实：`t20/qemu.out`】
-- 9.3.5 同样的操作能叫醒（15.3 开头），所以是 10.3.4 用户态这条路上缺了什么。开机就黑屏（锁屏没出来屏先关）和熄屏叫不醒是同一个现象的两种时机：开机早期 SpringBoard 主线程卡在同步调用里，backboardd 先把屏关了，之后就再也叫不醒。【推测】
+- **Why mediaserverd crashes (continued)**: the guess above that "the front end refused ES2" was wrong. With the process name added to the front end's handshake line (t15, t16): in all three processes, what failed was `initWithAPI:3` (ES 3.0, which the A6 never supported; the real device also returns nil and the caller falls back to ES2, which is normal); mediaserverd's ES2 context was created three times. Looking at HDR's initialization again: when the singleton has already been created on another thread, the constructor takes the "copy the singleton's context" branch, immediately followed by `glGetIntegerv(GL_MAX_TEXTURE_IMAGE_UNITS, &this[4])`, without making that context current on this thread. Our front end does nothing for any GL call made with "no current context", so `this[4]` is stale heap data, and `new[]` overflows and throws `bad_alloc`. **[verified: the two branches of decompiled 0x30f78704, `t15/qemu.out`, `t16/qemu.out`]**
+- The fix that was tried (the front end adds `fe_no_context`: with no current context, `glGetIntegerv` queries for implementation limits are answered as the device would) **did not help**: in t21 mediaserverd still crashed 5 times at exactly the same place. Reverted (the real device's GL also does nothing without a current context; keeping it would only make us diverge from the real device). The `fe_es2()` change also proved irrelevant and was reverted. Only two log lines remain: the handshake line carries the process name; and a line is logged when context creation fails for a reason other than the API. **[verified: 5 mediaserverd reports in `t21/crash/`]**
+- **[inferred]** HDR's `glGetIntegerv` never goes through our front end at all: it is in the shared cache and calls a stub, whose pointer originally points to Apple's own OpenGLES in the cache (0x1d0a33e8). Under the development cache dyld should rebind it to the front end on disk; if this image was not rebound, the call goes into Apple's stock version, which has no context it recognizes, and writes nothing. Next step: in mediaserverd, check where the HDR image's lazy binding pointers actually point.
+- **Failing to wake after screen off (continued)**: in t17 (mediaserverd did not crash this time), SpringBoard's main thread was stuck on synchronous calls only a few times early in boot (lockdown, preferences XPC, CoreTelephony), and **after the screen went off it sat idle in its run loop the whole time**; backboardd's threads were all idle too, yet the screen still could not be woken. So the problem after screen off is not that something is stuck. **[verified: nine stacks in `t17/crash/`]**
+- It is not system idle sleep: after the screen goes off the kernel log continues as usual; adding the boot argument `noidle=1` (the kernel has this string, in IOPMrootDomain) does not wake it either (t19). In t18's PMU trace there is a run of backlight-related writes when the screen goes off (0x6d, 0x22, 0x23), after which the temperature ADC is no longer polled; that is the sensor being switched off along with the screen, not sleep. **[verified: `t18/qemu.out` (`I2C_TRACE=1`), `t19/serial.log`]**
+- **Pressing Home after screen off does reach the kernel**: t20 added temporary logging to the GPIO model (removed); with Home pressed twice with the screen on and twice after screen off, each time the interrupt handler cleared pin 0's pending bit and rewrote the config word (`0x880 <- 1`, `0x000 <- 0x20d`), identically before and after screen off. So the interrupt is not lost, and the PMU wake path in the device tree, `function-wake_button_menu` (pointing to the PMU, `'STAT'` 0x180), is not required either. The key press reaches the kernel, but user space does not turn the screen on; the next step is to follow the HID events: whether backboardd receives the Home event, and if it does, why it does not turn the screen on. **[verified: `t20/qemu.out`]**
+- 9.3.5 wakes with the same actions (start of 15.3), so something is missing on this 10.3.4 user-space path. A black screen from boot (the screen turning off before the lock screen appears) and failing to wake after screen off are the same phenomenon at two different moments: early in boot SpringBoard's main thread is stuck in a synchronous call, backboardd turns the screen off first, and after that it can never be woken. **[inferred]**
 
-### 15.4 锁屏的存储通知（已压掉）、电池（没修好）
+### 15.4 Lock screen storage notification (suppressed), battery (not fixed)
 
-- **存储通知**：文字「Contents not Available / Cannot read the connected storage media.」在系统卷上有两处：`MobileStorage.framework`（键 `MOUNT_FAILURE_*`、`VERIFICATION_FAILURE_*`）和 `DeviceOMatic.app`。发它的是 `com.apple.mobile.storage_mounter`：它的 launchd 配置在「可移动 USB 设备下出现块设备」时被拉起（`IOBlockStorageDevice`，父设备 `IOUSBHostDevice` 且 `removable`），正是我们挂根用的 USB 盘，挂不上就报 MOUNT_FAILURE。先只禁 `com.apple.device-o-matic` 不管用（t8 仍有通知），再禁 storage_mounter 后（t10 起）锁屏只剩「Press home to open」。两个都留着禁用：storage_mounter 只管外接盘和开发者镜像，DeviceOMatic 管外接配件，模拟器都用不上，后者在 A5 上报过「Cannot Use Device」。改在 `n78_diskfix.sh` 的 14G61 分支（数据卷 launchd `disabled.plist`）。【已核实：`t8/in-120.png` 有通知，`t10/in-120.png`、`t11`、`t13` 没有】
-- 这条通知不只是难看：t7 那次开机慢，锁屏还没出来就按了 Home，通知变成主屏上的模态弹窗，挡住了点「设置」。【已核实：`t7/in-160.png`】
-- **电池**：iPhone 5 的电量来自 uart5 上的电量计 `bq27540`（HDQ 协议，设备树 `uart5/gas-gauge`，驱动 `AppleHDQGasGaugeControl`，匹配 `gas-gauge,hdq`）。t1 里 uart5（0x2a00000）在未建模设备的访问清单里。给 n41 接上了 A4 机型现成的 HDQ 电量计模型（`s5l8930_hdq.c`，容量 1440 mAh，满电、不在充电），串口驱动认出了 `uart5`，但整次开机 HDQ 一个字节都没收到（`-trace s5l8930_hdq_log` 为 0），电池仍是红色快没电。驱动在等什么没查，按决策会话「能简单改就改」到此为止；模型留着（比未建模的 uart5 更接近真机，没有副作用）。【已核实：`t10/serial.log` 第 80 行、`t11/qemu.out`】
+- **Storage notification**: the text "Contents not Available / Cannot read the connected storage media." appears in two places on the system volume: `MobileStorage.framework` (keys `MOUNT_FAILURE_*`, `VERIFICATION_FAILURE_*`) and `DeviceOMatic.app`. It is posted by `com.apple.mobile.storage_mounter`: its launchd configuration launches it when "a block device appears under a removable USB device" (`IOBlockStorageDevice`, with parent `IOUSBHostDevice` and `removable`), which is exactly the USB disk we mount root from; it cannot mount it and reports MOUNT_FAILURE. Disabling only `com.apple.device-o-matic` first did not help (t8 still had the notification); after also disabling storage_mounter (from t10 on), the lock screen shows only "Press home to open". Both are kept disabled: storage_mounter only handles external disks and developer images, and DeviceOMatic handles external accessories; the emulator needs neither, and the latter reported "Cannot Use Device" on the A5. The change is in the 14G61 branch of `n78_diskfix.sh` (the data volume's launchd `disabled.plist`). **[verified: `t8/in-120.png` has the notification; `t10/in-120.png`, `t11` and `t13` do not]**
+- This notification is not just ugly: in t7 the boot was slow, Home was pressed before the lock screen appeared, and the notification turned into a modal alert on the home screen that blocked tapping Settings. **[verified: `t7/in-160.png`]**
+- **Battery**: the iPhone 5's charge level comes from the gas gauge `bq27540` on uart5 (HDQ protocol, device tree `uart5/gas-gauge`, driver `AppleHDQGasGaugeControl`, matching `gas-gauge,hdq`). In t1, uart5 (0x2a00000) is in the list of unmodeled device accesses. n41 now has the A4 machines' existing HDQ gas gauge model wired up (`s5l8930_hdq.c`, capacity 1440 mAh, fully charged, not charging); the serial driver recognized `uart5`, but not a single HDQ byte arrived during the whole boot (`-trace s5l8930_hdq_log` shows 0), and the battery is still red and nearly empty. What the driver is waiting for was not investigated; per the decision session's "fix it if it is simple", it stops here; the model stays (it is closer to the real device than an unmodeled uart5, with no side effects). **[verified: line 80 of `t10/serial.log`, `t11/qemu.out`]**
 
-### 15.5 壁纸：排除了缩放器，修了一处只读页写回，仍是黑的（未解决）
+### 15.5 Wallpaper: ruled out the scaler, fixed a writeback to a read-only page, still black (unsolved)
 
-- **不是缩放器缺了才黑**：10.3.4 里用到缩放器的是 QuartzCore（`CA::WindowServer::AppleDisplay` 有 `__IOSurfaceAccelerator` 成员，绑定 `IOSurfaceAcceleratorCreate`、`IOSurfaceAcceleratorTransformSurface`），但 9.3.5 的 QuartzCore 绑定的是同样两个函数，两个缩放器在 9.3.5 上同样藏着，它的壁纸正常。显示也不经过 DART（两边的 clcd 都只有 `dma-parent`），显示模型本来就会合两个 RGB 平面。【已核实：`cacheinfo.py binds`、两份设备树】
-- 临时诊断（surface 绑定时打出进程的 CONTEXTIDR、第一页物理地址；`glReadPixels` 打出目标页和像素校验和；都标了 DIAG，收尾时删）看到三个进程：合成器每帧都绑一块 744×1392（IOSurface 号 5，物理页与渲染进程的不同）；渲染壁纸的进程只绑过自己那两块；**渲染进程画完后用 `glReadPixels` 把画面读回一块缓冲，而这次读回一直被丢掉**：目标页在页表里是只读的（短描述符 AP2=1、AP=11，各级都只读），我们注入的写权限错误（DFSR 0x80f，WnR=1）内核处理了四次，既不改成可写也不杀进程，第五次宿主放弃，这次调用作废。`surface:no-texture` 那条是另一个进程（CONTEXTIDR 8，绑的是 `420f`、`b64a` 这类 CoreVideo 格式的小块），和壁纸无关；`slot:877` 是 `glLabelObjectEXT`（调试标签，回 0 无害）。【已核实：`t11/qemu.out`、`t12/qemu.out` 的 `[surfdiag]` 行】
-- 修法（`hw/arm/guest-gles.c`）：只对写、只在内核已经处理过四次之后、只对在页表里存在且可读的页，再重发一次调用，把这些页越过保护写进去（真机上 `glReadPixels` 的目标由 GPU 和驱动从内核一侧写，碰不到用户映射的权限）。写时复制的页在第一次写错误时就被内核复制了，到不了这一步。第一次发生时记一行 `REFUSED guest-write:read-only-page`。【已核实：t13 起日志里是这一行，不再有 `fault-dropped`】
-- 修完之后壁纸**还是黑的**（t13、t15 的主屏截图）。所以这次读回不是壁纸本身（大概是取壁纸平均色之类），合成器那块 surface 的内容另有来路，还没找到。【已核实：截图；「读回的用途」是推测】
+- **It is not black because the scaler is missing**: in 10.3.4 the scaler is used by QuartzCore (`CA::WindowServer::AppleDisplay` has an `__IOSurfaceAccelerator` member and binds `IOSurfaceAcceleratorCreate` and `IOSurfaceAcceleratorTransformSurface`), but 9.3.5's QuartzCore binds the same two functions, both scalers are hidden on 9.3.5 too, and its wallpaper is fine. The display does not go through a DART either (on both, clcd only has `dma-parent`), and the display model already composites the two RGB planes. **[verified: `cacheinfo.py binds`, both device trees]**
+- Temporary diagnostics (printing the process's CONTEXTIDR and the first page's physical address when a surface is bound; printing the target pages and a pixel checksum for `glReadPixels`; all marked DIAG and removed at wrap-up) showed three processes: the compositor binds a 744×1392 every frame (IOSurface ID 5, physical pages different from the rendering process's); the process rendering the wallpaper only ever bound its own two; **after drawing, the rendering process reads the image back into a buffer with `glReadPixels`, and this readback was always dropped**: the target page is read-only in the page table (short descriptor AP2=1, AP=11, read-only at every level); the kernel handled our injected permission fault (DFSR 0x80f, WnR=1) four times without either making the page writable or killing the process, the host gave up on the fifth, and the call was discarded. The `surface:no-texture` line is a different process (CONTEXTIDR 8, binding small CoreVideo-format surfaces such as `420f` and `b64a`), unrelated to the wallpaper; `slot:877` is `glLabelObjectEXT` (a debug label; returning 0 is harmless). **[verified: the `[surfdiag]` lines in `t11/qemu.out`, `t12/qemu.out`]**
+- Fix (`hw/arm/guest-gles.c`): only for writes, only after the kernel has already handled four faults, and only for pages that exist in the page table and are readable, reissue the call once and write these pages past their protection (on the real device, the target of `glReadPixels` is written by the GPU and driver from the kernel side, unaffected by the user mapping's permissions). Copy-on-write pages are copied by the kernel on the first write fault and never get this far. The first time this happens, a line `REFUSED guest-write:read-only-page` is logged. **[verified: from t13 on the log has this line, and no more `fault-dropped`]**
+- After the fix the wallpaper is **still black** (home screen screenshots of t13, t15). So this readback is not the wallpaper itself (probably something like taking the wallpaper's average color); the content of the compositor's surface comes from somewhere else, not yet found. **[verified: screenshots; "what the readback is for" is inferred]**
 
-### 15.6 补丁、工具
+### 15.6 Patches, tools
 
-- `patches/a5-n78-skeleton.patch` 重新导出（17 个文件）。这一轮的 QEMU 侧：`ipod_touch_5g.c`（n41 的触摸参数家族 0x57；uart5 接 HDQ 电量计）、`s5l8940.h`（`S5L8940_IRQ_UART`）、`guest-gles.c`（只读页写回）、`contrib/gles-public/opengles.c`（只加日志：握手带进程名、建上下文失败记一行）。在上游原样的临时工作树里核对：按 `build-qemu.sh` 的顺序打四个 iOS 补丁、skeleton、`a5-n78-ios-ui.patch` 全部打得上；只打 skeleton 得到的四个改动文件和 Mac 工作树逐字节相同。临时工作树已删。所有临时诊断（`[surfdiag]`、页表项、GPIO 记录、前端的 DIAG 行）都已删掉。【已核实】
-- 改盘和开机包：`n78_kboot.py`（n41 的时钟频率表补满 96 槽）、`n78_diskfix.sh`（14G61 另禁 `com.apple.mobile.storage_mounter`、`com.apple.device-o-matic`）。
-- `tools/a5/qinput.py` 加了 `T:chord:K1+K2..[:MS]`（几个键同时按下、同时松开），为 sysdiagnose 组合键加的；10.3.4 上按了没有产出 sysdiagnose，看门狗的全体线程栈够用了。
-- iOS 10 的共享缓存（armv7s）里 `__DATA` 的指针带 v2 滑动信息：头部 0x38 处是 slideInfoOffset，`delta_mask` 0xe0000000、`value_add` 0x1a000000，读选择子、类名要先 `(v & ~delta_mask) + value_add`。`cacheinfo.py` 现有的方法不处理这一步（9.x 的缓存是 v1），这一轮是在脚本外手算的，没有改 `cacheinfo.py`。
-- 这一轮新做的反编译输入在 `work/a6/dis/`（`spi-14G61.elf`、`QuartzCore-14G61.elf`、`Widgets-14G61.elf`、`HDR-14G61.elf`），可写盘留下的崩溃报告和符号化栈在 `work/a6/runs/t9/crash-sym/`、`t10/crash/`、`t14/crash/`、`t17/crash/`。
+- `patches/a5-n78-skeleton.patch` re-exported (17 files). This round on the QEMU side: `ipod_touch_5g.c` (n41's touch parameters with family 0x57; uart5 wired to the HDQ gas gauge), `s5l8940.h` (`S5L8940_IRQ_UART`), `guest-gles.c` (writeback to read-only pages), `contrib/gles-public/opengles.c` (logging only: the handshake carries the process name, and a line on context creation failure). Checked in a temporary work tree of pristine upstream: the four iOS patches, skeleton and `a5-n78-ios-ui.patch` all apply in `build-qemu.sh` order; the four changed files obtained by applying only skeleton are byte-for-byte identical to the Mac work tree. The temporary work tree has been deleted. All temporary diagnostics (`[surfdiag]`, page table entries, GPIO logging, the front end's DIAG lines) have been removed. **[verified]**
+- Disk fix-up and boot bundle: `n78_kboot.py` (n41's clock frequency table padded to 96 slots), `n78_diskfix.sh` (14G61 additionally disables `com.apple.mobile.storage_mounter` and `com.apple.device-o-matic`).
+- `tools/a5/qinput.py` gained `T:chord:K1+K2..[:MS]` (several keys pressed together and released together), added for the sysdiagnose key combination; on 10.3.4 pressing it produced no sysdiagnose, and the watchdog's all-thread stacks were enough.
+- In iOS 10's shared cache (armv7s), `__DATA` pointers carry v2 slide info: offset 0x38 in the header is slideInfoOffset, `delta_mask` is 0xe0000000 and `value_add` is 0x1a000000, and reading selectors and class names first requires `(v & ~delta_mask) + value_add`. The existing methods in `cacheinfo.py` do not handle this step (9.x caches are v1); this round computed it by hand outside the script, and `cacheinfo.py` was not changed.
+- This round's new decompilation inputs are in `work/a6/dis/` (`spi-14G61.elf`, `QuartzCore-14G61.elf`, `Widgets-14G61.elf`, `HDR-14G61.elf`); the crash reports and symbolicated stacks left on the writable disks are in `work/a6/runs/t9/crash-sym/`, `t10/crash/`, `t14/crash/`, `t17/crash/`.
 
-### 15.7 最终验证（删完诊断、撤回无效改动之后的版本）
+### 15.7 Final verification (the version after removing diagnostics and reverting ineffective changes)
 
-| 运行 | 盘 | 100 秒 | 120 秒按 Home | 135/150 秒左右滑 | 170 秒点「设置」 | 200 秒按 Home | panic |
+| Run | Disk | 100 seconds | Home at 120 seconds | Swipe left/right at 135/150 seconds | Tap Settings at 170 seconds | Home at 200 seconds | panic |
 |---|---|---|---|---|---|---|---|
-| t21 | disk-n3 可写克隆 | 锁屏 | 主屏 | 第二页、回第一页 | 「设置」打开 | 回主屏 | 无 |
-| t22 | disk-n3 快照 | 锁屏 | 主屏 | 第二页、回第一页 | 「设置」打开 | 回主屏 | 无 |
+| t21 | disk-n3 writable clone | lock screen | home screen | second page, back to first | Settings opens | back to home screen | none |
+| t22 | disk-n3 snapshot | lock screen | home screen | second page, back to first | Settings opens | back to home screen | none |
 
-- 两次都没熄屏，锁屏上没有存储通知。「设置」截图存为 `docs/reports/img/a6-1034-settings.png`（t6，和 t21、t22 的 182 秒截图一样），第二页存为 `a6-1034-home-page2.png`。【已核实：`t21`、`t22` 的截图和 OCR】
-- t21 的数据卷上 mediaserverd 仍崩了 5 次（同一处 HDR），backboardd 看门狗留了 7 份全进程栈，界面没受影响。【已核实：`t21/crash/`】
-- 9.3.5 回归（`r935`，n78，`work/a6/regress/disk-935.img`）：153 秒锁屏，没有 panic；熄屏 3 次、点亮 2 次，和旧版 QEMU（`c935-old`）及前两轮（`f935`、`g935`）完全一样（88 秒那张是在熄屏和按 Home 唤醒之间截到的黑屏，`c935-old` 也有一次）。【已核实】
-- 结束时没有 QEMU 进程，没有挂着的镜像，临时工作树和克隆盘已删。
+- In neither run did the screen go off, and there was no storage notification on the lock screen. The Settings screenshot is saved as `docs/reports/img/a6-1034-settings.png` (t6, identical to the 182-second screenshots of t21 and t22), and the second page as `a6-1034-home-page2.png`. **[verified: screenshots and OCR of `t21`, `t22`]**
+- On t21's data volume, mediaserverd still crashed 5 times (the same HDR spot), and the backboardd watchdog left 7 all-process stackshots; the UI was not affected. **[verified: `t21/crash/`]**
+- 9.3.5 regression (`r935`, n78, `work/a6/regress/disk-935.img`): lock screen at 153 seconds, no panic; screen off 3 times and on 2 times, exactly as with the old QEMU (`c935-old`) and the previous two rounds (`f935`, `g935`) (the one at 88 seconds is a black screen caught between screen off and the Home wake; `c935-old` has one too). **[verified]**
+- No QEMU processes and no mounted images were left at the end, and the temporary work trees and cloned disks were deleted.
 
-## 16. 稳定开机、熄屏唤醒、壁纸（第五轮）
+## 16. Stable boot, wake after screen off, wallpaper (round 5)
 
-决策会话核对第 15 节后，用户说「继续修」。目标：每次开机都稳定进主屏，熄屏后按 Home 能叫醒，壁纸能显示。顺序：先修 mediaserverd，再查叫不醒（含 lm3534 背光），再查壁纸。每项修完用全新克隆盘开 3 次以上，统计黑屏次数。
+After the decision session reviewed section 15, the user said "keep fixing". Goal: reach the home screen reliably on every boot, wake with Home after the screen goes off, and show the wallpaper. Order: fix mediaserverd first, then the failure to wake (including the lm3534 backlight), then the wallpaper. After each fix, boot a fresh cloned disk 3 or more times and count the black screens.
 
-### 16.1 缓存里的 gl* 调用绕开了前端（定性）
+### 16.1 gl* calls in the cache bypass the front end (characterized)
 
-- **怎么绕开的**：HDR 调 `glGetIntegerv` 的地方是 `blx 0x30f7a5a8`，那是 HDR 自己的存根，只有两条指令：`ldr r12, [字面量]`、`add pc, pc, r12`，是按 pc 相对的固定跳转，直接落到缓存里苹果 OpenGLES 的 `glGetIntegerv`（0x1d0a33e8）。它不读懒绑定指针：做缓存时 `update_dyld_shared_cache` 把存根优化成了直接跳转，dyld 再怎么改绑都管不到。【已核实：REA 反汇编 `work/a6/dis/HDR-14G61.elf` 0x30f78744、0x30f7a5a8】
-- **苹果原版 gl* 做什么**：原版 `glGetIntegerv` 是 `mrc p15, 0, r0, c13, c0, 3; bic r0, #3; ldr r3, [r0, #0x78]; cbz r3, 返回; ldr r0, [r3, #0x10]; ldr.w r3, [r3, #0x1b4]; bx r3`：从线程 TLS 的第 30 槽（`__PTK_FRAMEWORK_OPENGL_KEY`）取上下文，空就什么都不做；不空就取 +0x10 的 GC、+0x1b4 的函数指针跳过去。扫了原版缓存里全部 457 个 gl* 入口，个个都从 TLS 偏移 0x78 取上下文，低于 +0x14 的只读 +0x10（GC）。我们的前端接管了 EAGL，用的是自己的 pthread 键，**从来没往第 30 槽里放东西**，所以缓存里的镜像直接调 gl* 永远是空操作。这就是 HDR 的 `this[4]` 没被写的原因（15.3）。【已核实：原版缓存字节，llvm-mc 反汇编；扫描脚本在会话临时目录】
-- **影响面**：缓存里绑定 OpenGLES `gl*` 导出的镜像有 30 个，按绑定个数：WebCore 147、SceneKit 108、VectorKit（地图）100、Jet 94、GLKit 70、DrawingKit 59、GyroVideoStabilization 57、NanoUniverse 57、HealthKitUI 50、MediaToolbox 47、HDR.videoprocessor 45、DigitalTouchShared 45、Celestial 42……还有 UIKit 13、ProceduralWallpapers 14、CoreImage 2。QuartzCore 和 CoreImage 的主路径走前端给的分派表（`GetMacroContextPrivate`），所以锁屏、主屏能画出来。【已核实：`cacheinfo.py binds`】
+- **How they bypass it**: where HDR calls `glGetIntegerv` is `blx 0x30f7a5a8`, HDR's own stub, which has only two instructions, `ldr r12, [literal]` and `add pc, pc, r12`: a fixed pc-relative jump straight into Apple's OpenGLES `glGetIntegerv` in the cache (0x1d0a33e8). It does not read the lazy binding pointer: when the cache was built, `update_dyld_shared_cache` optimized the stub into a direct jump, so no amount of dyld rebinding can reach it. **[verified: REA disassembly of `work/a6/dis/HDR-14G61.elf` 0x30f78744, 0x30f7a5a8]**
+- **What Apple's stock gl* do**: the stock `glGetIntegerv` is `mrc p15, 0, r0, c13, c0, 3; bic r0, #3; ldr r3, [r0, #0x78]; cbz r3, return; ldr r0, [r3, #0x10]; ldr.w r3, [r3, #0x1b4]; bx r3`: it takes the context from slot 30 of the thread's TLS (`__PTK_FRAMEWORK_OPENGL_KEY`) and does nothing if it is empty; otherwise it takes the GC at +0x10 and the function pointer at +0x1b4 and jumps to it. A scan of all 457 gl* entry points in the stock cache shows that every one takes the context from TLS offset 0x78, and below +0x14 they only read +0x10 (the GC). Our front end took over EAGL and uses its own pthread key, and **never put anything in slot 30**, so images in the cache that call gl* directly always get no-ops. This is why HDR's `this[4]` was never written (15.3). **[verified: stock cache bytes, llvm-mc disassembly; the scan script is in the session's temporary directory]**
+- **Scope**: 30 images in the cache bind OpenGLES `gl*` exports; by number of bindings: WebCore 147, SceneKit 108, VectorKit (Maps) 100, Jet 94, GLKit 70, DrawingKit 59, GyroVideoStabilization 57, NanoUniverse 57, HealthKitUI 50, MediaToolbox 47, HDR.videoprocessor 45, DigitalTouchShared 45, Celestial 42… plus UIKit 13, ProceduralWallpapers 14, CoreImage 2. QuartzCore's and CoreImage's main paths go through the dispatch table the front end provides (`GetMacroContextPrivate`), which is why the lock screen and home screen draw. **[verified: `cacheinfo.py binds`]**
 
-### 16.2 第一种修法：在缓存里放跳板（已撤回）
+### 16.2 First fix: trampolines in the cache (reverted)
 
-- **做法**：在缓存里苹果 OpenGLES 每个 gl* 导出的开头写一段 18 字节的 Thumb-2 跳板（`movw/movt r12`、`add r12, pc`、`ldr.w r12, [r12]`、`ldr.w pc, [r12, #4×i]`），经苹果 OpenGLES 第一个 `__bss` 里的一个字跳进前端的同序函数表；前端加载时用 `shared_region_check_np` 找到这个字填上表地址。457 个入口、改 5 页、重算页哈希，CDHash 变 `dee36e7f…`。【已核实：代码，llvm-mc 反汇编跳板】
-- **结果**：第一次可写开机（t23）在锁屏前 panic：`IOP: timed out waiting for workloop to process completed command`，之前五次 `granting grace period 1` 到 `5`，和第二轮的 n6、n11 一样（日志里「panic」34 次是展开的 panic 日志，超时本身每次一条）。随后三台并行（ta1 到 ta3）、单开完整拷贝 NAND（tb1）、快照单开（tc1、tc5）全部同样 panic；缓存还原成原版、只留前端（tc4）就没有。【已核实：各次 `serial.log`】
-- **按决策会话要求核对的并行和宿主因素**：按运行目录的建立时间和 `serial.log` 最后修改时间，n6、n11、t23 运行时都没有别的 QEMU 在跑（t23 时宿主上 Ghidra 在分析背光 kext）。A5/A6 的 IOP 模型（`hw/arm/s5l8940_iop.c`）完全同步：AP 敲门铃时，模型在 vCPU 线程上一口气处理完环里的命令（NAND 读写是对宿主文件的同步 `pread`/`pwrite`），然后置 AP 的软件中断，**不靠宿主定时器或线程**。所以并行、克隆盘都不是原因，单开和快照照样出。【已核实：时间戳、代码、tb1/tc1】
-- **谁占着 CPU**：tc5 每 0.25 秒从 QMP 取一次寄存器（不停客机），488 次采样 468 次在内核态，PC 多在 `_clock_delay_until` 的忙等里（QEMU 把 `wfe` 当空操作）。tc6 顺帧指针取调用链，45 次都是 `delay_for_interval` ← `AppleH5PCLCD` ← `IOMobileGraphicsFamily` ← 系统调用。反编译 `AppleH5PCLCD` 0x81317fac：`while (寄存器块 && (*(块 + 0x2c) & 0x40)) IODelay(10);`，**没有超时**，等清零后写 gamma 表、再置 0x40 开始装载。+0x2c 是我们显示模型的 `CLCD_GAMMA_CTRL`，模型只存值、从不清 0x40，**第二次装 gamma 表就永远转下去**；调用它的线程优先级高，IOP 工作循环排不上，成了 IOP 超时。【已核实：`tc5/samples.txt`、`tc6/samples.txt`、反编译 `work/a6/dis/h5p-14G61.elf`】
-- **为什么会第二次装 gamma，以及修了 gamma 之后界面还是起不来（tc7、tc9）**：当时判断成「跳板一次放开 30 个框架，引出的新路径太多」，改成按进程放行（只给 mediaserverd 真表，其余进程每项返回 0），td1 照样黑屏。**这个判断不对。** td1 的数据卷上 backboardd 崩了 20 次，每次同一处：QuartzCore 0x1dbe874c（CoreAnimation 的 GL 能力探测）里 `strncmp("Apple", glGetString(GL_RENDERER), 5)`，取到空指针。这个 `glGetString` 走的是前端的分派表，不是缓存存根。原因：前端在 6.x 以后是**读苹果原版每个 gl* 开头的指令来认分派表的槽位**（`gles_dispatch.c` 的 `gles_trampoline_slot`），跳板把这 18 字节盖掉了，认出的槽从 329 个掉到 126 个，`GetString` 那格成了返回 0 的占位。backboardd 一起来就崩、launchd 再拉、再崩。【已核实：`td1/crash/` 20 份报告同一栈；`qemu.out` 里 `dispatch layout … 329 named`（t21、tc4）对 `126 named`（tc5、tc7、td1）】
-- 【推测】第二次装 gamma 就是重启的 backboardd 初始化显示时装的；没修 gamma 时卡成 IOP 超时，修了之后 backboardd 一直在崩溃重启，界面当然起不来。跳板和按进程放行都已撤回（前端、`build.sh`、`n78_devcache.py --gl-thunks`、`n78_diskfix.sh` 的 `GL_THUNKS` 都删了），disk-n3 上的缓存还原成原版再标开发版，CDHash 回到 `b2485177…`。
+- **Approach**: at the start of each gl* export of Apple's OpenGLES in the cache, write an 18-byte Thumb-2 trampoline (`movw/movt r12`, `add r12, pc`, `ldr.w r12, [r12]`, `ldr.w pc, [r12, #4×i]`) that jumps, through a word in Apple OpenGLES's first `__bss`, into the front end's function table in the same order; when the front end loads, it finds this word with `shared_region_check_np` and fills in the table address. 457 entry points, 5 pages changed, page hashes recomputed; the CDHash becomes `dee36e7f…`. **[verified: code, llvm-mc disassembly of the trampolines]**
+- **Result**: the first writable boot (t23) panicked before the lock screen: `IOP: timed out waiting for workloop to process completed command`, preceded by five of `granting grace period 1` to `5`, the same as n6 and n11 in round 2 (the 34 "panic" occurrences in the log are the expanded panic log; the timeout itself appears once each time). After that, three in parallel (ta1 to ta3), a single boot with a full NAND copy (tb1) and single snapshot boots (tc1, tc5) all panicked the same way; with the cache restored to stock and only the front end kept (tc4), it did not. **[verified: each run's `serial.log`]**
+- **Parallelism and host factors, checked as the decision session asked**: judging by the creation times of the run directories and the last modification times of `serial.log`, no other QEMU was running during n6, n11 or t23 (during t23, Ghidra was analyzing the backlight kext on the host). The A5/A6 IOP model (`hw/arm/s5l8940_iop.c`) is fully synchronous: when the AP rings the doorbell, the model processes all commands in the ring in one go on the vCPU thread (NAND reads and writes are synchronous `pread`/`pwrite` on host files), then sets the AP's software interrupt, **without relying on host timers or threads**. So neither parallelism nor cloned disks are the cause; single boots and snapshots hit it just the same. **[verified: timestamps, code, tb1/tc1]**
+- **Who is hogging the CPU**: tc5 grabbed the registers over QMP every 0.25 seconds (without stopping the guest); 468 of 488 samples were in kernel mode, with the PC mostly in the busy wait of `_clock_delay_until` (QEMU treats `wfe` as a no-op). tc6 followed the frame pointers to get call chains, and all 45 were `delay_for_interval` ← `AppleH5PCLCD` ← `IOMobileGraphicsFamily` ← system call. Decompiling `AppleH5PCLCD` 0x81317fac: `while (regs && (*(regs + 0x2c) & 0x40)) IODelay(10);`, **with no timeout**; once the bit clears, the gamma table is written and 0x40 is set again to start loading. +0x2c is our display model's `CLCD_GAMMA_CTRL`; the model only stores the value and never clears 0x40, so **the second gamma table load spins forever**; the thread calling it has high priority, the IOP work loop cannot get scheduled, and the result is the IOP timeout. **[verified: `tc5/samples.txt`, `tc6/samples.txt`, decompilation of `work/a6/dis/h5p-14G61.elf`]**
+- **Why gamma gets loaded a second time, and why the UI still did not come up after the gamma fix (tc7, tc9)**: the judgment at the time was "the trampolines release 30 frameworks at once and open up too many new paths", so it was changed to per-process enabling (only mediaserverd gets the real table, every entry returns 0 for other processes); td1 still went black. **That judgment was wrong.** On td1's data volume backboardd crashed 20 times, each in the same place: in QuartzCore 0x1dbe874c (CoreAnimation's GL capability probe), `strncmp("Apple", glGetString(GL_RENDERER), 5)` got a null pointer. This `glGetString` goes through the front end's dispatch table, not a cache stub. The cause: since 6.x, the front end **identifies dispatch table slots by reading the instructions at the start of each of Apple's stock gl* functions** (`gles_trampoline_slot` in `gles_dispatch.c`); the trampolines overwrote these 18 bytes, the recognized slots dropped from 329 to 126, and the `GetString` entry became a placeholder that returns 0. backboardd crashed as soon as it came up, launchd relaunched it, and it crashed again. **[verified: 20 reports in `td1/crash/` with the same stack; `dispatch layout … 329 named` (t21, tc4) versus `126 named` (tc5, tc7, td1) in `qemu.out`]**
+- **[inferred]** The second gamma load is done by the restarted backboardd when it initializes the display; without the gamma fix it hangs as an IOP timeout, and with the fix backboardd keeps crashing and restarting, so naturally the UI cannot come up. Both the trampolines and the per-process enabling have been reverted (the front end, `build.sh`, `n78_devcache.py --gl-thunks` and `GL_THUNKS` in `n78_diskfix.sh` are all removed); the cache on disk-n3 was restored to stock and marked as a development cache again, and the CDHash is back to `b2485177…`.
 
-### 16.3 留下的两处 QEMU 修复：gamma 忙位、lm3534
+### 16.3 The two QEMU fixes that stay: the gamma busy bit, lm3534
 
-- **gamma 忙位**（`hw/arm/s5l8930_display.c` 加属性 `gamma-busy`，`ipod_touch_5g.c` 只给 n41 设 0x40）：写 CLCD +0x2c 时把这些位当作装载立刻完成、读回为 0。真机上 backboardd 崩溃重启也会再装一次 gamma，模型必须把装载做完，所以跳板撤了也留着。A4、A5 的驱动不看这一位，属性默认 0，行为不变。【已核实：代码；9.3.5 回归见 16.8】
-- **lm3534 背光**（i2c0 地址 0x63）：`AppleLMBacklight::start` 从 0x10 起读寄存器，没人应答就打 `could not communicate with controller - tearing down driver`。它只要读得到应答，之后写回几项设置，所以借 D1881 PMU 的寄存器文件（不带 ADC）当最小应答模型，挂在 i2c0 的 0x63。之后每次开机都没有这一行（te1、tw1、tf1 到 tf3）；屏幕亮度仍由显示模型负责。它对叫醒有没有单独的作用没有分开测（叫醒是 16.4 之后才好的）。【已核实：各次 `serial.log`】
+- **Gamma busy bit** (`hw/arm/s5l8930_display.c` gains a `gamma-busy` property; `ipod_touch_5g.c` sets it to 0x40 for n41 only): on a write to CLCD +0x2c, these bits are treated as a load that completes immediately and read back as 0. On the real device, backboardd crashing and restarting would also load gamma again, so the model must complete the load; it stays even with the trampolines reverted. The A4 and A5 drivers do not look at this bit, the property defaults to 0, and their behavior is unchanged. **[verified: code; for the 9.3.5 regression see 16.8]**
+- **lm3534 backlight** (i2c0 address 0x63): `AppleLMBacklight::start` reads registers from 0x10 onward, and if nobody answers it prints `could not communicate with controller - tearing down driver`. All it needs is an answer to its reads, after which it writes back a few settings, so the D1881 PMU's register file (without the ADC) is borrowed as a minimal answering model at i2c0 0x63. Since then that line has not appeared on any boot (te1, tw1, tf1 to tf3); screen brightness is still handled by the display model. Whether it has a separate effect on waking was not tested separately (wake only started working after 16.4). **[verified: each run's `serial.log`]**
 
-### 16.4 修法：前端把苹果 gl* 读的 TLS 槽也填上
+### 16.4 The fix: the front end also fills the TLS slot Apple's gl* read
 
-- **思路**：不动缓存。苹果原版 gl* 从 TLS 第 30 槽取的那个结构，正好是 CoreAnimation 用的「宏上下文」整体往前挪 0x10 字节：宏上下文第 0 个字是 GC、第 1+k 个字是第 k 个函数，原版要的是 +0x10 的 GC、+0x14+4k 的函数（`glGetIntegerv` 的 +0x1b4 = 宏上下文的第 0x69+1 个字，和 CoreAnimation 调 `GetIntegerv` 用的槽一致）。所以 `+[EAGLContext setCurrentContext:]` 设当前上下文时，把这个上下文的宏上下文减 0x10 写进第 30 槽，换成别的上下文或置空时清掉。这和原版 `setCurrentContext:` 把自己的上下文放进这个槽是同一回事：有当前上下文时，缓存里所有直接调用都带着该有的 GC 进前端；没有当前上下文时照样什么都不做，和真机一样。
-- **代码**（`contrib/gles-public/opengles.c`）：`fe_stock_current` 用 `mrc p15, 0, r, c13, c0, 3` 取线程指针写第 30 槽；宏上下文前面多分配 4 个字（`FE_STOCK_PAD`），往前 0x10 字节仍在自己的内存里；释放时减回去。只在 Darwin 16（iOS 10）起、而且认槽时看到原版把 GC 放在 +0x10（`gles_dispatch.c` 新记的 `gles_trampoline_gc`）时才写，更早的固件行为不变。`GetMacroContextPrivate` 的「CoreAnimation 走宿主」那行日志从 `fe_macro` 挪到方法里，因为现在设当前上下文时也会建宏上下文。【已核实：代码；扫描见 16.1】
-- **结果**（te1，全新克隆盘单开）：100 秒锁屏，128 秒按 Home 进主屏，150 秒点开「设置」，175 秒按电源键熄屏（`_lcdEnable: enable: 0`），200 秒按 Home **亮回锁屏**（`_lcdEnable: enable: 1`）。分派表认出 329 槽；mediaserverd 只握手一次、**数据卷上没有 mediaserverd 的崩溃报告**（之前 t9 崩 10 次、t10 崩 13 次、t21 崩 5 次）；只有 7 份 backboardd 看门狗的全进程栈（t21 也有 7 份，界面不受影响）。【已核实：`te1` 的截图、`serial.log`、`crash/`】
+- **Idea**: leave the cache alone. The structure Apple's stock gl* take from TLS slot 30 is exactly CoreAnimation's "macro context" as a whole, shifted forward by 0x10 bytes: word 0 of the macro context is the GC and word 1+k is the k-th function, while the stock code wants the GC at +0x10 and functions at +0x14+4k (`glGetIntegerv`'s +0x1b4 = word 0x69+1 of the macro context, consistent with the slot CoreAnimation uses to call `GetIntegerv`). So when `+[EAGLContext setCurrentContext:]` sets the current context, it writes that context's macro context minus 0x10 into slot 30, and clears it when switching to another context or to nil. This is the same thing the stock `setCurrentContext:` does when it puts its own context in this slot: with a current context, every direct call in the cache enters the front end with the right GC; with no current context it still does nothing, just like the real device.
+- **Code** (`contrib/gles-public/opengles.c`): `fe_stock_current` gets the thread pointer with `mrc p15, 0, r, c13, c0, 3` and writes slot 30; the macro context gets 4 extra words allocated in front (`FE_STOCK_PAD`), so the 0x10 bytes before it are still in our own memory; freeing subtracts the offset back. It only writes from Darwin 16 (iOS 10) on, and only when slot recognition sees that the stock code keeps the GC at +0x10 (`gles_trampoline_gc`, newly recorded in `gles_dispatch.c`); earlier firmware behaves as before. The "CoreAnimation goes through the host" log line of `GetMacroContextPrivate` moved from `fe_macro` into the method, because setting the current context now also creates the macro context. **[verified: code; for the scan see 16.1]**
+- **Result** (te1, a fresh cloned disk, single boot): lock screen at 100 seconds, Home to the home screen at 128 seconds, Settings opened at 150 seconds, the power button turned the screen off at 175 seconds (`_lcdEnable: enable: 0`), and Home at 200 seconds **brought back the lock screen** (`_lcdEnable: enable: 1`). The dispatch table recognized 329 slots; mediaserverd did its handshake only once, and **there are no mediaserverd crash reports on the data volume** (previously t9 crashed 10 times, t10 13 times, t21 5 times); there are only 7 backboardd watchdog all-process stackshots (t21 also had 7, with no effect on the UI). **[verified: `te1` screenshots, `serial.log`, `crash/`]**
 
-### 16.5 熄屏后叫醒
+### 16.5 Waking after screen off
 
-- 16.4 之后每次都能叫醒（te1、tw1、tf1 到 tf3，见 16.7）。之前一次都没叫醒过（t8、t10、t17、t19、t20）。t10 那次 SpringBoard 主线程在等不停重启的 mediaserverd；t17 那次 mediaserverd 没崩、SpringBoard 也闲着，照样叫不醒。所以叫醒靠的不只是 mediaserverd 不崩。【推测】点亮锁屏的那条路上有缓存里的镜像直接调 gl*（UIKit 13 个、CoreImage 2 个绑定），以前全是空操作，比如等一个永远不来的结果；具体是哪一处没有查，决策会话要的 HID 追踪也因此没做。lm3534 是同一批加进来的，没有分开测。【已核实：各次截图和 `_lcdEnable` 日志；原因是推测】
+- Since 16.4 it wakes every time (te1, tw1, tf1 to tf3, see 16.7). Before that it never woke once (t8, t10, t17, t19, t20). In t10, SpringBoard's main thread was waiting on the constantly restarting mediaserverd; in t17 mediaserverd did not crash and SpringBoard was idle, yet it still could not be woken. So waking depends on more than mediaserverd not crashing. **[inferred]** On the path that lights the lock screen, images in the cache call gl* directly (UIKit's 13 bindings, CoreImage's 2), which used to be all no-ops, for instance waiting for a result that never comes; exactly which one was not investigated, and so the HID tracing the decision session asked for was not done either. lm3534 was added in the same batch and was not tested separately. **[verified: each run's screenshots and `_lcdEnable` logs; the cause is inferred]**
 
-### 16.6 壁纸：JPEG 嫌疑排除，合成器那块 surface 在第一次绑定前就是不透明黑（未解决）
+### 16.6 Wallpaper: the JPEG suspicion is ruled out; the compositor's surface is already opaque black before its first bind (unsolved)
 
-- **写监视**（临时诊断，已删）：合成器或渲染进程每次绑定 744×1392 及以上的 surface 时，把它的物理页登记下来，之后记下每页每类写入方的第一次写：CPU 的写（TCG 的 `notdirty_write`，布防时清掉这些页的 CODE 脏位逼写走慢路径）、设备模型经 `address_space_write` 的写（`invalidate_and_set_dirty`）、GL 宿主写回 surface（`gles-host.c` 里经 `qemu_map_ram_ptr` 的 `memcpy`）、GL 宿主替客机写内存（`guest-gles.c` 的 `guest_rw_ram`，`glReadPixels` 这类）。按决策会话的提醒 grep 了经宿主指针直接写客机内存的地方：A5/A6 用到的模型里只有 GL 宿主这两处，`ipod_touch_5g.c` 的那处是开机时填 boot ROM，显示模型只读，其余是别的机型（ipad1、s5l8920、ipod_touch_2g）。【已核实：grep `address_space_map|dma_memory_map|memory_region_get_ram_ptr|qemu_map_ram_ptr|cpu_physical_memory_map`】
-- **结果**（tw1）：整次开机只布防了三块 744×1392。两块是渲染进程（CONTEXTIDR 0x40，客体地址 0x02e66000、0x02a67000，和 14.2 那个处理壁纸的进程同一地址）的：布防时不是黑的，之后是它自己的 GL 写回，再往后是内核（CONTEXTIDR 0、svc 态）和设备模型的写，也就是 surface 释放后页被重用。第三块是合成器的（CONTEXTIDR 0x16，客体地址 0x02af3000）：**第一次绑定时 2048 个采样里 2024 个已经是不透明黑（0xff000000）**，之后整次运行**任何一方都没再写过它**（CPU、内核、设备、GL 宿主都没有）。所以不是「内容本该由硬件产生」：这块内存在合成器第一次用它之前，已经被某个写入方填成了不透明黑（不是清零，清零是 0x00000000），写监视在绑定时才布防，没抓到这个写入方。【已核实：`tw1/qemu.out` 的 `[watch]` 行】
-- **JPEG 块被隐藏的嫌疑：排除。** iPhone 5 的默认壁纸确实是 JPEG：`/Library/Wallpaper/iPhone/default-568h@2x.jpg` 链到 `050.WWDC2016@2x~iphone.jpg`，744×1392，正好是合成器那块 surface 的尺寸；而 iPod touch 5 的默认壁纸在 `DefaultWallpapers.plist` 里是 PNG（这个表只有 `iPod5,1`、`iPod7,1`），9.3.5 在 n78 上根本不走 JPEG。但数据卷上 SpringBoard 第一次开机时存下的 `mobile/Library/SpringBoard/LockBackground.cpbitmap`（4187271 字节，744×1392，每行 3008 字节）转成图片看，是正确的 iOS 10 默认海浪壁纸，所以 JPEG 在第一次开机时解码成功了（软件解码），之后的开机直接读这份原始像素，和 JPEG 无关。缓存里引用 `AppleJPEGDriver` 的是 libMobileGestalt、MediaToolbox 和 JPEGH1 视频编解码插件，ImageIO 不直接开它。【已核实：系统卷文件、`sips`、cpbitmap 转图、缓存字符串】
-- 所以壁纸的像素在盘上是好的，从 `LockBackground.cpbitmap` 到合成器那块 surface 之间，内容变成了不透明黑。下一步建议：在 surface 第一次被任何进程绑定之前就抓写入方，比如按「整页写入 0xff000000」或按 IOSurface 的创建（内核 `IOSurfaceRoot` 的用户客户端调用）布防，再看是 SpringBoard 里哪一步（CoreAnimation 提交图像、或 CoreImage 处理壁纸后读回）填的黑。缩放器（`IOSurfaceAccelerator`）仍被隐藏，这一步如果本该由它把 cpbitmap 的像素搬进新 surface，填黑后不搬就正是这个现象；15.5 用「9.3.5 绑定同样两个函数、壁纸正常」排除过它，但 9.3.5 在 n78 上壁纸是 PNG、路径不一定相同，需要重新核对。【推测】
+- **Write watch** (temporary diagnostics, removed): every time the compositor or a rendering process binds a surface of 744×1392 or larger, its physical pages are registered, and from then on the first write by each kind of writer to each page is recorded: CPU writes (TCG's `notdirty_write`; arming clears these pages' CODE dirty bit to force writes onto the slow path), device model writes via `address_space_write` (`invalidate_and_set_dirty`), GL host surface writebacks (the `memcpy` via `qemu_map_ram_ptr` in `gles-host.c`), and GL host writes to guest memory on the guest's behalf (`guest_rw_ram` in `guest-gles.c`, for things like `glReadPixels`). Following the decision session's reminder, the places that write guest memory directly through host pointers were grepped: among the models the A5/A6 use, there are only these two in the GL host; the one in `ipod_touch_5g.c` fills the boot ROM at boot, the display model only reads, and the rest belong to other machines (ipad1, s5l8920, ipod_touch_2g). **[verified: grep `address_space_map|dma_memory_map|memory_region_get_ram_ptr|qemu_map_ram_ptr|cpu_physical_memory_map`]**
+- **Result** (tw1): only three 744×1392 surfaces were armed during the whole boot. Two belong to the rendering process (CONTEXTIDR 0x40, guest addresses 0x02e66000 and 0x02a67000, the same addresses as the wallpaper-handling process in 14.2): they were not black when armed, then came its own GL writebacks, and after that writes by the kernel (CONTEXTIDR 0, svc mode) and device models, i.e. the pages being reused after the surface was freed. The third belongs to the compositor (CONTEXTIDR 0x16, guest address 0x02af3000): **at its first bind, 2024 of 2048 samples were already opaque black (0xff000000)**, and for the rest of the run **nobody wrote to it again** (not the CPU, the kernel, a device or the GL host). So it is not that "the content should have been produced by hardware": before the compositor first used it, this memory had already been filled with opaque black by some writer (not zeroed; zeroing would give 0x00000000), and since the write watch is only armed at bind time, it did not catch that writer. **[verified: the `[watch]` lines in `tw1/qemu.out`]**
+- **The suspicion about the hidden JPEG block: ruled out.** The iPhone 5's default wallpaper is indeed a JPEG: `/Library/Wallpaper/iPhone/default-568h@2x.jpg` links to `050.WWDC2016@2x~iphone.jpg`, 744×1392, exactly the size of the compositor's surface; whereas the iPod touch 5's default wallpaper is a PNG in `DefaultWallpapers.plist` (this table only has `iPod5,1` and `iPod7,1`), so 9.3.5 on n78 never takes the JPEG path at all. But the `mobile/Library/SpringBoard/LockBackground.cpbitmap` that SpringBoard stored on the data volume at first boot (4187271 bytes, 744×1392, 3008 bytes per row), converted to an image, is the correct iOS 10 default wave wallpaper, so the JPEG was decoded successfully at first boot (in software), and later boots read these raw pixels directly, without JPEG. In the cache, the images referencing `AppleJPEGDriver` are libMobileGestalt, MediaToolbox and the JPEGH1 video codec plug-in; ImageIO does not open it directly. **[verified: system volume files, `sips`, cpbitmap converted to an image, cache strings]**
+- So the wallpaper's pixels on disk are good, and somewhere between `LockBackground.cpbitmap` and the compositor's surface the content became opaque black. Suggested next step: catch the writer before the surface is bound by any process for the first time, for example by arming on "a whole page written with 0xff000000" or on IOSurface creation (user client calls to the kernel's `IOSurfaceRoot`), then see which step in SpringBoard filled in the black (CoreAnimation committing an image, or a readback after CoreImage processes the wallpaper). The scaler (`IOSurfaceAccelerator`) is still hidden; if this step is supposed to have the scaler move the cpbitmap's pixels into a new surface, filling with black and then never moving them would produce exactly this symptom. 15.5 ruled it out with "9.3.5 binds the same two functions and its wallpaper is fine", but on n78 9.3.5's wallpaper is a PNG and the path is not necessarily the same, so this needs rechecking. **[inferred]**
 
-### 16.7 统计：全新克隆盘单开，几次里几次
+### 16.7 Counts: single boots of a fresh cloned disk, how many out of how many
 
-每次都是 disk-n3 的全新可写克隆（NAND 目录完整拷贝），一次只开一台，宿主上没有别的 QEMU；操作一样：100 秒截图，120 秒按 Home，140 秒点「设置」，160 秒按 Home，175 秒按电源键，200 秒按 Home，207 秒截图。
+Each run is a fresh writable clone of disk-n3 (with a full copy of the NAND directory), one machine at a time, with no other QEMU on the host; the actions are the same each time: screenshot at 100 seconds, Home at 120, tap Settings at 140, Home at 160, power button at 175, Home at 200, screenshot at 207.
 
-| 运行 | QEMU | 锁屏 | 主屏 | 「设置」 | 熄屏 | 按 Home 叫醒 | panic | 数据卷上新增的崩溃报告 |
+| Run | QEMU | Lock screen | Home screen | Settings | Screen off | Wake with Home | panic | New crash reports on the data volume |
 |---|---|---|---|---|---|---|---|---|
-| te1 | 带写监视诊断 | 是 | 是 | 是 | 是 | 是 | 无 | backboardd 看门狗栈 7 |
-| tw1 | 带写监视诊断 | 是 | 是 | 是 | 是 | 是 | 无 | backboardd 看门狗栈 9 |
-| tf1 | 最终版（诊断已删） | 是 | 是 | 是 | 是 | 是 | 无 | backboardd 看门狗栈 8 |
-| tf2 | 最终版 | 是 | 是 | 是 | 是 | 是 | 无 | backboardd 看门狗栈 8 |
-| tf3 | 最终版 | 是 | 是 | 是 | 是 | 是 | 无 | backboardd 看门狗栈 9 |
+| te1 | with write-watch diagnostics | yes | yes | yes | yes | yes | none | backboardd watchdog stacks 7 |
+| tw1 | with write-watch diagnostics | yes | yes | yes | yes | yes | none | backboardd watchdog stacks 9 |
+| tf1 | final version (diagnostics removed) | yes | yes | yes | yes | yes | none | backboardd watchdog stacks 8 |
+| tf2 | final version | yes | yes | yes | yes | yes | none | backboardd watchdog stacks 8 |
+| tf3 | final version | yes | yes | yes | yes | yes | none | backboardd watchdog stacks 9 |
 
-- **黑屏：最终版 3 次里 0 次，连同诊断版共 5 次里 0 次**（第四轮到 t3 为止 15 次里 5 次，15.3）。**叫醒：5 次里 5 次**（之前 0 次）。mediaserverd 5 次里 0 次崩溃（之前每次开机崩 5 到 13 次）。并行开机这一轮没有再做（决策会话要求单开和并行分开记，这里全是单开）。【已核实：各次截图 OCR、`serial.log` 的 `_lcdEnable`、数据卷 `CrashReporter` 的新文件】
-- 叫醒后的锁屏截图存为 `docs/reports/img/a6-1034-wake.png`（tf1，207 秒）。
-- backboardd 看门狗的全进程栈（bug_type 288）每次 7 到 9 份，第四轮正常开机时也有（t21 7 份），界面不受影响，没细查。
-- TLS 方案之后，宿主日志里多了几类以前没有的拒绝：某个进程用了 VAO（`glGenVertexArraysOES`、`glBindVertexArrayOES` 前端没实现，回 0），一个用 `GL_EXT_separate_shader_objects` 的着色器在宿主（macOS 的 GL 2.1）上编译失败、程序链接失败，另有 `GL_INVALID_ENUM/VALUE`、帧缓冲不完整。这些是缓存里的直接调用现在真的进了前端才暴露的，界面看不出影响，是哪个进程、画的是什么没查。【已核实：`te1/qemu.out`】
+- **Black screen: 0 of 3 with the final version, 0 of 5 including the diagnostic versions** (in round 4, 5 of 15 up to t3, 15.3). **Wake: 5 of 5** (0 before). mediaserverd crashed in 0 of 5 (previously 5 to 13 crashes per boot). Parallel boots were not done again this round (the decision session asked for single and parallel boots to be recorded separately; these are all single). **[verified: OCR of each run's screenshots, `_lcdEnable` in `serial.log`, new files in the data volume's `CrashReporter`]**
+- The lock screen screenshot after waking is saved as `docs/reports/img/a6-1034-wake.png` (tf1, 207 seconds).
+- The backboardd watchdog's all-process stackshots (bug_type 288) number 7 to 9 per run; normal boots in round 4 had them too (t21: 7); the UI is not affected; not looked into.
+- Since the TLS approach, the host log has a few kinds of refusals not seen before: some process uses VAOs (`glGenVertexArraysOES` and `glBindVertexArrayOES` are not implemented in the front end and return 0), a shader using `GL_EXT_separate_shader_objects` fails to compile on the host (macOS's GL 2.1) and the program fails to link, plus `GL_INVALID_ENUM/VALUE` and incomplete framebuffers. These surfaced only because the direct calls from the cache now really reach the front end; there is no visible effect on the UI, and which process it is and what it draws were not investigated. **[verified: `te1/qemu.out`]**
 
-### 16.8 回归 n78 的 9.3.5
+### 16.8 n78 9.3.5 regression
 
-- 新前端装进回归盘（`n78_diskfix.sh work/a6/regress/disk-935.img`，13G36 分支；前端的 TLS 写入在 Darwin 15 上不生效，但宏上下文多留的 4 个字和 `getMacroContextPrivate` 的改动会走到），最终版 QEMU 快照模式开机（`r935f`）：88 秒、153 秒都是锁屏，190 秒按时熄屏；熄屏 3 次、点亮 2 次，没有 panic，和上一轮的 `r935` 一样。分派表照旧认出 329 槽。【已核实：`r935f` 截图 OCR、`serial.log`】
-- 这一轮对 n78 生效的 QEMU 改动只有前端；gamma 忙位、lm3534、电量计都只给 n41 设，属性默认关。
+- The new front end was installed on the regression disk (`n78_diskfix.sh work/a6/regress/disk-935.img`, 13G36 branch; the front end's TLS write has no effect on Darwin 15, but the 4 extra words kept before the macro context and the `getMacroContextPrivate` change are exercised), and the disk was booted with the final QEMU in snapshot mode (`r935f`): lock screen at both 88 and 153 seconds, and the screen went off on schedule at 190 seconds; screen off 3 times and on 2 times, no panic, the same as the previous round's `r935`. The dispatch table still recognizes 329 slots. **[verified: OCR of `r935f` screenshots, `serial.log`]**
+- The only QEMU-side change this round that affects n78 is the front end; the gamma busy bit, lm3534 and the gas gauge are set only for n41, and the properties default to off.
 
-### 16.9 补丁、工具、文档
+### 16.9 Patches, tools, documentation
 
-- `patches/a5-n78-skeleton.patch` 重新导出（18 个文件，比上一轮多 `contrib/it-gles/gles_dispatch.c`）。这一轮的 QEMU 侧：`contrib/gles-public/opengles.c`（TLS 第 30 槽、宏上下文前留 4 个字）、`contrib/it-gles/gles_dispatch.c`（记下认槽时 GC 的偏移）、`hw/arm/s5l8930_display.c`（`gamma-busy`）、`hw/arm/ipod_touch_5g.c`（n41 的 lm3534 应答和 `gamma-busy`）。在上游原样的临时工作树里核对：按 `build-qemu.sh` 的顺序打四个 iOS 补丁、skeleton、`a5-n78-ios-ui.patch` 全部打得上；只打 skeleton 得到的 18 个文件和 Mac 工作树逐字节相同。临时工作树已删。【已核实】
-- 跳板相关的全部撤掉：前端的 `fe_cache_thunks` 和表、`build.sh` 生成的 `gles_cache_gl.h`、`n78_devcache.py --gl-thunks`、`n78_diskfix.sh` 的 `GL_THUNKS`/`GLES_EXPORTS`。所有临时诊断（写监视、慢调用计时）都已删掉，最终版 QEMU 里没有。
-- `tools/a5/README.md` 的 A6 部分补了 lm3534、`gamma-busy`、TLS 槽，改了第 6 步的说明。统计和采样用的脚本（`batch.sh`、`qsample.py`）、扫原版 gl* 的脚本在会话临时目录，没进仓库。
-- 这一轮新做的反编译输入在 `work/a6/dis/`（`h5p-14G61.elf`、`lmbl-14G61.elf`、`ImageIO-14G61.elf`），运行目录 `work/a6/runs/` 的 t23、ta1 到 ta3、tb1、tc1 到 tc9、td1、te1、tw1、tf1 到 tf3、r935f；td1 的 20 份 backboardd 崩溃报告在 `td1/crash/`。
+- `patches/a5-n78-skeleton.patch` re-exported (18 files, one more than last round: `contrib/it-gles/gles_dispatch.c`). This round on the QEMU side: `contrib/gles-public/opengles.c` (TLS slot 30, 4 words kept before the macro context), `contrib/it-gles/gles_dispatch.c` (records the GC offset during slot recognition), `hw/arm/s5l8930_display.c` (`gamma-busy`), `hw/arm/ipod_touch_5g.c` (n41's lm3534 answering model and `gamma-busy`). Checked in a temporary work tree of pristine upstream: the four iOS patches, skeleton and `a5-n78-ios-ui.patch` all apply in `build-qemu.sh` order; the 18 files obtained by applying only skeleton are byte-for-byte identical to the Mac work tree. The temporary work tree has been deleted. **[verified]**
+- Everything related to the trampolines was removed: the front end's `fe_cache_thunks` and its table, the `gles_cache_gl.h` generated by `build.sh`, `n78_devcache.py --gl-thunks`, and `GL_THUNKS`/`GLES_EXPORTS` in `n78_diskfix.sh`. All temporary diagnostics (write watch, slow call timing) have been removed and are not in the final QEMU.
+- The A6 part of `tools/a5/README.md` gained lm3534, `gamma-busy` and the TLS slot, and the description of step 6 was changed. The scripts used for counting and sampling (`batch.sh`, `qsample.py`) and the one that scans the stock gl* are in the session's temporary directory and did not go into the repository.
+- This round's new decompilation inputs are in `work/a6/dis/` (`h5p-14G61.elf`, `lmbl-14G61.elf`, `ImageIO-14G61.elf`); the run directories in `work/a6/runs/` are t23, ta1 to ta3, tb1, tc1 to tc9, td1, te1, tw1, tf1 to tf3 and r935f; td1's 20 backboardd crash reports are in `td1/crash/`.
 
-### 16.10 收尾
+### 16.10 Wrap-up
 
-- 结束时没有 QEMU 进程、没有挂着的镜像，克隆盘和 NAND 拷贝已删，REA 会话已关。
+- No QEMU processes and no mounted images were left at the end; the cloned disks and NAND copies were deleted, and the REA session was closed.
 
-## 17. 壁纸（第六轮）
+## 17. Wallpaper (round 6)
 
-决策会话核对第 16 节后，用户说「接着修壁纸」。目标：锁屏和主屏显示默认海浪壁纸，全新克隆盘单开至少 3 次都显示；叫醒、「设置」、9.3.5 回归不退步。**结果：修好了，全新克隆盘单开 3 次里 3 次有壁纸**（锁屏、主屏、叫醒后都有），同一块盘第二次开机也有；叫醒、「设置」照旧。**这一轮没有改 QEMU 和 GL 前端**，改的是盘：盘上留着一份以前生成的全黑壁纸缓存。
+After the decision session reviewed section 16, the user said "go on and fix the wallpaper". Goal: the lock screen and home screen show the default wave wallpaper, in each of at least 3 single boots of a fresh cloned disk; wake, Settings and the 9.3.5 regression must not get worse. **Result: fixed; the wallpaper shows in 3 of 3 single boots of a fresh cloned disk** (on the lock screen, the home screen and after wake), and also on the second boot of the same disk; wake and Settings work as before. **This round changed neither QEMU nor the GL front end**; what changed is the disk: it still held an all-black wallpaper cache generated earlier.
 
-### 17.1 根因：盘上的壁纸缓存是全黑的
+### 17.1 Root cause: the wallpaper cache on disk is all black
 
-- iOS 10 的 SpringBoard 把壁纸处理后的图存进 BaseBoardUI 的映射图像缓存，目录 `mobile/Library/Caches/MappedImageCache/Wallpaper/`：一张整幅的 `shared-wallpaperController-(-2:0:0:0.0:0:0.0:0.0)-untinted.cpbitmap`（744×1392，每行 3008 字节，4187210 字节），三张 186×348 的加色模糊图（`…-tinted.cpbitmap`），一张 24×44 的采样图。**disk-n3 上那张整幅图的 1035648 个像素全是 0xff000000**（其余 11136 个字是每行末尾的填充 0），三张加色图是均匀的灰（0xff4d4d4d、0xff737373、0xff4d4d4d，也就是黑色加了色调），只有采样图是海浪的青绿色。【已核实：逐字统计 g3 克隆盘上的文件】
-- **合成器那块 surface 就是这张缓存**：开机时 SpringBoard 用 AppSupport 的 `CPBitmapCreateMappedDataFromPath` 把它 `mmap` 进来（g3：大小 0x3fe44a，正是这个文件的长度），交给 CoreAnimation；backboardd 的渲染服务收到图像内存后用 `IOSurfaceWrapClientImage` 把它包成 IOSurface 当纹理（744×1392、BGRA、每行 0xbc0 字节；QuartzCore 0x1dbb2884，`CA::Render` 图像取 IOSurface 的那个方法）。16.6 看到的「第一次绑定前已经是不透明黑、之后谁都没写」就是这样来的：像素是从文件里映射进来的，本来就没有谁再画它。16.6 把它和 `LockBackground.cpbitmap` 连起来，是因为两个文件每行都是 3008 字节，那个推断不对。【已核实：g2、g3 的断点记录，反编译 `work/a6/dis/QuartzCore-14G61.elf`】
-- 缓存一旦存在，SpringBoard 就直接读它，不再重画；从 disk-n3 克隆出来的每一块盘都带着这份黑图。
+- iOS 10's SpringBoard stores the processed wallpaper images in BaseBoardUI's mapped image cache, in the directory `mobile/Library/Caches/MappedImageCache/Wallpaper/`: one full-size `shared-wallpaperController-(-2:0:0:0.0:0:0.0:0.0)-untinted.cpbitmap` (744×1392, 3008 bytes per row, 4187210 bytes), three 186×348 tinted blurred images (`…-tinted.cpbitmap`), and one 24×44 sample image. **On disk-n3, all 1035648 pixels of that full-size image are 0xff000000** (the other 11136 words are the zero padding at the end of each row); the three tinted images are uniform grays (0xff4d4d4d, 0xff737373, 0xff4d4d4d, i.e. black with a tint applied), and only the sample image has the wave's teal. **[verified: word-by-word counts of the files on the g3 cloned disk]**
+- **The compositor's surface is this cache**: at boot SpringBoard `mmap`s it with AppSupport's `CPBitmapCreateMappedDataFromPath` (g3: size 0x3fe44a, exactly this file's length) and hands it to CoreAnimation; when backboardd's render server receives the image memory, it wraps it as an IOSurface with `IOSurfaceWrapClientImage` and uses that as a texture (744×1392, BGRA, 0xbc0 bytes per row; QuartzCore 0x1dbb2884, the method by which a `CA::Render` image gets its IOSurface). That is where 16.6's "already opaque black before the first bind, and nobody wrote to it afterwards" comes from: the pixels are mapped in from the file, and nobody was ever going to draw them again. 16.6 connected it to `LockBackground.cpbitmap` because both files have 3008 bytes per row; that inference was wrong. **[verified: breakpoint records of g2 and g3, decompilation of `work/a6/dis/QuartzCore-14G61.elf`]**
+- Once the cache exists, SpringBoard reads it directly and does not redraw; every disk cloned from disk-n3 carries this black image.
 
-### 17.2 怎么查的：在共享缓存里下断点
+### 17.2 How it was found: breakpoints in the shared cache
 
-- 用 QEMU 自带的 gdbstub（`-gdb tcp:127.0.0.1:1234`）加一个 Python 写的 GDB 远程协议小客户端：在缓存函数入口下断点，记 CONTEXTIDR（区分进程）、参数、返回值、按帧指针取的调用链，必要时下写监视点；每次命中读完就继续，客机照常开机。
-- **iOS 10 的共享缓存开机时会随机滑动**：第一次（g1）按文件里的地址下断点，一次都没命中。之后客户端先在用户态打断，读 PC 处 48 字节代码，到缓存文件里找同样字节、同页内偏移的位置，算出滑动量（g2、g3、g4 分别是 0x129c000、0x1330000、0xd24000），再下断点。
-- 这些脚本只在会话临时目录，没进仓库；运行目录 `work/a6/runs/g1` 到 `g5` 里有 `trace.txt`。
+- QEMU's built-in gdbstub (`-gdb tcp:127.0.0.1:1234`) plus a small GDB remote protocol client written in Python: set breakpoints at cache function entry points, record CONTEXTIDR (to tell processes apart), arguments, return values and the call chain via frame pointers, and set write watchpoints when needed; after reading each hit it continues, and the guest boots as usual.
+- **iOS 10's shared cache slides randomly at boot**: the first run (g1) set breakpoints at the addresses from the file and never hit once. After that, the client first breaks in user mode, reads 48 bytes of code at the PC, finds the same bytes at the same in-page offset in the cache file, computes the slide (0x129c000, 0x1330000 and 0xd24000 for g2, g3 and g4), and then sets the breakpoints.
+- These scripts are only in the session's temporary directory and did not go into the repository; the run directories `work/a6/runs/g1` to `g5` have `trace.txt`.
 
-| 运行 | 盘 | 看什么 | 结论 |
+| Run | Disk | What was watched | Conclusion |
 |---|---|---|---|
-| g1 | disk-n3 克隆 | 缩放器、VideoToolbox、SBF 的缩图 | 没算滑动量，一次没命中 |
-| g2 | 同上 | 同上，加滑动量 | SBF 缩图时缩放器建不起来、VideoToolbox 退回软件（17.3）；backboardd 包 744×1392 |
-| g3 | 同上 | 4 MB 左右的 `mmap`/`vm_allocate` 及其写入 | SpringBoard 映射了 `…-untinted.cpbitmap`（17.1） |
-| g4 | 克隆盘删掉 `Wallpaper/` 下的缓存 | 同 g2 | **锁屏有壁纸**；SpringBoard 重新生成了缓存 |
-| g5 | 同 g4 | `CPBitmapWriter*`、`CARenderServerRender*`/`Capture*` 的调用链 | 缓存由 BaseBoardUI 在 dispatch 队列里写；生成时没用渲染服务截图 |
+| g1 | disk-n3 clone | scaler, VideoToolbox, SBF's downscaling | slide not computed, no hits at all |
+| g2 | same | same, with the slide | when SBF downscales, the scaler cannot be created and VideoToolbox falls back to software (17.3); backboardd wraps a 744×1392 |
+| g3 | same | `mmap`/`vm_allocate` of around 4 MB and writes to them | SpringBoard maps `…-untinted.cpbitmap` (17.1) |
+| g4 | clone with the cache under `Wallpaper/` deleted | same as g2 | **wallpaper on the lock screen**; SpringBoard regenerated the cache |
+| g5 | same as g4 | call chains of `CPBitmapWriter*`, `CARenderServerRender*`/`Capture*` | the cache is written by BaseBoardUI on a dispatch queue; no render server snapshot is used to generate it |
 
-### 17.3 被隐藏的缩放器：在这条路上，但壁纸不靠它
+### 17.3 The hidden scaler: on this path, but the wallpaper does not depend on it
 
-- 决策会话要求重新核对缩放器（15.5 拿 9.3.5 排除它，而 n78 的壁纸是 PNG，路径不一定一样）。查下来缩放器**确实在 iOS 10 的壁纸路径上**：SpringBoardFoundation 有个裁剪缩小壁纸的方法（0x24e401b0，把 744×1392 里 (26, 64, 320, 568) 点的一块缩成 206×366 像素），先用 `SBFCreateIOSurfaceForImage` 把 `LockBackground.cpbitmap` 的映射包成 IOSurface，再用 `VTPixelTransferSessionTransferImage` 搬到 `FigCreateIOSurfaceBackedCVPixelBufferWithAttributes` 建的新 surface 里。每次开机这一步里 `IOSurfaceAcceleratorCreate` 都返回 0xe00002c0（kIOReturnNoDevice，缩放器被开机包藏了），VideoToolbox 返回 -12905（kVTPixelTransferNotSupportedErr），SBF 随即走 CPU 的裁剪绘制，返回一张图。【已核实：g2、g4 的断点记录，反编译 `work/a6/dis/SBF-14G61.elf`】
-- 所以缺缩放器的情况 SBF 自己处理了；缩放器一直藏着，wf1 到 wf3 照样有壁纸。AppleJPEG 也绑定了缩放器函数，但默认壁纸的 JPEG 只在第一次设置壁纸时解码一次（之后读 `LockBackground.cpbitmap`），这一轮的开机里没走到。【已核实：`cacheinfo.py binds`；AppleJPEG 那句是推测】
+- The decision session asked for the scaler to be rechecked (15.5 ruled it out using 9.3.5, but n78's wallpaper is a PNG and the path is not necessarily the same). It turns out the scaler **is indeed on iOS 10's wallpaper path**: SpringBoardFoundation has a method that crops and downscales the wallpaper (0x24e401b0, which shrinks the (26, 64, 320, 568)-point piece of the 744×1392 image to 206×366 pixels); it first wraps the mapping of `LockBackground.cpbitmap` as an IOSurface with `SBFCreateIOSurfaceForImage`, then moves it with `VTPixelTransferSessionTransferImage` into a new surface created by `FigCreateIOSurfaceBackedCVPixelBufferWithAttributes`. On every boot, in this step `IOSurfaceAcceleratorCreate` returns 0xe00002c0 (kIOReturnNoDevice; the scaler is hidden by the boot bundle), VideoToolbox returns -12905 (kVTPixelTransferNotSupportedErr), and SBF then takes the CPU crop-and-draw path and returns an image. **[verified: breakpoint records of g2 and g4, decompilation of `work/a6/dis/SBF-14G61.elf`]**
+- So SBF handles the missing scaler itself; the scaler stays hidden, and wf1 to wf3 still have the wallpaper. AppleJPEG also binds the scaler functions, but the default wallpaper's JPEG is decoded only once, when the wallpaper is first set (after that `LockBackground.cpbitmap` is read), and this round's boots never reached it. **[verified: `cacheinfo.py binds`; the AppleJPEG sentence is inferred]**
 
-### 17.4 当初为什么是黑的
+### 17.4 Why it was black in the first place
 
-- 删掉缓存后（g4、g5、wf1 到 wf3）SpringBoard 会重新生成：宿主日志里 SpringBoard 先上传一张 744×1392 的 RGBA 纹理（均值 147，不是黑的），画一次（混合 1、0x303），再用 `glReadPixels`（分派槽 237）读回到一页在它页表里只读的内存，也就是 15.5 修过的那条读回路径（日志 `stays read-only to stores (slot 237): written past its protection`）。缓存在的时候（tf1、wf3b1）没有这张纹理的上传。g5 的调用链显示缓存文件由 BaseBoardUI 在 dispatch 队列里用 `CPBitmapWriterAddImage` 写下，整个过程没调用 `CARenderServerRender*`、`CARenderServerCapture*`。所以整幅壁纸是 **GL 画出来再读回的**。【已核实：g4、g5、wf1 到 wf3 的 `qemu.out`，g5 的 `trace.txt`】
-- disk-n3 是第一轮 n3 那次数据迁移开机直接写出来的盘，之后 n4、n5 也直接在它上面开过；那时这次读回会被丢掉（15.5 是第四轮才修的），缓存里镜像直接调的 gl* 也全是空操作（16.4 是第五轮修的）。生成出来的图没被写进像素，就成了不透明黑，存进了缓存。之后几轮要么是快照模式、要么是克隆盘，缓存一直在，SpringBoard 再没重画过，所以 15.5 和 16.4 修好之后壁纸看起来照样是黑的。【推测：缓存文件的时间戳都是 1970 年，看不出是哪次开机写的；也没有用旧版前端重现；为什么是 0xff000000 而不是全零也没查】
+- With the cache deleted (g4, g5, wf1 to wf3), SpringBoard regenerates it: in the host log SpringBoard first uploads a 744×1392 RGBA texture (mean 147, not black), draws once (blend 1, 0x303), then reads it back with `glReadPixels` (dispatch slot 237) into a page that is read-only in its page table, i.e. the readback path fixed in 15.5 (log `stays read-only to stores (slot 237): written past its protection`). When the cache exists (tf1, wf3b1) this texture is never uploaded. g5's call chain shows the cache file being written by BaseBoardUI on a dispatch queue with `CPBitmapWriterAddImage`, and the whole process never calls `CARenderServerRender*` or `CARenderServerCapture*`. So the full-size wallpaper is **drawn with GL and then read back**. **[verified: `qemu.out` of g4, g5, wf1 to wf3, g5's `trace.txt`]**
+- disk-n3 is the disk written directly by n3's data-migration boot in round 1, and n4 and n5 later also booted directly on it; at that time this readback was dropped (15.5 was only fixed in round 4), and the gl* called directly by images in the cache were all no-ops too (16.4 was fixed in round 5). The generated image never had its pixels written, so it came out opaque black and was stored in the cache. In later rounds the boots were either in snapshot mode or on cloned disks, the cache was always there, and SpringBoard never redrew it, so even after 15.5 and 16.4 were fixed the wallpaper still looked black. **[inferred: the cache files' timestamps are all 1970, so it is impossible to tell which boot wrote them; it was not reproduced with the old front end either; why it is 0xff000000 rather than all zeros was not investigated]**
 
-### 17.5 修法
+### 17.5 The fix
 
-- `tools/a5/n78_diskfix.sh` 的 14G61 分支在数据卷上删掉 `mobile/Library/Caches/MappedImageCache/Wallpaper/` 下的文件（目录留着），SpringBoard 下次开机重画。这份缓存是 GL 画的，换过前端或修过 GL 之后旧缓存就可能不对，改盘时清掉最省事。13G36 的盘上没有这个目录（9.3.5 的回归盘查过），所以只对 14G61 做。【已核实：脚本；回归盘】
-- disk-n3 上只做了这一步删除（没有整个重跑 `n78_diskfix.sh`），盘的信任缓存文件不受影响。从它克隆的每块盘第一次开机都会重新生成缓存，锁屏的时间没有明显变化（wf1 到 wf3 都在 110 秒截图时已是锁屏）。用现在的 QEMU 和前端从头做的盘，第一次开机生成的就是对的，这一步只对用旧前端开过的盘有用。
-- QEMU、GL 前端都没改，`patches/a5-n78-skeleton.patch` 重导出来和上一轮逐字节相同。
+- The 14G61 branch of `tools/a5/n78_diskfix.sh` deletes the files under `mobile/Library/Caches/MappedImageCache/Wallpaper/` on the data volume (the directory stays), and SpringBoard redraws on the next boot. This cache is drawn with GL, so after the front end changes or GL is fixed the old cache may be wrong; clearing it during the disk fix-up is the simplest approach. 13G36 disks do not have this directory (checked on the 9.3.5 regression disk), so it is done only for 14G61. **[verified: script; regression disk]**
+- On disk-n3 only this deletion was done (`n78_diskfix.sh` was not rerun in full), so the disk's trust cache file is unaffected. Every disk cloned from it regenerates the cache on its first boot, with no noticeable change in the time to the lock screen (wf1 to wf3 were all on the lock screen at the 110-second screenshot). A disk built from scratch with the current QEMU and front end generates the right image on its first boot; this step only matters for disks that were booted with the old front end.
+- Neither QEMU nor the GL front end changed; `patches/a5-n78-skeleton.patch`, re-exported, is byte-for-byte identical to last round's.
 
-### 17.6 TLS 方案之后新出现的拒绝：和壁纸无关
+### 17.6 The new refusals after the TLS approach: unrelated to the wallpaper
 
-- 16.7 记下的几类拒绝（`glGenVertexArraysOES`、`glBindVertexArrayOES` 没实现；一个带 `GL_EXT_separate_shader_objects` 的着色器在宿主上编译失败、程序链接失败；槽 632 的 `GL_INVALID_ENUM/VALUE`；帧缓冲不完整）在 tf1（黑壁纸）和 g4（有壁纸）里一条不差，所以不是壁纸的原因。它们出现在 SpringBoard 载入前端之后，是哪个进程、画的是什么，这一轮没有查。【已核实：两次的 `qemu.out`；进程没查】
+- The kinds of refusals recorded in 16.7 (`glGenVertexArraysOES` and `glBindVertexArrayOES` not implemented; a shader with `GL_EXT_separate_shader_objects` failing to compile on the host and the program failing to link; `GL_INVALID_ENUM/VALUE` on slot 632; incomplete framebuffers) are identical, line for line, in tf1 (black wallpaper) and g4 (wallpaper present), so they are not the cause of the wallpaper problem. They appear after SpringBoard loads the front end; which process it is and what it draws were not investigated this round. **[verified: `qemu.out` of both runs; the process was not investigated]**
 
-### 17.7 统计：全新克隆盘单开，几次里几次
+### 17.7 Counts: single boots of a fresh cloned disk, how many out of how many
 
-每次都是 disk-n3（已删缓存）的全新可写克隆（NAND 目录完整拷贝），一次只开一台，宿主上没有别的 QEMU。操作：110 秒截图，130 秒按 Home，138 秒截图，150 秒点「设置」，160 秒截图，170 秒按 Home，178 秒截图，185 秒按电源键，192 秒截图，210 秒按 Home，217 秒截图（比第五轮晚 10 秒左右，留出重新生成缓存的时间）。壁纸用截图第 380 到 1000 行（日期以下、「Press home」以上）里有一个通道亮于 24 的像素占比来判断：tf1 的黑壁纸锁屏是 0.000，主屏只有图标是 0.491，有壁纸是 1.000。
+Each run is a fresh writable clone of disk-n3 (with the cache deleted; NAND directory fully copied), one machine at a time, with no other QEMU on the host. Actions: screenshot at 110 seconds, Home at 130, screenshot at 138, tap Settings at 150, screenshot at 160, Home at 170, screenshot at 178, power button at 185, screenshot at 192, Home at 210, screenshot at 217 (about 10 seconds later than round 5, leaving time to regenerate the cache). The wallpaper is judged by the fraction of pixels in rows 380 to 1000 of the screenshot (below the date, above "Press home") with at least one channel brighter than 24: tf1's black-wallpaper lock screen gives 0.000, a home screen with only icons 0.491, and with the wallpaper 1.000.
 
-| 运行 | 盘 | 锁屏 | 壁纸（锁屏/主屏/叫醒后） | 主屏 | 「设置」 | 熄屏 | 叫醒 | panic | 新增崩溃报告 |
+| Run | Disk | Lock screen | Wallpaper (lock screen/home screen/after wake) | Home screen | Settings | Screen off | Wake | panic | New crash reports |
 |---|---|---|---|---|---|---|---|---|---|
-| wf1 | 全新克隆 | 是 | 1.000 / 1.000 / 1.000 | 是 | 是 | 是 | 是 | 无 | backboardd 看门狗栈 5 |
-| wf2 | 全新克隆 | 是 | 1.000 / 1.000 / 1.000 | 是 | 是 | 是 | 是 | 无 | backboardd 看门狗栈 5 |
-| wf3 | 全新克隆 | 是 | 1.000 / 1.000 / 1.000 | 是 | 是 | 是 | 是 | 无 | backboardd 看门狗栈 6 |
-| wf3b1 | wf3 那块盘第二次开机 | 是 | 1.000 / 1.000 / 1.000 | 是 | 是 | 是 | 是 | 无 | backboardd 看门狗栈 5 |
+| wf1 | fresh clone | yes | 1.000 / 1.000 / 1.000 | yes | yes | yes | yes | none | backboardd watchdog stacks 5 |
+| wf2 | fresh clone | yes | 1.000 / 1.000 / 1.000 | yes | yes | yes | yes | none | backboardd watchdog stacks 5 |
+| wf3 | fresh clone | yes | 1.000 / 1.000 / 1.000 | yes | yes | yes | yes | none | backboardd watchdog stacks 6 |
+| wf3b1 | second boot of the wf3 disk | yes | 1.000 / 1.000 / 1.000 | yes | yes | yes | yes | none | backboardd watchdog stacks 5 |
 
-- **壁纸：全新克隆盘 3 次里 3 次有**，同一块盘第二次开机直接读重新生成的缓存，也有。四次存下的整幅缓存逐项相同：约 23.9 万种颜色，0 个不透明黑像素。【已核实：截图、`wpcheck` 数值、各次拷出的 `untinted.cpbitmap`】
-- 叫醒、「设置」：4 次里 4 次，和第五轮一样。mediaserverd 没有崩溃报告。backboardd 看门狗的全进程栈（bug_type 288）每次 5 到 6 份，第五轮是 7 到 9 份，界面不受影响。
-- 截图：`docs/reports/img/a6-1034-wallpaper-lock.png`（wf1，110 秒锁屏）、`a6-1034-wallpaper-home.png`（wf1，138 秒主屏）。主屏的 Dock 模糊底色也对了（那是加色缓存图）。
+- **Wallpaper: present on 3 of 3 fresh cloned disks**, and the second boot of the same disk, which reads the regenerated cache directly, has it too. The full-size caches saved in the four runs are identical entry for entry: about 239,000 colors, 0 opaque black pixels. **[verified: screenshots, `wpcheck` values, the `untinted.cpbitmap` copied out of each run]**
+- Wake and Settings: 4 of 4, the same as round 5. No mediaserverd crash reports. The backboardd watchdog's all-process stackshots (bug_type 288) number 5 to 6 per run (7 to 9 in round 5); the UI is not affected.
+- Screenshots: `docs/reports/img/a6-1034-wallpaper-lock.png` (wf1, lock screen at 110 seconds), `a6-1034-wallpaper-home.png` (wf1, home screen at 138 seconds). The blurred background color of the home screen Dock is right now too (that is the tinted cache image).
 
-### 17.8 回归 n78 的 9.3.5
+### 17.8 n78 9.3.5 regression
 
-- 和上一轮同样的盘和参数（`work/a6/regress/disk-935.img` 快照模式，`qemu-final`，这一轮二进制没变）开了一次（`r935g`）：88 秒、153 秒都是锁屏，壁纸检测都是 1.000（和 r935f 一样），190 秒已按时熄屏；没有 panic，分派表照旧认出 329 槽。`_lcdEnable` 熄屏 2 次、点亮 1 次，r935f 是 3 次、2 次，多的是开机早期一次自动熄屏再点亮，截图那几个时间点的状态一样。【已核实：截图 OCR、`wpcheck`、`serial.log`】
-- 改盘脚本这一轮的改动只在 14G61 分支，9.3.5 的盘上也没有这个缓存目录，回归盘没有重跑 `n78_diskfix.sh`。
+- With the same disk and parameters as last round (`work/a6/regress/disk-935.img` in snapshot mode, `qemu-final`, whose binary did not change this round), one boot (`r935g`): lock screen at both 88 and 153 seconds, wallpaper check 1.000 for both (the same as r935f), and the screen had gone off on schedule by 190 seconds; no panic, and the dispatch table still recognizes 329 slots. `_lcdEnable` shows screen off 2 times and on 1 time, versus 3 and 2 for r935f; the extra pair is one automatic screen off and back on early in boot, and the state at the screenshot times is the same. **[verified: screenshot OCR, `wpcheck`, `serial.log`]**
+- This round's changes to the disk fix-up script are only in the 14G61 branch, and 9.3.5 disks do not have this cache directory either, so `n78_diskfix.sh` was not rerun on the regression disk.
 
-### 17.9 补丁、工具、文档
+### 17.9 Patches, tools, documentation
 
-- QEMU、GL 前端都没改。`patches/a5-n78-skeleton.patch` 用 `git diff --cached` 重导，和上一轮逐字节相同；在临时目录里按 `build-qemu.sh` 的顺序打四个 iOS 补丁、skeleton、`a5-n78-ios-ui.patch` 全部打得上，只打 skeleton 得到的 18 个文件和 Mac 工作树逐字节相同。【已核实】
-- `tools/a5/n78_diskfix.sh`：14G61 分支删掉壁纸缓存，文件头的说明补了一句。`tools/a5/README.md`、`README.md`、`docs/plan.md` 相应更新。
-- 这一轮没有往 QEMU 里加诊断代码，用的是 QEMU 自带的 gdbstub。会话临时目录里的脚本没进仓库：GDB 远程协议的断点记录器（自己算共享缓存滑动量，记参数、返回值、调用链，能下写监视点）、存根到导出名的映射、壁纸检测、单次和批量开机脚本。
-- 新做的反编译输入：`work/a6/dis/SBF-14G61.elf`（SpringBoardFoundation）、`VT-14G61.elf`（VideoToolbox）。运行目录 `work/a6/runs/` 的 g1 到 g5（断点追踪）、wf1 到 wf3、wf3b1（统计）、r935g（回归）；各次统计拷出的整幅缓存在 `wf*/untinted.cpbitmap`。
+- Neither QEMU nor the GL front end changed. `patches/a5-n78-skeleton.patch` was re-exported with `git diff --cached` and is byte-for-byte identical to last round's; in a temporary directory, the four iOS patches, skeleton and `a5-n78-ios-ui.patch` all apply in `build-qemu.sh` order, and the 18 files obtained by applying only skeleton are byte-for-byte identical to the Mac work tree. **[verified]**
+- `tools/a5/n78_diskfix.sh`: the 14G61 branch deletes the wallpaper cache, and the description in the file header got one more sentence. `tools/a5/README.md`, `README.md` and `docs/plan.md` were updated accordingly.
+- No diagnostic code was added to QEMU this round; QEMU's built-in gdbstub was used instead. The scripts in the session's temporary directory did not go into the repository: the GDB remote protocol breakpoint recorder (computes the shared cache slide itself, records arguments, return values and call chains, and can set write watchpoints), the stub-to-export-name mapping, the wallpaper check, and the single and batch boot scripts.
+- New decompilation inputs: `work/a6/dis/SBF-14G61.elf` (SpringBoardFoundation), `VT-14G61.elf` (VideoToolbox). Run directories in `work/a6/runs/`: g1 to g5 (breakpoint tracing), wf1 to wf3 and wf3b1 (counts), r935g (regression); the full-size cache copied out in each counting run is at `wf*/untinted.cpbitmap`.
 
-### 17.10 收尾
+### 17.10 Wrap-up
 
-- 结束时没有 QEMU 进程、没有挂着的镜像，克隆盘和 NAND 拷贝已删，REA 会话已关。disk-n3 上删掉了旧的壁纸缓存（目录留着，空的），其余不变。
+- No QEMU processes and no mounted images were left at the end; the cloned disks and NAND copies were deleted, and the REA session was closed. On disk-n3 the old wallpaper cache was deleted (the directory stays, empty); everything else is unchanged.

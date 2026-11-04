@@ -1,28 +1,39 @@
 #!/bin/bash
-# 一键装机（m2-timeline）：把新编的 App 和新做的设备包装进手机，再每台用 StikDebug 的 JIT 开一次计时。
-#   1. 检查：App 在、包在、手机经 USB 能连上 AFC，手机剩余空间够（包的总大小 + 2 GB 解包余量）。
-#   2. devicectl 装 App。同一个 bundle ID 是覆盖安装，App 的 Documents 留着：手机上已有的设备不动、不重传。
-#   3. 经 AFC 把包传进 App 的 Documents/import/（传的时候 App 不用开着）。
-#   4. 打开 App（列表页），等它把包一个个解开：logs/import.log 每个包多一行「解包」，失败的那行带「导入失败」。
-#   5. 每台 STIK=1 scripts/ios/device-boot.sh <id> jit：StikDebug 给 JIT，App 从包里的黄金状态冷启动，自己认锁屏和
-#      主屏（1.0、2.2.1 不经过锁屏，只记主屏）、解锁、待机 IDLE 秒后退出，记录取回 work/ios/runs/device/。
-#   6. 列出每台的锁屏、主屏、主屏静止 CPU。
+# One-step install (m2-timeline): install the freshly built app and the freshly made device packs on the phone, then
+# boot each device once with JIT from StikDebug and time it.
+#   1. Check: the app is there, the packs are there, AFC reaches the phone over USB, and the phone has enough free
+#      space (the total pack size + 2 GB of room for unpacking).
+#   2. devicectl installs the app. The same bundle ID makes it an in-place install that keeps the app's Documents:
+#      devices already on the phone stay untouched and are not uploaded again.
+#   3. Upload the packs into the app's Documents/import/ through AFC (the app does not have to be open meanwhile).
+#   4. Open the app (the list page) and wait while it unpacks the packs one by one: logs/import.log gets one more line
+#      per pack, and the line of a pack that failed to import says it failed.
+#   5. For each device, STIK=1 scripts/ios/device-boot.sh <id> jit: StikDebug provides JIT, the app cold-boots from
+#      the golden state in the pack, recognizes the lock and home screens itself (1.0 and 2.2.1 skip the lock screen
+#      and record only the home screen), unlocks, quits after IDLE seconds of idle, and the records come back to
+#      work/ios/runs/device/.
+#   6. List each device's lock screen, home screen and home-screen idle CPU.
 #
-# 用法：scripts/ios/device-install.sh [包 ...]（默认 work/ios/packs/ 下年表补全的 4 个）
-# 环境变量：PHONE（devicectl 能认的设备名或 UDID，默认读 work/ios/phone-udid）、
-#          APP（默认 work/ios/DerivedData-tl/Build/Products/Debug-iphoneos/ClassicTouch.app）、
-#          IDLE（主屏待机秒数，默认 30）、SKIP_INSTALL=1、SKIP_UPLOAD=1、SKIP_BOOT=1（跳过对应的步骤）
-# 前提：手机解锁、插着数据线（AFC 走 USB）、LocalDevVPN 开着、没开 iPhone 镜像；跑的时候别碰手机屏幕。
-#      文件有 idevice-tools 时走 AFC，没有时走 devicectl（FILES= 可指定，见 devfiles.sh；devicectl 读不到剩余空间）。
-# 传包约 3 分钟里 App 不在前台，手机可能自动锁屏：要启动 App 时会每 5 秒重试 2 分钟，这时解锁手机就行。
+# Usage: scripts/ios/device-install.sh [PACK ...] (default: the 4 packs under work/ios/packs/ that fill in the
+# timeline)
+# Environment: PHONE (a device name or UDID that devicectl accepts; read from work/ios/phone-udid by default),
+#              APP (default work/ios/DerivedData-tl/Build/Products/Debug-iphoneos/ClassicTouch.app),
+#              IDLE (home-screen idle seconds, default 30), SKIP_INSTALL=1, SKIP_UPLOAD=1, SKIP_BOOT=1
+#              (skip that step)
+# Requires: the phone unlocked and on the data cable (AFC goes over USB), LocalDevVPN on, iPhone Mirroring not open;
+#           do not touch the phone screen while it runs.
+#           Files go through AFC with idevice-tools and through devicectl without (FILES= picks one, see
+#           devfiles.sh; devicectl cannot read the free space).
+# During the roughly 3 minutes of uploading the app is not in the foreground and the phone may lock itself: when the
+# app has to start, it is retried every 5 seconds for 2 minutes, so just unlock the phone then.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-PHONE="${PHONE:-$(cat "$ROOT/work/ios/phone-udid" 2>/dev/null)}"  # 手机 UDID 不进仓库
-[ -n "$PHONE" ] || { echo "没有手机 UDID：设 PHONE 或写 work/ios/phone-udid" >&2; exit 1; }
+PHONE="${PHONE:-$(cat "$ROOT/work/ios/phone-udid" 2>/dev/null)}"  # the phone's UDID stays out of the repository
+[ -n "$PHONE" ] || { echo "No phone UDID: set PHONE or write work/ios/phone-udid" >&2; exit 1; }
 APP="${APP:-$ROOT/work/ios/DerivedData-tl/Build/Products/Debug-iphoneos/ClassicTouch.app}"
 IDLE="${IDLE:-30}"
 BUNDLE=org.classictouch.app
-# 文件操作（dls、dget、dput）：有 idevice-tools 走 AFC，没有走 devicectl，FILES= 可指定（scripts/ios/devfiles.sh）
+# File operations (dls, dget, dput): AFC with idevice-tools, devicectl without; FILES= picks one (scripts/ios/devfiles.sh)
 source "$ROOT/scripts/ios/devfiles.sh"
 if [ $# -gt 0 ]; then
     PACKS=("$@")
@@ -35,71 +46,71 @@ mkdir -p "$OUT"
 say() { echo "$(date +%H:%M:%S) $*" | tee -a "$OUT/install.log"; }
 t_start=$(date +%s)
 
-# 1. 检查
-for p in "${PACKS[@]}"; do [ -f "$p" ] || { echo "没有包 $p" >&2; exit 1; }; done
+# 1. Check
+for p in "${PACKS[@]}"; do [ -f "$p" ] || { echo "Pack not found: $p" >&2; exit 1; }; done
 if [ "${SKIP_INSTALL:-0}" != 1 ]; then
-    [ -d "$APP" ] || { echo "没有 App：$APP（先编真机版）" >&2; exit 1; }
-    codesign --verify --deep "$APP" || { echo "App 签名校验没过：$APP" >&2; exit 1; }
+    [ -d "$APP" ] || { echo "No app: $APP (build the device version first)" >&2; exit 1; }
+    codesign --verify --deep "$APP" || { echo "App signature check failed: $APP" >&2; exit 1; }
 fi
 need=2147483648
 for p in "${PACKS[@]}"; do need=$((need + $(stat -f %z "$p"))); done
 if [ "$FILES" = afc ]; then
     info="$("$IDT" --udid "$PHONE" afc device_info 2>&1 | sed 's/\x1b\[[0-9;]*m//g' || true)"
     echo "$info" > "$OUT/device_info.txt"
-    # 输出里是 free_bytes（idevice 的 DeviceInfo），老版本的 AFC 字段名是 FSFreeBytes，两个都认
+    # The output has free_bytes (idevice's DeviceInfo); older AFC versions call the field FSFreeBytes; accept both
     free="$(grep -Eio '(FSFreeBytes|free_bytes)[^0-9]*[0-9]+' <<<"$info" | grep -Eo '[0-9]+$' | head -1 || true)"
     if [ -z "$free" ]; then
-        say "AFC 读不到手机信息（没插线？没信任这台 Mac？），停下：$(head -c 300 <<<"$info")"
+        say "AFC cannot read the phone's info (cable not plugged in? this Mac not trusted?); stopping: $(head -c 300 <<<"$info")"
         exit 1
     fi
-    say "手机剩余 $((free / 1048576)) MB，这次要约 $((need / 1048576)) MB"
+    say "The phone has $((free / 1048576)) MB free; this run needs about $((need / 1048576)) MB"
     if [ "${SKIP_UPLOAD:-0}" != 1 ] && [ "$free" -lt "$need" ]; then
-        say "空间不够，停下"
+        say "Not enough space; stopping"
         exit 1
     fi
 else
-    # devicectl 读不到剩余空间（device info details 只有总容量）：不检查，先说一声
-    say "文件走 devicectl，读不到手机剩余空间，没检查；这次要约 $((need / 1048576)) MB"
+    # devicectl cannot read the free space (device info details has only the total capacity): no check, just say so
+    say "Files go through devicectl, which cannot read the phone's free space; not checked. This run needs about $((need / 1048576)) MB"
 fi
 
-# 要启动 App 时手机可能锁着：每 5 秒重试，最多 2 分钟
+# The phone may be locked when the app has to start: retry every 5 seconds, for at most 2 minutes
 launch_list() {
     for _ in $(seq 24); do
         if xcrun devicectl device process launch --device "$PHONE" --terminate-existing --quiet "$BUNDLE" \
             >> "$OUT/devicectl.log" 2>&1; then
             return 0
         fi
-        say "打不开 App（手机锁着？），请解锁手机，5 秒后重试"
+        say "Cannot open the app (is the phone locked?); please unlock the phone, retrying in 5 seconds"
         sleep 5
     done
     return 1
 }
 
-# 2. 装 App
+# 2. Install the app
 if [ "${SKIP_INSTALL:-0}" != 1 ]; then
-    say "装 App：$APP"
+    say "Installing the app: $APP"
     xcrun devicectl device install app --device "$PHONE" "$APP" >> "$OUT/devicectl.log" 2>&1
-    say "装好了"
+    say "Installed"
 fi
 
-# 3. 传包（App 不用开着）
+# 3. Upload the packs (the app does not have to be open)
 if [ "${SKIP_UPLOAD:-0}" != 1 ]; then
     for p in "${PACKS[@]}"; do
         name="$(basename "$p")"
         t=$(date +%s)
-        say "传 $name（$(( $(stat -f %z "$p") / 1048576 )) MB）"
+        say "Uploading $name ($(( $(stat -f %z "$p") / 1048576 )) MB)"
         dput "$p" "/Documents/import/$name"
-        say "传完 $name，用了 $(( $(date +%s) - t )) 秒"
+        say "Uploaded $name in $(( $(date +%s) - t )) seconds"
     done
 
-    # 4. 打开 App 让它解包，等 import.log 里每个包都有结果
+    # 4. Open the app so it unpacks, and wait until import.log has a result for every pack
     count() { grep -c -- "$1" "$OUT/import.log" 2>/dev/null || true; }
     dget /Documents/logs/import.log "$OUT/import.log"
     [ -f "$OUT/import.log" ] || : > "$OUT/import.log"
-    base=()  # 导入前每个包在 import.log 里已有几行（/bin/bash 3.2 没有关联数组，按 PACKS 的下标对应）
+    base=()  # how many lines each pack already has in import.log before the import (/bin/bash 3.2 has no associative arrays, so the indexes follow PACKS)
     for p in "${PACKS[@]}"; do base+=("$(count "$(basename "$p")")"); done
-    launch_list || { say "一直打不开 App，停下"; exit 1; }
-    say "App 已打开，等它导入"
+    launch_list || { say "The app never opened; stopping"; exit 1; }
+    say "The app is open; waiting for it to import"
     t=$(date +%s)
     while :; do
         sleep 3
@@ -110,27 +121,27 @@ if [ "${SKIP_UPLOAD:-0}" != 1 ]; then
         done
         [ "$done_all" = 1 ] && break
         if [ $(($(date +%s) - t)) -gt 600 ]; then
-            say "10 分钟还没导入完，停下（看手机上 App 首页的提示）"
+            say "Import not finished after 10 minutes; stopping (see the message on the app's home page on the phone)"
             exit 1
         fi
     done
-    say "导入完，用了 $(( $(date +%s) - t )) 秒："
+    say "Import done in $(( $(date +%s) - t )) seconds:"
     for p in "${PACKS[@]}"; do grep -- "$(basename "$p")" "$OUT/import.log" | tail -1 | tee -a "$OUT/install.log"; done
-    if grep -q "失败" <(for p in "${PACKS[@]}"; do grep -- "$(basename "$p")" "$OUT/import.log" | tail -1; done); then
-        say "有包导入失败，停下"
+    if grep -q " failed: " <(for p in "${PACKS[@]}"; do grep -- "$(basename "$p")" "$OUT/import.log" | tail -1; done); then
+        say "A pack failed to import; stopping"
         exit 1
     fi
 fi
 
-# 5. 每台开一次（device-boot.sh 会先结束 App，再经 StikDebug 拉起）
+# 5. Boot each one once (device-boot.sh first stops the app, then launches it through StikDebug)
 if [ "${SKIP_BOOT:-0}" != 1 ]; then
     for p in "${PACKS[@]}"; do
         id="$(basename "$p" .ctpack)"
-        say "开 $id"
+        say "Booting $id"
         STIK=1 IDLE="$IDLE" PHONE="$PHONE" "$ROOT/scripts/ios/device-boot.sh" "$id" jit 600 > "$OUT/boot-$id.log" 2>&1 \
-            || say "$id 的 device-boot.sh 出错退出（看 $OUT/boot-$id.log）"
-        grep -E '^(run|lock_s|lock |home_s|home |home_idle_cpu_pct|锁屏)' "$OUT/boot-$id.log" | tee -a "$OUT/install.log" || true
+            || say "device-boot.sh for $id exited with an error (see $OUT/boot-$id.log)"
+        grep -E '^(run|lock_s|lock |home_s|home |home_idle_cpu_pct|Lock screen)' "$OUT/boot-$id.log" | tee -a "$OUT/install.log" || true
         sleep 3
     done
 fi
-say "全部做完，用了 $(( $(date +%s) - t_start )) 秒。记录在 $OUT"
+say "All done in $(( $(date +%s) - t_start )) seconds. Records in $OUT"

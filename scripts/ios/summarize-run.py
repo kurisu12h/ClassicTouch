@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""汇总 App 一次运行的 stats.csv（sim-boot.sh、device-boot.sh 调用）。
-用法：summarize-run.py 运行目录 锁屏秒 主屏秒 待机秒数（没到达的传空串）"""
+"""Summarize the stats.csv of one app run (called by sim-boot.sh and device-boot.sh).
+Usage: summarize-run.py RUN_DIR LOCK_SECONDS HOME_SECONDS IDLE_SECONDS (pass an empty string for a screen not reached)"""
 import csv
 import sys
 
@@ -15,13 +15,15 @@ def at(t):
 print("run", run.rstrip("/").rsplit("/", 1)[-1])
 for name, t in (("lock", lock), ("home", home)):
     if not t:
-        print(name, "未到达")
+        print(name, "not reached")
         continue
     r = at(float(t))
     print("%s_s %.0f  cpu_s %.1f  avg_cpu_pct %.0f  footprint_mb %.0f  available_mb %.0f" % (
         name, float(t), r["cpu_s"], r["cpu_s"] / max(r["wall_s"], 1) * 100, r["footprint_mb"], r["available_mb"]))
-# 待机段截到 control quit 为止：之后 QEMU 已经停了，算进去会把待机 CPU 拉低（第一阶段的数就偏低了）。
-# 第四步起 autodrive 待机结束后还要点「设置」，那时记 idle_end，也截到那里
+# The idle stretch is cut at control quit: QEMU has stopped after that, and counting it would pull the idle CPU down
+# (the stage 1 numbers came out low that way).
+# From step 4 on, autodrive still taps Settings after the idle stretch; it logs idle_end then, and the stretch is cut
+# there too
 quit_at = 1e9
 for line in open(run + "/events.log"):
     t, _, event = line.strip().partition(" ")

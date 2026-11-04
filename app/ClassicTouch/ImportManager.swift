@@ -1,8 +1,10 @@
-// 导入设备包，不靠脚本：用户用 Finder（文件共享）或「文件」App 把 .ctpack 放进 Documents/import/（直接放 Documents
-// 根目录也认）。App 盯着这两个目录，包的修改时间和大小都 3 秒没变（认为拷完了）就解到 import/.staging-<包名>/，完整
-// 解完再并进 Documents、删掉包。首页显示拷入中、解包进度和结果；结果另外追加到 logs/import.log（scripts/ios/device-boot.sh
-// 会取回）。
-// 脚本的老用法照旧：宿主把包拷进 import/ 再启动 App，App 一起来就解，测试入口等导入完才开机（RootViewController）。
+// Imports device packs without scripts: the user puts a .ctpack into Documents/import/ with Finder (file sharing) or the
+// Files app (the Documents root works too). The app watches both folders; once a pack's modification time and size have
+// not changed for 3 seconds (taken as fully copied), it unpacks it into import/.staging-<pack name>/, and only after a
+// complete unpack merges it into Documents and deletes the pack. The home page shows copying, unpack progress and the
+// result; results are also appended to logs/import.log (scripts/ios/device-boot.sh fetches it).
+// The scripts' old way still works: the host copies a pack into import/ and then launches the app, which unpacks it right
+// away, and test entry points boot only after the import is done (RootViewController).
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 import Foundation
@@ -22,23 +24,25 @@ final class ImportManager {
 
     let documents: URL
     private(set) var active: Active?
-    /// 还在拷入（修改时间不到 3 秒）的包名
+    /// Names of packs still being copied (modified less than 3 seconds ago)
     private(set) var copying: [String] = []
-    /// 最近的结果，新的在前
+    /// Recent results, newest first
     private(set) var results: [Result] = []
     var onChange: (() -> Void)?
-    /// 正在运行的设备。包里是它就先不并进来（会换掉 QEMU 正开着的文件），等下次打开 App 再导入
+    /// The running device. A pack that contains it is not merged (that would replace files QEMU has open) and waits for the next app launch
     var busyDevice: String?
 
     private let fm = FileManager.default
     private let queue = DispatchQueue(label: "import", qos: .userInitiated)
     private var watchers: [DispatchSourceFileSystemObject] = []
     private var rescan: Timer?
-    /// 失败过的包（路径 → 大小和修改时间），没变就不再重试；拷入中途被读到而失败的，接着拷完大小一变就会重试
+    /// Packs that failed (path → size and modification time) are not retried while unchanged; one that failed because it was read mid-copy is retried once the copy finishes and its size changes
     private var failed: [String: String] = [:]
     private var deferred: Set<String> = []
-    /// 每个包上次看到的大小和从什么时候起是这个大小。devicectl copy 先建一个空文件、约 5 秒后才开始写，写完再把
-    /// 修改时间改回 Mac 上原文件的，只看修改时间会把空的或半截的包拿去解（docs/reports/ios-device-14pro.md 第 7 节）
+    /// The size last seen for each pack and since when it has had that size. devicectl copy first creates an empty file,
+    /// starts writing about 5 seconds later, and when done sets the modification time back to the original file's on the
+    /// Mac, so looking only at the modification time would unpack an empty or partial pack
+    /// (docs/reports/ios-device-14pro.md, section 7)
     private var sizes: [String: (size: UInt64, since: Date)] = [:]
 
     var importDir: URL { documents.appendingPathComponent("import", isDirectory: true) }
@@ -50,7 +54,7 @@ final class ImportManager {
 
     func start() {
         try? fm.createDirectory(at: importDir, withIntermediateDirectories: true)
-        // 上次解到一半被杀留下的暂存
+        // Staging left by an unpack that was killed halfway last time
         for name in (try? fm.contentsOfDirectory(atPath: importDir.path)) ?? [] where name.hasPrefix(".staging-") {
             try? fm.removeItem(at: importDir.appendingPathComponent(name))
         }
@@ -75,7 +79,7 @@ final class ImportManager {
         }
     }
 
-    /// 目录有变化、App 回到前台、还有包在拷入时每秒都来一次。一次只解一个包。
+    /// Runs when a folder changes, when the app comes to the foreground, and every second while packs are being copied. Unpacks one pack at a time.
     func scan() {
         guard active == nil else { return }
         rescan?.invalidate()
@@ -102,7 +106,7 @@ final class ImportManager {
         if !copying.isEmpty {
             rescan = Timer.scheduledTimer(withTimeInterval: 1, repeats: false) { [weak self] _ in self?.scan() }
         } else if failed.keys.contains(where: { fm.fileExists(atPath: $0) }) {
-            // 解失败的包还在：文件长大不触发目录事件，隔一会儿再看，拷完（大小一变）就重试
+            // A pack that failed to unpack is still there: a growing file triggers no folder event, so look again in a while and retry once the copy finishes (the size changes)
             rescan = Timer.scheduledTimer(withTimeInterval: 3, repeats: false) { [weak self] _ in self?.scan() }
         }
         onChange?()
@@ -126,8 +130,8 @@ final class ImportManager {
                     .volumeAvailableCapacityForImportantUsage ?? Int64.max
                 let need = Int64(size) + (500 << 20)
                 if free < need {
-                    throw EngineError(String(format: String(localized: "空间不够：需要约 %@，手机还剩 %@"),
-                                             ImportManager.bytes(need), ImportManager.bytes(free)))
+                    throw EngineError(
+                        "Not enough space: needs about \(ImportManager.bytes(need)), only \(ImportManager.bytes(free)) left on the phone")
                 }
                 let devices = try DevicePack.unpack(pack, into: staging) { done in
                     DispatchQueue.main.async { self?.active?.done = done; self?.onChange?() }
@@ -135,8 +139,9 @@ final class ImportManager {
                 if let busy, devices.contains(busy) {
                     try? fm.removeItem(at: staging)
                     retry = true
-                    result = Result(name: name, ok: false, text: String(localized: "包里的系统正在运行，下次打开 App 时再导入"))
-                    logLine = "\(name) 推迟：包里的设备正在运行"
+                    result = Result(name: name, ok: false,
+                                    text: String(localized: "A system in this pack is running; it will be imported the next time the app opens"))
+                    logLine = "\(name) deferred: a device in the pack is running"
                 } else {
                     try DevicePack.merge(staging, into: documents)
                     try fm.removeItem(at: pack)
@@ -145,15 +150,15 @@ final class ImportManager {
                     }
                     let seconds = ProcessInfo.processInfo.systemUptime - t0
                     result = Result(name: name, ok: true, text: String(
-                        format: String(localized: "已导入 %@（用时 %.1f 秒）"),
-                        names.isEmpty ? name : names.joined(separator: "、"), seconds))
-                    // 和 M1 以来 import.log 的格式一样
-                    logLine = String(format: "%@ 解包 %.1f 秒", name, seconds)
+                        format: String(localized: "Imported %@ (%.1f s)"),
+                        names.isEmpty ? name : names.listed, seconds))
+                    // "<pack> unpacked in <seconds> s" (scripts read import.log)
+                    logLine = String(format: "%@ unpacked in %.1f s", name, seconds)
                 }
             } catch {
                 try? fm.removeItem(at: staging)
-                result = Result(name: name, ok: false, text: String(format: String(localized: "导入失败：%@"), "\(error)"))
-                logLine = "\(name) 失败：\(error)"
+                result = Result(name: name, ok: false, text: String(format: String(localized: "Import failed: %@"), "\(error)"))
+                logLine = "\(name) failed: \(error.logText)"
             }
             ImportManager.appendLog(logLine, documents: documents)
             DispatchQueue.main.async {

@@ -1,5 +1,6 @@
-# 找回自 samhenrigold/qemu-ios af4d255637 的 contrib/ios-app/lldb_jit.py（10-13 被删），未改动。
-# 配合 tcg/region.c 的 iOS 26+ TXM 路径（brk #0x69，旧协议）。scripts/ios/device-boot.sh 的 JIT 模式会加载它。
+# Recovered from samhenrigold/qemu-ios af4d255637's contrib/ios-app/lldb_jit.py (deleted on 10-13), unchanged.
+# Goes with the iOS 26+ TXM path in tcg/region.c (brk #0x69, the legacy protocol). scripts/ios/device-boot.sh loads it
+# in JIT mode.
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Answer the emulator's request to bless its JIT buffer, from LLDB.
 

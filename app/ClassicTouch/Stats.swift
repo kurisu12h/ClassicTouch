@@ -1,5 +1,6 @@
-// 本进程的 CPU 时间和内存，口径和 M0 的 bench.py 一致：CPU 是所有线程 user+sys 之和，
-// 「占一个核的百分比」= CPU 秒 / 墙钟秒 × 100。内存记 phys_footprint 和 os_proc_available_memory()。
+// This process's CPU time and memory, measured the same way as M0's bench.py: CPU is user+sys summed over all threads,
+// and "percent of one core" = CPU seconds / wall-clock seconds × 100. Memory records phys_footprint and
+// os_proc_available_memory().
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 import Darwin
@@ -32,7 +33,7 @@ struct ProcessSample {
     }
 }
 
-/// 每秒一行 CSV：墙钟秒、CPU 秒、这一秒的 CPU%、footprint MB、可用内存 MB、帧编号、背光。
+/// One CSV line per second: wall-clock seconds, CPU seconds, this second's CPU%, footprint MB, available memory MB, frame serial, backlight.
 final class StatsLog {
     private let handle: FileHandle?
     private var last: ProcessSample?
@@ -43,7 +44,7 @@ final class StatsLog {
         handle?.seekToEndOfFile()
     }
 
-    /// 返回这一秒的 CPU%（占一个核）。
+    /// Returns this second's CPU% (of one core).
     @discardableResult
     func append(_ s: ProcessSample, serial: UInt64, backlight: Int32) -> Double {
         var pct = 0.0
@@ -57,9 +58,10 @@ final class StatsLog {
     }
 }
 
-/// 每秒按线程记 CPU（threads.csv：墙钟秒、线程、这一秒占一个核的百分比），只记 1% 以上的。线程名取 pthread 的名字：
-/// QEMU 的线程靠 -name debug-threads=on 命名（「CPU 0/TCG」是模拟的 CPU，GL 转发也在它上面），App 起 QEMU 的
-/// 线程叫「qemu」（QEMU 的主循环：定时器、显示刷新、发布帧），App 的主线程记成「app-main」。
+/// CPU per thread every second (threads.csv: wall-clock seconds, thread, percent of one core this second), only threads
+/// at 1% or more. Thread names are the pthread names: QEMU names its threads with -name debug-threads=on ("CPU 0/TCG" is
+/// the emulated CPU, and GL forwarding runs on it too), the thread the app starts QEMU on is "qemu" (QEMU's main loop:
+/// timers, display refresh, frame publishing), and the app's main thread is recorded as "app-main".
 final class ThreadLog {
     private let handle: FileHandle?
     private var last: [UInt64: Double] = [:]
@@ -71,7 +73,7 @@ final class ThreadLog {
         handle = try? FileHandle(forWritingTo: url)
         handle?.seekToEndOfFile()
         var id: UInt64 = 0
-        pthread_threadid_np(nil, &id)   // 在主线程上建
+        pthread_threadid_np(nil, &id)   // created on the main thread
         mainID = id
     }
 

@@ -6,7 +6,7 @@ import UIKit
 final class AppDelegate: UIResponder, UIApplicationDelegate {
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
-        // 模拟器画面开着时不自动锁屏（RootViewController.show）：测速时锁屏会让 CPU 数据失真
+        // The phone does not auto-lock while the emulator screen is up (RootViewController.show): locking during a benchmark skews the CPU numbers
         true
     }
 }
@@ -25,8 +25,9 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         root = vc
     }
 
-    // qemu-ios-ui.h：iOS 会杀掉在后台发 GL 命令的进程，前台标志要在 willResignActive 时就清掉。
-    // 同时暂停虚拟机（拉下控制中心、通知中心时也会 willResignActive，这时画面停住，回来继续）。
+    // qemu-ios-ui.h: iOS kills a process that sends GL commands in the background, so the foreground flag has to be
+    // cleared as early as willResignActive. The VM pauses too (pulling down Control Center or Notification Center also
+    // triggers willResignActive; the screen freezes, and the VM continues on return).
     func sceneWillResignActive(_ scene: UIScene) { root?.setAppActive(false) }
     func sceneDidBecomeActive(_ scene: UIScene) { root?.setAppActive(true) }
 }

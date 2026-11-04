@@ -1,5 +1,6 @@
-// 界面的「年表」风格（设计稿见 docs/design/，方案 A）：白纸黑字（深色模式反过来），大号窄体年份，细线分隔，线描机身；
-// 红色只用来标正在运行的那台和要注意的事。颜色在 Assets.xcassets 里，浅色、深色各一套。
+// The UI's "timeline" style (design in docs/design/, option A): black on white paper (reversed in dark mode), large
+// condensed years, thin rules, line drawings of devices; red only marks the running device and things to watch out for.
+// The colors are in Assets.xcassets, one set each for light and dark.
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 import UIKit
@@ -13,8 +14,8 @@ enum Theme {
     static let accent = UIColor(named: "Accent") ?? .systemRed
     static let margin: CGFloat = 22
 
-    /// 大号年份用系统自带的 DIN Condensed（iOS 上一直有），万一没有就用系统字体的窄体。本来就够大，而且年份那一栏宽度固定，
-    /// 所以不跟「更大字体」放大（其余文字都跟）
+    /// Large years use the built-in DIN Condensed (always present on iOS), falling back to the condensed system font. They
+    /// are big enough already and the year column has a fixed width, so they do not grow with Larger Text (all other text does)
     static func year(_ size: CGFloat) -> UIFont {
         UIFont(name: "DINCondensed-Bold", size: size) ?? .systemFont(ofSize: size, weight: .bold, width: .condensed)
     }
@@ -33,7 +34,7 @@ enum Theme {
         return label
     }
 
-    /// 一像素的细线
+    /// A one-pixel hairline
     static func hairline() -> UIView {
         let line = UIView()
         line.backgroundColor = rule
@@ -41,12 +42,16 @@ enum Theme {
         line.heightAnchor.constraint(equalToConstant: 1 / UIScreen.main.scale).isActive = true
         return line
     }
+
+    /// Joins the parts of a VoiceOver label (a comma in English, a full-width comma in Chinese)
+    static var spokenSeparator: String { String(localized: ", ", comment: "Between the parts of a VoiceOver label") }
 }
 
-/// 年表按大版本的首发年份排（3.1.3 记 2009）。目标是 iPhone OS 1 到 iOS 10，App 现在能开的是 runnable 这几个
-/// （iPhone OS 1 跑在初代 iPhone 和 iPod touch 1 代上，DeviceProfile 的 s5l8900 开机方式；iOS 9 跑在
-/// iPod touch 5 代上，n78 开机方式，docs/reports/a5-app.md）。其余在年表里标「以后」：iOS 8 的 iPod touch 5 代
-/// 固件还没做，iOS 10 要 A6 以上的机型。
+/// The timeline is ordered by each major version's first release year (3.1.3 counts as 2009). The goal is iPhone OS 1 to
+/// iOS 10; the app can boot the runnable ones now (iPhone OS 1 runs on the original iPhone and iPod touch 1st gen with
+/// DeviceProfile's s5l8900 boot strategy; iOS 9 runs on the iPod touch 5th gen with the n78 boot strategy,
+/// docs/reports/a5-app.md). The rest are marked "Later" in the timeline: the iPod touch 5th gen firmware for iOS 8 is not
+/// made yet, and iOS 10 needs an A6 or newer device.
 /// iOS 10 now runs on the emulated iPhone 5 (A6, n41ap, the n78 boot strategy; docs/reports/a6-app.md).
 enum Era {
     static let majors = 1...10
@@ -54,32 +59,39 @@ enum Era {
 
     static func year(_ major: Int) -> Int? { majors.contains(major) ? 2006 + major : nil }
 
-    /// 「2009」或「2007–08」
+    /// "2009" or "2007–08"
     static func years(_ first: Int, _ last: Int) -> String {
         guard let a = year(first), let b = year(last) else { return "—" }
         return a == b ? "\(a)" : String(format: "%d–%02d", a, b % 100)
     }
 
-    /// 「iPhone OS 1、2」「iOS 4、5」「iPhone OS 3、iOS 4」
+    /// "iPhone OS 1, 2", "iOS 4, 5", "iPhone OS 3, iOS 4" (the separator is the catalog's "%@, %@")
     static func names(_ list: [Int]) -> String {
         let old = list.filter { $0 < 4 }.map(String.init), new = list.filter { $0 >= 4 }.map(String.init)
         var parts: [String] = []
-        if !old.isEmpty { parts.append("iPhone OS " + old.joined(separator: "、")) }
-        if !new.isEmpty { parts.append("iOS " + new.joined(separator: "、")) }
-        return parts.joined(separator: "、")
+        if !old.isEmpty { parts.append("iPhone OS " + old.listed) }
+        if !new.isEmpty { parts.append("iOS " + new.listed) }
+        return parts.listed
     }
 }
 
-/// 线描机身：只有轮廓、屏幕框、听筒、Home 键，按机型分几种外形。自己画的简化外形，没有标志和商标字样。
+extension Array where Element == String {
+    /// A short list joined for the UI language with the catalog's "%@, %@" ("4, 5, 6" in English)
+    var listed: String {
+        dropFirst().reduce(first ?? "") { String(format: String(localized: "%@, %@", comment: "Joins two items of a short list"), $0, $1) }
+    }
+}
+
+/// A line drawing of the device: just the outline, screen frame, earpiece and Home button, in a few shapes by model. Simplified shapes drawn here, with no logos or trademark text.
 final class LineDeviceView: UIView {
     enum Shape {
-        /// iPod touch 1 到 3 代：圆角、没有听筒
+        /// iPod touch 1st to 3rd gen: rounded corners, no earpiece
         case pod
-        /// 初代 iPhone、3GS：圆润、有听筒
+        /// Original iPhone, 3GS: rounded, with an earpiece
         case round
-        /// iPhone 4、iPod touch 4 代：直边、听筒旁有前摄像头
+        /// iPhone 4, iPod touch 4th gen: straight edges, a front camera beside the earpiece
         case flat
-        /// 初代 iPad
+        /// Original iPad
         case pad
     }
 
@@ -95,7 +107,7 @@ final class LineDeviceView: UIView {
         }
     }
 
-    /// 宽高比（高 / 宽），按各机型正面尺寸简化
+    /// Aspect ratio (height / width), simplified from each model's front dimensions
     var aspect: CGFloat {
         switch shape {
         case .pod: return 1.78
@@ -120,7 +132,7 @@ final class LineDeviceView: UIView {
     }
 
     override func draw(_ rect: CGRect) {
-        // 按 100 宽的坐标画，再缩放到视图大小
+        // Draw in a 100-wide coordinate space, then scale to the view
         let w: CGFloat = 100, h = w * aspect
         let scale = min(bounds.width / (w + 6), bounds.height / (h + 6))
         guard let ctx = UIGraphicsGetCurrentContext(), scale > 0 else { return }
@@ -139,7 +151,7 @@ final class LineDeviceView: UIView {
         body.lineWidth = 4.5
         body.stroke()
 
-        // 屏幕：手机 2:3，iPad 3:4；上下边框一样宽
+        // Screen: 2:3 on phones, 3:4 on iPad; the top and bottom bezels are equally wide
         let screenW: CGFloat = shape == .pad ? 80 : 76
         let screenH = shape == .pad ? screenW * 4 / 3 : screenW * 1.5
         let top = (h - screenH) / 2

@@ -1,5 +1,6 @@
-# 名字	版本	源码包	官方地址	sha256
-# 校验值：glib 到 nettle 取自 LightTouchMac build-support/dependencies.json；libffi 取自其 GitHub 发布的 digest。
+# name	version	archive	official URL	sha256
+# Checksums: glib through nettle are from LightTouchMac's build-support/dependencies.json; libffi is from the digest of
+# its GitHub release.
 libffi	3.8.0	libffi-3.8.0.tar.gz	https://github.com/libffi/libffi/releases/download/v3.8.0/libffi-3.8.0.tar.gz	7da3e2d9a171eb0a038f592ecad3ff2bb2550f3496d87b3b29ad0cf4430c0db4
 pcre2	10.48	pcre2-10.48.tar.bz2	https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.48/pcre2-10.48.tar.bz2	b6c68fdf6f3ac31388b50aa89ff0fc49c00c987c16e7b5146491d12003f2c8ed
 proxy-libintl	0.5	proxy-libintl-0.5.tar.gz	https://github.com/frida/proxy-libintl/archive/refs/tags/0.5.tar.gz	f7a1cbd7579baaf575c66f9d99fb6295e9b0684a28b095967cfda17857595303

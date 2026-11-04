@@ -1,46 +1,57 @@
 #!/bin/bash
-# E1/E2：在真机上冷启动一台设备并计时，做法和 sim-boot.sh 一样，只是经 devicectl 走：
-#   1. devicectl process launch 启动 App：-device <id> -tcg <后端> -guestpng 1 -resetstate YES（每次从全新状态冷启动，
-#      3GS 从包里带的 golden-state 克隆）。
-#   2. JIT（E2）：App 带 -waitdebugger 启动，scripts/ios/lldb_jit_runner.py（LLDB 的 SB API，同步模式）挂上去，
-#      应答 region.c 的 brk #0x69，让调试器把代码区「准备」成可执行；QEMU 用到的信号直接放行。一直挂到测量结束。
-#   3. 每 2 秒把 App 的运行目录 copy from 回 work/ios/runs/device/，逐张 OCR 客体截图：看到「slide to unlock」记锁屏，
-#      往 Documents/control/unlock 放命令文件让 App 解锁；看到主屏记主屏，再空闲 IDLE 秒后 control/quit。
-#   4. 汇总同 sim-boot.sh，另记最低 os_proc_available_memory()。
+# E1/E2: cold-boot a device on a real phone and time it, the same way as sim-boot.sh, only through devicectl:
+#   1. devicectl process launch starts the app: -device <id> -tcg <backend> -guestpng 1 -resetstate YES (every run
+#      cold-boots from a fresh state; the 3GS clones the golden-state shipped in its pack).
+#   2. JIT (E2): the app starts with -waitdebugger, and scripts/ios/lldb_jit_runner.py (LLDB's SB API, synchronous
+#      mode) attaches and answers region.c's brk #0x69 so the debugger "prepares" the code region as executable; the
+#      signals QEMU uses are passed straight through. It stays attached until the measurement ends.
+#   3. Every 2 seconds, copy the app's run directory back to work/ios/runs/device/ and OCR each guest screenshot: on
+#      "slide to unlock", record the lock screen and drop a command file in Documents/control/unlock so the app
+#      unlocks; on the home screen, record it, and after IDLE more seconds of idle, control/quit.
+#   4. Summary as in sim-boot.sh, plus the lowest os_proc_available_memory().
 #
-# 用法：scripts/ios/device-boot.sh <设备id> interp|jit [最长秒数，默认 900]
-# 环境变量：PHONE（devicectl 能认的设备名或 UDID，默认读 work/ios/phone-udid）、IDLE（默认 20）、
-#          TBSIZE（TCG 代码缓冲 MB，不设就用 App 的默认 256）、JITPROTO（legacy 用旧协议）、
-#          JIT_TOUCH（调试器准备代码区的方式：bulk 整块写零，默认；page 逐页写 1 字节；none 只分配）、
-#          STIK=1（第三阶段：不用 Mac 上的 LLDB，由手机上的 StikDebug 用 universal.js 给 JIT）、
-#          OPENSETTINGS=1（STIK 模式下待机结束后让 App 点开「设置」再按 Home 回主屏，第四步）、
-#          USBKBD=1（有 USB 主机口的机型挂 USB 键盘，默认不挂：iOS 7 会弹提示挡住触摸）、
-#          SWIPETEST=1（STIK 模式下锁屏和主屏的滑动测试，分段记帧数和 CPU，汇总见 summarize-swipe.py）、
-#          PERF=1（QEMU 每秒记 GL 桥、显示、发布帧的耗时，IT_PERF=1）、
-#          QEMUENV（给 QEMU 的额外环境变量，JSON 对象，例如 {"IT_GLES_STRICT": "0"}）
-#          FILES（afc 或 devicectl：App 容器里的文件怎么传，默认有 idevice-tools 走 AFC，否则 devicectl，见 devfiles.sh）、
-#          AUTODRIVE（1 让 App 自己认锁屏和主屏，StikDebug 模式和 devicectl 时默认 1）、
-#          LLDB_PACKET_LOG（连线 JIT 时 LLDB 的包日志，默认写在 lldb 日志旁边，none 关掉）
+# Usage: scripts/ios/device-boot.sh <device id> interp|jit [maximum seconds, default 900]
+# Environment: PHONE (a device name or UDID that devicectl accepts; read from work/ios/phone-udid by default),
+#              IDLE (default 20), TBSIZE (TCG code buffer in MB; the app's default of 256 when unset),
+#              JITPROTO (legacy for the old protocol),
+#              JIT_TOUCH (how the debugger prepares the code region: bulk writes zeros over the whole block, the
+#              default; page writes 1 byte per page; none only allocates),
+#              STIK=1 (stage 3: StikDebug on the phone provides JIT with universal.js instead of LLDB on the Mac),
+#              OPENSETTINGS=1 (in STIK mode, after the idle stretch the app opens Settings, then presses Home to get
+#              back to the home screen; step 4),
+#              USBKBD=1 (attach a USB keyboard on machines with a USB host port; off by default: iOS 7 shows an alert
+#              that blocks touches),
+#              SWIPETEST=1 (lock-screen and home-screen swipe tests in STIK mode, with frames and CPU recorded per
+#              segment; summarized by summarize-swipe.py),
+#              PERF=1 (QEMU logs the time spent in the GL bridge, the display and frame publishing every second,
+#              IT_PERF=1),
+#              QEMUENV (extra environment variables for QEMU, a JSON object, for example {"IT_GLES_STRICT": "0"})
+#              FILES (afc or devicectl: how files in the app container are moved; AFC by default when idevice-tools
+#              is there, devicectl otherwise; see devfiles.sh),
+#              AUTODRIVE (1 makes the app recognize the lock and home screens itself; default 1 in StikDebug mode and
+#              with devicectl),
+#              LLDB_PACKET_LOG (LLDB's packet log while attaching for JIT; written next to the lldb log by default,
+#              none turns it off)
 set -euo pipefail
-DEVICE="${1:?用法：device-boot.sh <设备id> interp|jit [最长秒数]}"
+DEVICE="${1:?usage: device-boot.sh <device id> interp|jit [maximum seconds]}"
 TCG="${2:?}"
 LIMIT="${3:-900}"
 IDLE="${IDLE:-20}"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-PHONE="${PHONE:-$(cat "$ROOT/work/ios/phone-udid" 2>/dev/null)}"  # 手机 UDID 放在 work/ios/phone-udid，不进仓库
+PHONE="${PHONE:-$(cat "$ROOT/work/ios/phone-udid" 2>/dev/null)}"  # the phone's UDID lives in work/ios/phone-udid, not in the repository
 BUNDLE=org.classictouch.app
 STIK_BUNDLE=org.classictouch.dev.stikdebug
 OCR="$ROOT/work/tools/ocr/ocr"
 LOCAL="$ROOT/work/ios/runs/device"
 CTL=(--device "$PHONE" --domain-type appDataContainer --domain-identifier "$BUNDLE")
 mkdir -p "$LOCAL"
-# 同一时间只能有一个实例：两个实例都用 --terminate-existing 启动 App，会互相把对方的 App 杀掉
-# （第二阶段有一段挂载连续失败，就是一个没退出的旧实例和新实例在打架）
+# Only one instance at a time: both instances launch the app with --terminate-existing and kill each other's app
+# (in stage 2 a series of attach failures was an old instance that had not exited fighting the new one)
 LOCK="$LOCAL/.device-boot.lock"
 if ! mkdir "$LOCK" 2>/dev/null; then
     other="$(cat "$LOCK/pid" 2>/dev/null || true)"
     if [ -n "$other" ] && kill -0 "$other" 2>/dev/null; then
-        echo "已经有一个 device-boot.sh 在跑（PID $other），先结束它" >&2
+        echo "A device-boot.sh is already running (PID $other); stop it first" >&2
         exit 2
     fi
     rm -rf "$LOCK"
@@ -52,8 +63,8 @@ LLDB_PID=""
 cleanup() {
     rm -f "$EMPTY"
     rm -rf "$LOCK"
-    # 只按 PID 收拾自己起的调试器。它多半阻塞在 SBProcess.Continue() 里，Python 的 SIGTERM 处理要等它返回才跑，
-    # 所以 2 秒后还在就直接 SIGKILL
+    # Clean up only the debugger we started, by PID. It is usually blocked in SBProcess.Continue(), and Python's
+    # SIGTERM handler runs only after that returns, so SIGKILL it if it is still there after 2 seconds
     if [ -n "$LLDB_PID" ]; then
         kill "$LLDB_PID" 2>/dev/null || true
         sleep 2
@@ -62,13 +73,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# 文件操作（dls、dget、dput）：有 idevice-tools 走 AFC，没有走 devicectl，FILES= 可指定（scripts/ios/devfiles.sh）
+# File operations (dls, dget, dput): AFC with idevice-tools, devicectl without; FILES= picks one (scripts/ios/devfiles.sh)
 source "$ROOT/scripts/ios/devfiles.sh"
 fetch() { dget "$@"; }
 runs() {
     dls /Documents/logs | grep '^20[0-9-]*-' || true
 }
-# 把运行目录同步回 $L：三个会变的文本每次都拿，截图只拿新的
+# Sync the run directory back to $L: the three text files that change are fetched every time, screenshots only when new
 sync_run() {
     mkdir -p "$L"
     local f
@@ -80,7 +91,8 @@ sync_run() {
     done
 }
 control() {
-    # 每次写进不同的内容：devicectl copy 会跳过它认为没变过的文件，同一个空文件第二次拷就送不到了
+    # Write different content each time: devicectl copy skips files it considers unchanged, so the same empty file
+    # would not get through the second time
     echo "$(date +%s) $RANDOM" > "$EMPTY"
     dput "$EMPTY" "/Documents/control/$1"
 }
@@ -88,9 +100,11 @@ control() {
 before="$(runs)"
 MAC_LOAD_START="$(sysctl -n vm.loadavg)"
 LOG=""
-# AUTODRIVE=1：App 自己认锁屏和主屏、解锁、待机后退出（EmulatorViewController.autodrive），这里只轮询 events.log；
-# 0：每秒一张客体截图拿回 Mac 上 OCR。StikDebug 模式和文件走 devicectl 时默认 1：devicectl 一个文件约一秒，
-# 每秒一张截图根本拿不过来（14 Pro 上 400 秒只拿回 37 个文件，docs/reports/ios-device-14pro.md 第 7 节）
+# AUTODRIVE=1: the app recognizes the lock and home screens itself, unlocks, and quits after the idle stretch
+# (EmulatorViewController.autodrive); here we only poll events.log. 0: a guest screenshot every second, fetched to the
+# Mac for OCR. Default 1 in StikDebug mode and when files go through devicectl: devicectl takes about a second per
+# file, far too slow for one screenshot a second (on the 14 Pro only 37 files came back in 400 seconds,
+# docs/reports/ios-device-14pro.md section 7)
 AUTO="${AUTODRIVE:-}"
 if [ -z "$AUTO" ]; then
     if [ "${STIK:-0}" = 1 ] || [ "$FILES" = devicectl ]; then AUTO=1; else AUTO=0; fi
@@ -101,15 +115,18 @@ if [ "$AUTO" = 1 ]; then
 else
     args=(-device "$DEVICE" -tcg "$TCG" -guestpng 1 -resetstate YES)
 fi
-# TCG 代码缓冲（MB）。真机 JIT 时调试器要把整块读出再写回，隔着 Wi-Fi 约 0.8 MB/s：256 MB 要 5 分多钟
+# TCG code buffer (MB). With JIT on a phone the debugger reads the whole block out and writes it back, about 0.8 MB/s
+# over Wi-Fi: 256 MB takes more than 5 minutes
 if [ -n "${TBSIZE:-}" ]; then args+=(-tbsize "$TBSIZE"); fi
-# JITPROTO=legacy：旧的 brk #0x69 协议（对照用）；JIT_TOUCH 由调试器脚本自己读
+# JITPROTO=legacy: the old brk #0x69 protocol (for comparison); the debugger script reads JIT_TOUCH itself
 if [ -n "${JITPROTO:-}" ]; then args+=(-jitprotocol "$JITPROTO"); fi
 if [ "${STIK:-0}" = 1 ]; then
-    # E3：StikDebug 在手机本机应答新协议（universal.js）。它拉起 App 时没有启动参数，所以先把要开的东西写进
-    # App 的 Documents/autostart.json；waitdebugger 让 App 万一比调试器先跑起来时先等一下。
+    # E3: StikDebug answers the new protocol on the phone itself (universal.js). It launches the app without launch
+    # arguments, so first write what to open into the app's Documents/autostart.json; waitdebugger makes the app wait
+    # in case it starts before the debugger.
     cfg="$(mktemp)"
-    # autodrive：App 自己认锁屏和主屏、解锁、待机、退出（见 EmulatorViewController.autodrive）
+    # autodrive: the app recognizes the lock and home screens itself, unlocks, idles and quits (see
+    # EmulatorViewController.autodrive)
     flag() { [ "${1:-0}" = 1 ] && echo true || echo false; }
     QEMUENV_JSON="${QEMUENV:-}"
     [ -n "$QEMUENV_JSON" ] || QEMUENV_JSON='{}'
@@ -118,61 +135,66 @@ if [ "${STIK:-0}" = 1 ]; then
         "$(flag "${SWIPETEST:-0}")" "$(flag "${PERF:-0}")" "$QEMUENV_JSON" > "$cfg"
     dput "$cfg" /Documents/autostart.json
     rm -f "$cfg"
-    # 还在跑的 App 先结束，StikDebug 才会重新拉起它
+    # Stop the app if it is still running, so that StikDebug launches it again
     for p in $(xcrun devicectl device info processes --device "$PHONE" --json-output /dev/stdout --quiet 2>/dev/null \
         | jq -r '.result.runningProcesses[] | select((.executable // "") | contains("ClassicTouch.app")) | .processIdentifier'); do
         xcrun devicectl device process signal --device "$PHONE" --pid "$p" --signal SIGKILL --quiet >/dev/null 2>&1 || true
     done
     xcrun devicectl device process launch --device "$PHONE" --terminate-existing --quiet \
         --payload-url "stikjit://enable-jit?bundle-id=$BUNDLE&script-name=universal.js" "$STIK_BUNDLE" >/dev/null
-    echo "StikDebug 已带 URL 拉起，等它启动 App"
+    echo "StikDebug launched with the URL; waiting for it to start the app"
 elif [ "$TCG" = jit ]; then
-    # LLDB 的 device select 认 CoreDevice 标识（devicectl list devices 的 identifier），不认 UDID
+    # LLDB's device select takes the CoreDevice identifier (the identifier in devicectl list devices), not the UDID
     core="$(xcrun devicectl list devices --json-output /dev/stdout --quiet 2>/dev/null | jq -r --arg p "$PHONE" \
         '.result.devices[] | select(.hardwareProperties.udid == $p or .identifier == $p or .deviceProperties.name == $p)
          | .identifier' | head -1)"
-    # 大约每 4 到 5 次挂载会有一次：挂上后第一次继续就「Resume timed out」，之后一直卡住（调大 gdb-remote 包超时
-    # 也不管用）。90 秒内没等到 QEMU 的 brk、却出现 3 次以上这个错误，就结束调试器和 App 重来，最多 3 次。
-    # 手机锁着屏时调试器选不上它、附加后也总是 Resume timed out（docs/reports/ios-device-14pro.md 第 7 节）：先等解锁
+    # About one attach in 4 or 5: the first continue after attaching gives "Resume timed out" and then it stays stuck
+    # (a larger gdb-remote packet timeout does not help). If no brk from QEMU arrives within 90 seconds but this error
+    # shows up 3 or more times, kill the debugger and the app and start over, at most 3 times.
+    # While the phone is locked the debugger cannot select it, and after attaching it always gets Resume timed out
+    # (docs/reports/ios-device-14pro.md section 7): wait for an unlock first
     locked() { xcrun devicectl device info lockState --device "$PHONE" --json-output /dev/stdout --quiet 2>/dev/null \
         | jq -r '.result.passcodeRequired'; }
     for i in $(seq 60); do
         [ "$(locked)" = true ] || break
-        [ "$i" = 1 ] && echo "手机锁着屏，请解锁（最多等 2 分钟）"
+        [ "$i" = 1 ] && echo "The phone is locked; please unlock it (waiting up to 2 minutes)"
         sleep 2
     done
-    [ "$(locked)" = true ] && { echo "手机一直锁着屏，停下" >&2; exit 1; }
+    [ "$(locked)" = true ] && { echo "The phone stayed locked; stopping" >&2; exit 1; }
     for attempt in 1 2 3; do
-        # 不用 --start-stopped（会留一个挂起的 SIGSTOP，继续后进程又停在 dyld 入口、手机白屏）：App 正常启动，
-        # -waitdebugger 让它在界面上等调试器，挂上后才起 QEMU。
+        # No --start-stopped (it leaves a pending SIGSTOP, and after continuing the process stops again at the dyld
+        # entry with a white screen): the app starts normally, and -waitdebugger makes it wait for the debugger on
+        # screen, starting QEMU only once it is attached.
         out="$(xcrun devicectl device process launch --device "$PHONE" --terminate-existing \
             --json-output /dev/stdout --quiet "$BUNDLE" -- "${args[@]}" -waitdebugger YES)"
         pid="$(jq -r '.result.process.processIdentifier' <<<"$out")"
-        echo "App 在等调试器，PID $pid，LLDB 挂上去（第 $attempt 次）"
+        echo "App waiting for the debugger, PID $pid; attaching LLDB (attempt $attempt)"
         LOG="$LOCAL/lldb-$(date +%Y%m%d-%H%M%S).log"
-        # 包日志默认开：14 Pro（iOS 27.0.1）上不开时十几次挂载全是「停下了但没有停止原因」接着 Resume timed out，
-        # 开着的几次全成（记日志拖慢了 LLDB，像是躲开了一处时序问题，根因没查清，docs/reports/ios-device-14pro.md
-        # 第 7 节）。LLDB_PACKET_LOG=none 关掉，或给一个路径
+        # The packet log is on by default: on the 14 Pro (iOS 27.0.1), with it off a dozen or so attaches all went
+        # "stopped with no stop reason" followed by Resume timed out, while the few with it on all worked (logging
+        # slows LLDB down and seems to dodge a timing problem; the root cause was not found,
+        # docs/reports/ios-device-14pro.md section 7). LLDB_PACKET_LOG=none turns it off, or give it a path
         pkt="${LLDB_PACKET_LOG:-${LOG%.log}-packets.log}"
         [ "$pkt" = none ] && pkt=""
         LLDB_PACKET_LOG="$pkt" xcrun python3 "$ROOT/scripts/ios/lldb_jit_runner.py" "$core" "$pid" > "$LOG" 2>&1 &
         LLDB_PID=$!
         ok=""
         for _ in $(seq 90); do
-            if grep -q '停下：EXC_BREAKPOINT' "$LOG"; then ok=1; break; fi
+            if grep -q 'stopped: EXC_BREAKPOINT' "$LOG"; then ok=1; break; fi
             [ "$(grep -c 'Resume timed out' "$LOG")" -ge 3 ] && break
             kill -0 "$LLDB_PID" 2>/dev/null || break
             sleep 1
         done
         [ -n "$ok" ] && break
-        echo "第 $attempt 次挂载卡住，结束调试器和 App 重来"
+        echo "Attach $attempt got stuck; killing the debugger and the app and starting over"
         kill -9 "$LLDB_PID" 2>/dev/null || true
         LLDB_PID=""
         xcrun devicectl device process signal --device "$PHONE" --pid "$pid" --signal SIGKILL --quiet >/dev/null 2>&1 || true
         sleep 2
     done
-    # 三次都没挂上：App 已经结束，别再等它的运行目录、空等到时限
-    [ -n "$ok" ] || { echo "三次挂载都没等到 QEMU 的 brk，停下" >&2; exit 1; }
+    # None of the three attaches worked: the app has already ended, so do not wait for its run directory until the
+    # time limit
+    [ -n "$ok" ] || { echo "None of three attaches got QEMU's brk; stopping" >&2; exit 1; }
 else
     xcrun devicectl device process launch --device "$PHONE" --terminate-existing --quiet "$BUNDLE" -- "${args[@]}" >/dev/null
 fi
@@ -183,12 +205,13 @@ for _ in $(seq 120); do
     [ -n "$new" ] && { R="$new"; break; }
     sleep 1
 done
-[ -n "$R" ] || { echo "App 没有建运行目录（可能还在导入设备包，或启动失败）" >&2; exit 1; }
-echo "运行目录：$R"
+[ -n "$R" ] || { echo "The app did not create a run directory (it may still be importing a device pack, or it failed to start)" >&2; exit 1; }
+echo "Run directory: $R"
 L="$LOCAL/$R"
 
 if [ "$AUTO" = 1 ]; then
-    # App 自己跑完整个测量；这里只每 3 秒取一次 events.log，等它退出后再取统计、日志和窗口截图
+    # The app runs the whole measurement itself; here we only fetch events.log every 3 seconds, and once it exits,
+    # the stats, logs and window screenshots
     mkdir -p "$L"
     t0=$(date +%s)
     while [ $(($(date +%s) - t0)) -lt "$LIMIT" ]; do
@@ -196,9 +219,10 @@ if [ "$AUTO" = 1 ]; then
         grep -q 'qemu_exit\|boot_failed' "$L/events.log" 2>/dev/null && break
         sleep 3
     done
-    # 到时限还没退出（开不到主屏、autodrive 不会自己退）：让 QEMU 退出，别把手机上的 App 留在跑着的状态
+    # Still running at the time limit (it never got to the home screen, and autodrive does not quit on its own): make
+    # QEMU quit rather than leave the app running on the phone
     if ! grep -q 'qemu_exit\|boot_failed' "$L/events.log" 2>/dev/null; then
-        echo "到了 $LIMIT 秒还没退出，发 quit"
+        echo "Still running after $LIMIT seconds; sending quit"
         control quit
         for _ in 1 2 3 4 5 6 7 8 9 10; do
             sleep 3
@@ -211,19 +235,21 @@ if [ "$AUTO" = 1 ]; then
         fetch "/Documents/logs/$R/$f" "$L/$f"
     done
     fetch /Documents/logs/import.log "$L/import.log"
-    # 测完结束 App（约定：别把手机留在 App 跑着或冻住的状态）
+    # Stop the app after measuring (the rule: do not leave the phone with the app running or frozen)
     for p in $(xcrun devicectl device info processes --device "$PHONE" --json-output /dev/stdout --quiet 2>/dev/null \
         | jq -r '.result.runningProcesses[] | select((.executable // "") | contains("ClassicTouch.app")) | .processIdentifier'); do
         xcrun devicectl device process signal --device "$PHONE" --pid "$p" --signal SIGKILL --quiet >/dev/null 2>&1 || true
-        echo "已结束 App（PID $p）"
+        echo "Stopped the app (PID $p)"
     done
-    # 1.0、2.x 不经过锁屏时 App 只记 home_seen，锁屏就是「未到达」
+    # 1.0 and 2.x do not go through the lock screen; the app then logs only home_seen, and the lock screen is "not
+    # reached"
     lock="$(grep -o 'lock_seen [0-9.]*' "$L/events.log" | awk '{printf "%d", $2}' || true)"
     home="$(grep -o 'home_seen [0-9.]*' "$L/events.log" | awk '{printf "%d", $2}' || true)"
-    echo "锁屏：${lock:-未到达} 秒；主屏：${home:-未到达} 秒"
-    # OPENSETTINGS：点图标到认出设置页、按 Home 到认回主屏（含每秒一次识别的延迟，最多约 1 到 2 秒）
-    awk '$2 == "tap_settings" { tap = $1 } $2 == "settings_seen" && tap { printf "设置：点图标后 %.1f 秒认出设置页\n", $1 - tap }
-         $2 == "home_press" { press = $1 } $2 == "home_back" && press { printf "Home：按下后 %.1f 秒认回主屏\n", $1 - press }' \
+    echo "Lock screen: ${lock:+$lock s}${lock:-not reached}; home screen: ${home:+$home s}${home:-not reached}"
+    # OPENSETTINGS: from the icon tap to recognizing the Settings page, and from pressing Home to recognizing the home
+    # screen again (including the delay of recognizing once a second, at most about 1 to 2 seconds)
+    awk '$2 == "tap_settings" { tap = $1 } $2 == "settings_seen" && tap { printf "Settings: recognized the Settings page %.1f s after the icon tap\n", $1 - tap }
+         $2 == "home_press" { press = $1 } $2 == "home_back" && press { printf "Home: recognized the home screen %.1f s after the press\n", $1 - press }' \
         "$L/events.log" || true
 else
 lock="" home="" seen="" quit_at="" unlocks=0 last_unlock=0
@@ -237,20 +263,20 @@ while [ $(($(date +%s) - t0)) -lt "$LIMIT" ]; do
         text="$("$OCR" "$L/$f" 2>/dev/null | jq -r .text | tr '\n' '|')"
         if [ -z "$lock" ] && grep -Eqi 'slide to unlock|to unl|press home|day, *(january|february|march|april|may|june|july|august|september|october|november|december)' <<<"$text"; then   # iOS 10: "Press home to open" or the date line
             lock=$t
-            echo "锁屏：$t 秒"
+            echo "Lock screen: $t s"
             control unlock
             unlocks=1
             last_unlock=$(date +%s)
         elif [ -n "$lock" ] && [ -z "$home" ] && ! grep -Eqi 'slide to unlock|to unl|press home|day, *(january|february|march|april|may|june|july|august|september|october|november|december)' <<<"$text" \
             && grep -Eq 'Settings|Safari|App Store|Calendar|Photos' <<<"$text"; then
             home=$t
-            echo "主屏：$t 秒"
+            echo "Home screen: $t s"
             quit_at=$(($(date +%s) + IDLE))
         elif [ -z "$lock" ] && [ -z "$home" ] && ! grep -qi 'slide to' <<<"$text" \
             && [ "$(grep -Eo 'Settings|Safari|Calendar|Photos|Stocks|Maps|Mail|Phone|Notes' <<<"$text" | sort -u | wc -l)" -ge 3 ]; then
-            # iPhone OS 1.0、2.x 有时不经过锁屏直接到主屏（同 sim-boot.sh）
+            # iPhone OS 1.0 and 2.x sometimes go straight to the home screen without the lock screen (as in sim-boot.sh)
             home=$t
-            echo "主屏（没经过锁屏）：$t 秒"
+            echo "Home screen (no lock screen): $t s"
             quit_at=$(($(date +%s) + IDLE))
         fi
     done
@@ -275,9 +301,9 @@ SUMMARY="$LOCAL/$R.summary"
 python3 -I "$ROOT/scripts/ios/summarize-run.py" "$L" "${lock:-}" "${home:-}" "$IDLE" > "$SUMMARY"
 {
     echo "settings TBSIZE=${TBSIZE:-256} JITPROTO=${JITPROTO:-universal} JIT_TOUCH=${JIT_TOUCH:-bulk}"
-    echo "iphone_mirroring_app $(pgrep -x 'iPhone Mirroring' >/dev/null && echo 开着 || echo 没开)"
+    echo "iphone_mirroring_app $(pgrep -x 'iPhone Mirroring' >/dev/null && echo open || echo not open)"
     echo "mac_load $MAC_LOAD_START -> $(sysctl -n vm.loadavg)"
-    if [ -n "$LOG" ]; then grep -h '代码区' "$LOG" | sed 's/^/debugger /'; fi
+    if [ -n "$LOG" ]; then grep -h 'code region' "$LOG" | sed 's/^/debugger /'; fi
     echo "stikdebug ${STIK:-0} opensettings ${OPENSETTINGS:-0} usbkbd ${USBKBD:-0}"
     grep -h 'prepared in' "$L/qemu.log" 2>/dev/null | sed 's/^/qemu /' || true
 } >> "$SUMMARY"

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""极简 QMP 客户端，给模拟器里的 App 用（App 带 -qemuargs "-qmp tcp:127.0.0.1:端口,server=on,wait=off"，
-模拟器 App 和 Mac 共用网络）。
+"""Minimal QMP client for the app in the Simulator (the app gets -qemuargs "-qmp tcp:127.0.0.1:PORT,server=on,wait=off";
+the Simulator app shares the Mac's network).
 
-用法：qmp.py 主机:端口 hmp "info registers"
-      qmp.py 主机:端口 qmp query-status
+Usage: qmp.py HOST:PORT hmp "info registers"
+       qmp.py HOST:PORT qmp query-status
 """
 import json
 import socket
@@ -14,7 +14,7 @@ def call(addr, kind, arg):
     host, port = addr.rsplit(":", 1)
     s = socket.create_connection((host, int(port)), timeout=10)
     f = s.makefile("rw")
-    json.loads(f.readline())  # 问候
+    json.loads(f.readline())  # greeting
     f.write(json.dumps({"execute": "qmp_capabilities"}) + "\n")
     f.flush()
     json.loads(f.readline())

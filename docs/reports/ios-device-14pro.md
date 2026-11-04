@@ -1,190 +1,190 @@
-# 把 App 装进 iPhone 14 Pro
+# Putting the app on the iPhone 14 Pro
 
-**最新结论（第 7 节）：** App 装上了、能打开，两个包传进去并导入了。连线 lldb 给 JIT：默认开包日志之后，5 次挂载都是第一下成功；不开时 9 次全部失败，根因没查清。5 次都到了锁屏（9.3.5 128 到 133 秒，7.1.2 78 到 80 秒），但只有 1 次进了主屏，卡在 App 自己的滑动解锁上。7.1.2 锁屏上的「Cannot Use Device」查清是 DeviceOMatic 发的，已经禁掉。App 在包没传完时就去解的问题也修了。第 0 到 6 节是之前的记录。
+**Latest conclusions (section 7):** the app is installed and opens, and both packs were transferred and imported. JIT from tethered lldb: with the packet log on by default, all 5 attaches succeeded on the first attempt; without it, all 9 failed, root cause not found. All 5 runs reached the lock screen (9.3.5 at 128 to 133 seconds, 7.1.2 at 78 to 80 seconds), but only 1 reached the home screen; the others got stuck on the app's own slide to unlock. The "Cannot Use Device" on the 7.1.2 lock screen was traced to DeviceOMatic and is now disabled. The problem of the app unpacking a pack before its transfer finished is also fixed. Sections 0 to 6 are the earlier record.
 
-- 日期：2026-11-04
-- 执行会话：a5-nand。用户原话（决策会话转述）：「现在把app装进iPhone 14 pro」。
-- 手机：iPhone 14 Pro（iPhone15,2，iOS 27.0.1，24A446），数据线连着，devicectl 显示已配对。签名用 Mac 上唯一的 Apple Development 证书（用户自己的付费团队）；把这台手机登记进团队是用户这句话要求的。
-- 不做的：不提交、不推送；不碰 iPhone 18 Pro；不改手机设置；UDID、团队 ID、配对文件不进仓库。
+- Date: 2026-11-04
+- Execution session: a5-nand. The user's words (relayed by the decision session): "Now put the app on the iPhone 14 pro".
+- Phone: iPhone 14 Pro (iPhone15,2, iOS 27.0.1, 24A446), connected by cable, devicectl shows it as paired. Signing uses the only Apple Development certificate on the Mac (the user's own paid team); registering this phone with the team is required by the user's request.
+- Not done: no commit, no push; the iPhone 18 Pro not touched; no phone settings changed; UDIDs, team ID and pairing files stay out of the repository.
 
-## 0. 结论
+## 0. Conclusions
 
-1. **能先做的都编好了**，都用现在这套补丁（四个 iOS 补丁、`a5-n78-skeleton.patch` 18 个文件、`a5-n78-ios-ui.patch`）：
-   - 真机依赖 sysroot（`work/ios/sysroot-iphoneos-arm64`，7 个静态库）；
-   - 真机版 QEMU 和 dylib，JIT、解释器各一份：`libqemu-arm-jit.dylib`（35.9 MB）、`libqemu-arm-interp.dylib`（35.9 MB），各导出 58 个 `qemu_ios_*`，平台 iOS、最低 16.0；
-   - Debug-iphoneos 的 App（`work/ios/DerivedData-tl/Build/Products/Debug-iphoneos/ClassicTouch.app`，就是 `device-install.sh` 默认找的路径），两份 dylib 都嵌进去了，签名校验通过；
-   - 模拟器版 QEMU、dylib、App 也按新补丁重编了。
-2. **模拟器里两个包都正常，黄金状态不用重做**：9.3.5 103 秒锁屏、113 秒主屏；7.1.2 41 秒锁屏、49 秒主屏（上一轮 66 到 104 秒、37 秒）。新 QEMU 和包里盘上的旧前端握手正常（协议 1，名表 ad3b3412，认出 329 槽）。【已核实：两次 `sim-boot.sh` 的摘要和 QEMU 日志】
-3. **卡在签名上，要用户在 Mac 上做一件事（开发者模式打开后重试仍如此，见第 5 节）**：Xcode 里**没有登录任何 Apple 账号**（`xcodebuild` 报 `No Accounts`），所以不能自动把 14 Pro 登记进团队、也不能生成新的描述文件。本机缓存的「iOS Team Provisioning Profile: *」（到 2027-10-18）里登记了 4 台设备，**没有 14 Pro**，用它签的 App 装不进这台手机。需要用户在 Xcode → 设置 → 帐户里登录这个付费团队的 Apple ID，之后我重跑一次带 `-allowProvisioningDeviceRegistration` 的构建，Xcode 会登记手机、重做描述文件。【已核实：`work/ios/xcodebuild-os-14pro.log`；描述文件逐项核对】
-4. **装好之后还要先问的**：这台 Mac 的 `work/ios/` 下**没有 StikDebug 的源码和构建、没有 `idevice-tools`、没有配对文件**（M1 当时放在 `work/ios/stikdebug/`、`work/ios/tools/idevice-tools-0.1.68/`、`work/ios/secrets/`，现在都不在）。`device-install.sh` 和 `device-boot.sh` 的传包、取日志都走 `idevice-tools` 的 AFC。手机上有没有 StikDebug，要等开发者模式打开才看得到。
-5. 开发者模式：决策会话已让用户去开，我没有碰手机设置。
+1. **Everything that could be done first is built**, all with the current patch set (the four iOS patches, `a5-n78-skeleton.patch` with 18 files, `a5-n78-ios-ui.patch`):
+   - the device dependency sysroot (`work/ios/sysroot-iphoneos-arm64`, 7 static libraries);
+   - the device QEMU and dylib, one each for JIT and the interpreter: `libqemu-arm-jit.dylib` (35.9 MB), `libqemu-arm-interp.dylib` (35.9 MB), each exporting 58 `qemu_ios_*` symbols, platform iOS, minimum 16.0;
+   - the Debug-iphoneos app (`work/ios/DerivedData-tl/Build/Products/Debug-iphoneos/ClassicTouch.app`, which is the path `device-install.sh` looks for by default), with both dylibs embedded and the signature verified;
+   - the simulator QEMU, dylib and app were also rebuilt with the new patches.
+2. **Both packs work in the simulator, so the golden state does not need redoing**: 9.3.5 lock screen at 103 seconds, home screen at 113 seconds; 7.1.2 lock screen at 41 seconds, home screen at 49 seconds (last round 66 to 104 seconds and 37 seconds). The new QEMU handshakes normally with the old front end on the packs' disks (protocol 1, name table ad3b3412, 329 slots recognized). **[verified: the summaries and QEMU logs of the two `sim-boot.sh` runs]**
+3. **Stuck on signing; the user needs to do one thing on the Mac (still the case after a retry with Developer Mode on, see section 5)**: Xcode **is not signed in to any Apple account** (`xcodebuild` reports `No Accounts`), so it cannot automatically register the 14 Pro with the team or generate a new provisioning profile. The locally cached "iOS Team Provisioning Profile: *" (valid until 2027-10-18) lists 4 devices, **not including the 14 Pro**, so an app signed with it cannot be installed on this phone. The user needs to sign in with the paid team's Apple ID in Xcode → Settings → Accounts; after that I rerun the build with `-allowProvisioningDeviceRegistration`, and Xcode registers the phone and regenerates the provisioning profile. **[verified: `work/ios/xcodebuild-os-14pro.log`; the provisioning profile checked item by item]**
+4. **What to ask about after installing**: under `work/ios/` this Mac has **no StikDebug source or build, no `idevice-tools`, and no pairing file** (M1 kept them in `work/ios/stikdebug/`, `work/ios/tools/idevice-tools-0.1.68/` and `work/ios/secrets/`; none of them are there now). The pack transfer and log retrieval in `device-install.sh` and `device-boot.sh` all go through the AFC of `idevice-tools`. Whether StikDebug is on the phone can only be seen once Developer Mode is on.
+5. Developer Mode: the decision session has asked the user to turn it on; I did not touch the phone's settings.
 
-## 1. iOS 工作树换补丁
+## 1. Switching patches in the iOS working tree
 
-- `work/ios/qemu-ios` 还是上一轮（a5-app）的旧补丁。`build-qemu.sh` 只认「上游原样」或「打完现在这套补丁」两种状态，所以先把它改过的 21 个文件打包备份到 `work/ios/qemu-ios-oldpatches.tar`，再还原成上游原样（`git checkout` 加删掉补丁新建的 7 个文件），交给 `build-qemu.sh`。
-- 第一次构建（模拟器 JIT）按顺序打上了 `ios-eagl-es2`、`ios-gles-perf`、`ios-host-gles-option`、`ios-txm-jit-protocol`、`a5-n78-skeleton`、`a5-n78-ios-ui` 六个补丁，之后的构建都判定「已打好」。【已核实：`work/ios/build-qemu-sim-jit-a6.log`】
+- `work/ios/qemu-ios` still had the old patches from the previous round (a5-app). `build-qemu.sh` only accepts two states, "pristine upstream" or "current patch set applied", so I first backed up the 21 files it had changed into `work/ios/qemu-ios-oldpatches.tar`, then restored it to pristine upstream (`git checkout` plus deleting the 7 files the patches had created) and handed it to `build-qemu.sh`.
+- The first build (simulator JIT) applied the six patches `ios-eagl-es2`, `ios-gles-perf`, `ios-host-gles-option`, `ios-txm-jit-protocol`, `a5-n78-skeleton` and `a5-n78-ios-ui` in order, and later builds all judged the tree "already applied". **[verified: `work/ios/build-qemu-sim-jit-a6.log`]**
 
-## 2. 编了什么
+## 2. What was built
 
-| 东西 | 命令 | 结果 | 日志 |
+| Item | Command | Result | Log |
 |---|---|---|---|
-| 模拟器版 QEMU（JIT） | `TCG=jit scripts/ios/build-qemu.sh iphonesimulator` | 编好 | `work/ios/build-qemu-sim-jit-a6.log` |
-| 模拟器版 dylib | `TCG=jit scripts/ios/make-dylib.sh iphonesimulator` | 36 MB，58 个导出 | `make-dylib-sim-jit-a6.log` |
-| 模拟器版 App | `xcodebuild … -sdk iphonesimulator -derivedDataPath work/ios/DerivedData-a5` | BUILD SUCCEEDED，嵌入 1 个 dylib | `xcodebuild-sim-a6.log` |
-| 真机依赖 | `scripts/ios/build-deps.sh iphoneos` | 7 个库 | `build-deps-os.log` |
-| 真机版 QEMU（JIT、解释器） | `TCG=jit` 和 `TCG=interp` 各跑 `build-qemu.sh iphoneos` | 都编好 | `build-qemu-os-jit.log`、`build-qemu-os-interp.log` |
-| 真机版 dylib | `TCG=jit` 和 `TCG=interp` 各跑 `make-dylib.sh iphoneos` | 各 35.9 MB，58 个导出 | `make-dylib-os-*.log` |
-| 真机版 App（目标 14 Pro） | `xcodebuild … -destination id=<14 Pro> -allowProvisioningUpdates -allowProvisioningDeviceRegistration` | **失败**：`No Accounts`；描述文件不含这台手机 | `xcodebuild-os-14pro.log` |
-| 真机版 App（通用） | `xcodebuild … -destination generic/platform=iOS` | BUILD SUCCEEDED，嵌入 2 个 dylib，用本机现有的通配描述文件签名 | `xcodebuild-os-generic.log` |
+| Simulator QEMU (JIT) | `TCG=jit scripts/ios/build-qemu.sh iphonesimulator` | Built | `work/ios/build-qemu-sim-jit-a6.log` |
+| Simulator dylib | `TCG=jit scripts/ios/make-dylib.sh iphonesimulator` | 36 MB, 58 exports | `make-dylib-sim-jit-a6.log` |
+| Simulator app | `xcodebuild … -sdk iphonesimulator -derivedDataPath work/ios/DerivedData-a5` | BUILD SUCCEEDED, 1 dylib embedded | `xcodebuild-sim-a6.log` |
+| Device dependencies | `scripts/ios/build-deps.sh iphoneos` | 7 libraries | `build-deps-os.log` |
+| Device QEMU (JIT, interpreter) | With `TCG=jit` and with `TCG=interp`, run `build-qemu.sh iphoneos` once each | Both built | `build-qemu-os-jit.log`, `build-qemu-os-interp.log` |
+| Device dylib | With `TCG=jit` and with `TCG=interp`, run `make-dylib.sh iphoneos` once each | 35.9 MB each, 58 exports | `make-dylib-os-*.log` |
+| Device app (target 14 Pro) | `xcodebuild … -destination id=<14 Pro> -allowProvisioningUpdates -allowProvisioningDeviceRegistration` | **Failed**: `No Accounts`; the provisioning profile does not include this phone | `xcodebuild-os-14pro.log` |
+| Device app (generic) | `xcodebuild … -destination generic/platform=iOS` | BUILD SUCCEEDED, 2 dylibs embedded, signed with the existing local wildcard provisioning profile | `xcodebuild-os-generic.log` |
 
-- 编译源码包是上一轮下好的，这一轮没有下载任何东西。
-- 构建日志里有团队 ID 和手机 UDID，都在 `work/`，不进仓库。14 Pro 的 UDID 存在 `work/ios/phone14-udid`（600，git 忽略）；这台 Mac 上本来没有 `work/ios/phone-udid`，没有动它。
+- The source tarballs for the build were downloaded in the previous round; nothing was downloaded this round.
+- The build logs contain the team ID and the phone's UDID; they are all in `work/` and stay out of the repository. The 14 Pro's UDID is stored in `work/ios/phone14-udid` (600, ignored by git); this Mac never had a `work/ios/phone-udid`, and it was left alone.
 
-## 3. 模拟器验证
+## 3. Simulator check
 
-模拟器「ClassicTouch iPhone 18 Pro」（iOS 27.2），装新 App，用容器里上一轮从包导入的两台设备，`sim-boot.sh` 每次从设备本体（也就是包里的盘和 NAND）冷启动。9.3.5 那次真机版 QEMU 同时在编，CPU 被占了一部分。
+Simulator "ClassicTouch iPhone 18 Pro" (iOS 27.2), with the new app installed, using the two devices imported from packs into the container last round; `sim-boot.sh` cold boots from the device's base image each time (that is, the disk and NAND from the pack). During the 9.3.5 run the device QEMU was being built at the same time and took part of the CPU.
 
-| 运行 | 系统 | 锁屏 | 主屏 | 主屏静止 CPU | 最大占用 |
+| Run | System | Lock screen | Home screen | Idle home screen CPU | Max footprint |
 |---|---|---:|---:|---:|---:|
-| `20261104-205533-n78ap-13G36-jit` | 9.3.5 | 103 秒 | 113 秒 | 107% | 1143 MB |
-| `20261104-205806-n78ap-11D257-jit` | 7.1.2 | 41 秒 | 49 秒 | 47% | 1029 MB |
+| `20261104-205533-n78ap-13G36-jit` | 9.3.5 | 103 s | 113 s | 107% | 1143 MB |
+| `20261104-205806-n78ap-11D257-jit` | 7.1.2 | 41 s | 49 s | 47% | 1029 MB |
 
-- 两次都正常退出（`qemu_exit status=0`），运行目录拷回了 `work/ios/runs/`。
-- 包里盘上的 GL 前端是上一轮编的（没有这一轮的 TLS 槽和宏上下文前多留的 4 个字）。新 QEMU 和它握手正常：`protocol 1, name table ad3b3412 (host: 1, ad3b3412)`、`1035 slots, 329 named`。所以包不用重做。这两处前端改动只在 iOS 10（Darwin 16）上起作用，对 9.3.5 和 7.1.2 本来就影响很小。【已核实：9.3.5 运行目录里的 QEMU 日志】
-- 模拟器已关机。
+- Both exited normally (`qemu_exit status=0`), and the run directories were copied back to `work/ios/runs/`.
+- The GL front end on the packs' disks was built last round (without this round's TLS slot change and the 4 extra words reserved before the macro context). The new QEMU handshakes with it normally: `protocol 1, name table ad3b3412 (host: 1, ad3b3412)`, `1035 slots, 329 named`. So the packs do not need redoing. These two front-end changes only take effect on iOS 10 (Darwin 16) and have little effect on 9.3.5 and 7.1.2 anyway. **[verified: the QEMU log in the 9.3.5 run directory]**
+- The simulator was shut down.
 
-## 4. 等用户之后的步骤
+## 4. Steps once the user has acted
 
-1. **用户在 Xcode 登录团队的 Apple ID**（Xcode → 设置 → 帐户），手机打开开发者模式（打开后手机会重启，要在手机上确认）。
-2. 我重跑真机版构建（目标 14 Pro，`-allowProvisioningUpdates -allowProvisioningDeviceRegistration`），核对新描述文件里有这台手机。
-3. 装 App：`PHONE=$(cat work/ios/phone14-udid) SKIP_UPLOAD=1 SKIP_BOOT=1 scripts/ios/device-install.sh`，或直接 `xcrun devicectl device install app`。第一次打开开发版 App，手机上可能要在「设置 → 通用 → VPN 与设备管理」里信任开发者。
-4. 查 StikDebug：手机上有没有装、版本多少。没有就要重新下源码（GitHub 上 StikDebug 3.2.0，外加 SPM 拉的 CodeEditorView、Rearrange）重编重签。
-5. 传包要先有 `idevice-tools`（M1 用的是 idevice 官方发布页的 `idevice-tools-macos-arm-v0.1.68.zip`，约 5 MB）。也可以不下载，改用 `devicectl device copy to` 传进 App 容器（两个包合计 5.5 GB），但 M1 记过开着 LocalDevVPN 时 devicectl 的文件服务会卡死，脚本也要改。
-6. 生成 StikDebug 要的 RemotePairing 配对文件（经 USB，`idevice-tools remotepairing_lockdown pair`），放 `work/ios/secrets/`。
-7. 查手机剩余空间（两个包 5.5 GB，加 2 GB 解包余量），传 9.3.5 和 7.1.2 两个包，`STIK=1 device-boot.sh` 各开一次计时。
+1. **The user signs in to Xcode with the team's Apple ID** (Xcode → Settings → Accounts), and turns on Developer Mode on the phone (the phone restarts after that, and it has to be confirmed on the phone).
+2. I rerun the device build (target 14 Pro, `-allowProvisioningUpdates -allowProvisioningDeviceRegistration`) and check that the new provisioning profile includes this phone.
+3. Install the app: `PHONE=$(cat work/ios/phone14-udid) SKIP_UPLOAD=1 SKIP_BOOT=1 scripts/ios/device-install.sh`, or directly `xcrun devicectl device install app`. The first time a development app is opened, the phone may require trusting the developer in "Settings → General → VPN & Device Management".
+4. Check StikDebug: whether it is installed on the phone, and which version. If not, the source has to be downloaded again (StikDebug 3.2.0 on GitHub, plus CodeEditorView and Rearrange pulled by SPM), rebuilt and re-signed.
+5. Transferring packs first needs `idevice-tools` (M1 used `idevice-tools-macos-arm-v0.1.68.zip` from idevice's official release page, about 5 MB). It is also possible to skip the download and transfer into the app container with `devicectl device copy to` (the two packs total 5.5 GB), but M1 noted that devicectl's file service hangs while LocalDevVPN is on, and the scripts would need changing too.
+6. Generate the RemotePairing pairing file StikDebug needs (over USB, `idevice-tools remotepairing_lockdown pair`) and put it in `work/ios/secrets/`.
+7. Check the phone's free space (the two packs are 5.5 GB, plus 2 GB of headroom for unpacking), transfer the 9.3.5 and 7.1.2 packs, and boot each once with `STIK=1 device-boot.sh` for timing.
 
-第 1 步要用户做；第 4 到 6 步涉及下载和配对文件，按决策会话的要求先问。
+Step 1 is for the user; steps 4 to 6 involve downloads and pairing files, so, as the decision session asked, I ask first.
 
-## 5. 开发者模式打开之后（同一天，第二次）
+## 5. After Developer Mode was turned on (same day, second round)
 
-决策会话转告：用户已打开 14 Pro 的开发者模式（devicectl 显示 `Developer Mode Status: Enabled`）；手机上没有 StikDebug、没有 ClassicTouch，有 App Store 版 LocalDevVPN 1.3.0。用户定的是「先连线测，以后再说」：只走 Mac 上 lldb 给 JIT，不装 StikDebug、不碰配对文件。
+The decision session relayed: the user has turned on Developer Mode on the 14 Pro (devicectl shows `Developer Mode Status: Enabled`); the phone has no StikDebug and no ClassicTouch, and has the App Store version of LocalDevVPN 1.3.0. The user decided "test tethered first, the rest later": JIT only from lldb on the Mac, no StikDebug install, no pairing files.
 
-- **还是装不上。** 指向 14 Pro 的构建重跑一次，仍报 `No Accounts` 和「描述文件不含这台手机」（`work/ios/xcodebuild-os-14pro-2.log`）。用通用版（本机现有的通配描述文件签名）试装，手机拒绝：`Failed to install embedded profile … 0xe8008012 (This provisioning profile cannot be installed on this device.)`，`ApplicationVerificationFailed`（`work/ios/devicectl-install-14pro.log`）。试装失败对手机没有改动。【已核实】
-- 所以包没传、没导入，连线 JIT 也没开。**唯一的卡点是 Xcode 里没有团队的 Apple 账号**：用户在 Xcode → 设置 → 帐户登录后，我重跑构建，Xcode 会登记这台手机、生成含它的描述文件，就能装。
-- 装上之后还有两件要先问的：
-  - `device-boot.sh` 两种模式（连线 lldb、StikDebug）传文件、取日志都走 `work/ios/tools/idevice-tools-0.1.68` 的 AFC，这台 Mac 上没有。要么下载这个工具（idevice 官方发布页的 `idevice-tools-macos-arm-v0.1.68.zip`，约 5 MB），要么不下载、把脚本里的文件操作改成 `devicectl device copy`，两个包合计 5.5 GB 也走它。
-  - lldb 附加 iOS 27.0.1 的进程时，Xcode 可能要准备这个版本的调试支持（本机只有 iPhone19,2 27.2 的）。要下载就停下来报。
+- **Still cannot install.** Rerunning the build targeting the 14 Pro still reports `No Accounts` and "the provisioning profile does not include this phone" (`work/ios/xcodebuild-os-14pro-2.log`). Trying to install the generic build (signed with the existing local wildcard provisioning profile), the phone refuses: `Failed to install embedded profile … 0xe8008012 (This provisioning profile cannot be installed on this device.)`, `ApplicationVerificationFailed` (`work/ios/devicectl-install-14pro.log`). The failed install attempt changed nothing on the phone. **[verified]**
+- So no pack was transferred or imported, and tethered JIT was not started. **The only blocker is that Xcode has no Apple account for the team**: once the user signs in under Xcode → Settings → Accounts, I rerun the build, Xcode registers this phone and generates a provisioning profile that includes it, and then the app can be installed.
+- After installing there are two more things to ask about first:
+  - Both modes of `device-boot.sh` (tethered lldb, StikDebug) transfer files and fetch logs through the AFC of `work/ios/tools/idevice-tools-0.1.68`, which this Mac does not have. Either download this tool (`idevice-tools-macos-arm-v0.1.68.zip` from idevice's official release page, about 5 MB), or skip the download and change the scripts' file operations to `devicectl device copy`, which the two packs (5.5 GB in total) would also go through.
+  - When lldb attaches to a process on iOS 27.0.1, Xcode may need to prepare debugging support for this version (this Mac only has the one for iPhone19,2 27.2). If a download is needed, stop and report.
 
-## 6. 用户登录 Xcode 之后：装上、导入、连线 JIT 开机（同一天，第三次）
+## 6. After the user signed in to Xcode: installed, imported, tethered JIT boot (same day, third round)
 
-用户在 Xcode 登录了团队的 Apple ID。
+The user signed in to Xcode with the team's Apple ID.
 
-**签名和安装**
-- 指向 14 Pro 重跑构建（`-allowProvisioningUpdates -allowProvisioningDeviceRegistration`）成功，Xcode 把手机登记进团队，新的「iOS Team Provisioning Profile: *」到 2027-11-04，里面有 14 Pro。【已核实：逐项核对嵌入的描述文件】
-- 第一次增量构建换了描述文件、资源和 dylib，却没有重新签 App 本体（日志里没有一条 `CodeSign`），`codesign --verify` 报封存资源被改。删掉产物里的 `ClassicTouch.app` 重编，签名校验通过。
-- `devicectl device install app` 装上，`devicectl device process launch` 打开，首页起来了；手机上没要求另外信任开发者。【已核实：`work/ios/devicectl-install-14pro-2.log`、`devicectl-launch-14pro.log`】
+**Signing and installation**
+- Rerunning the build targeting the 14 Pro (`-allowProvisioningUpdates -allowProvisioningDeviceRegistration`) succeeded; Xcode registered the phone with the team, and the new "iOS Team Provisioning Profile: *" is valid until 2027-11-04 and includes the 14 Pro. **[verified: the embedded provisioning profile checked item by item]**
+- The first incremental build replaced the provisioning profile, resources and dylibs but did not re-sign the app itself (not a single `CodeSign` line in the log), and `codesign --verify` reported modified sealed resources. After deleting `ClassicTouch.app` from the build products and rebuilding, the signature verified.
+- Installed with `devicectl device install app` and opened with `devicectl device process launch`; the home page came up, and the phone did not ask to trust the developer separately. **[verified: `work/ios/devicectl-install-14pro-2.log`, `devicectl-launch-14pro.log`]**
 
-**传包和导入**（没有下载 `idevice-tools`，改用 `devicectl device copy to` 传进 App 的 `Documents/import/`）
-- 9.3.5（2.6 GB）86 秒，7.1.2（2.9 GB）97 秒，约 30 MB/s。devicectl 只报得出总容量（1 TB），读不到剩余空间，所以传之前没有核对空间。
-- 导入：9.3.5 解包 5.5 秒，7.1.2 6.1 秒。`import.log` 第一行是「n78ap-13G36.ctpack 失败：ctpack 提前结束」：传包时 App 已经开着，它在包没传完时就去解；重新打开 App 后解成功。App 应该跳过还在写的文件，或者传的时候先用临时名、传完再改名；这一处没改。【已核实：取回的 `import.log`】
+**Pack transfer and import** (`idevice-tools` was not downloaded; `devicectl device copy to` into the app's `Documents/import/` was used instead)
+- 9.3.5 (2.6 GB) in 86 seconds, 7.1.2 (2.9 GB) in 97 seconds, about 30 MB/s. devicectl only reports the total capacity (1 TB) and cannot read free space, so space was not checked before transferring.
+- Import: 9.3.5 unpacked in 5.5 seconds, 7.1.2 in 6.1 seconds. The first line of `import.log` is "n78ap-13G36.ctpack failed: ctpack ended early": the app was already open during the transfer and tried to unpack the pack before the transfer finished; after reopening the app, unpacking succeeded. The app should skip files that are still being written, or the transfer should use a temporary name and rename when done; this was not changed here. **[verified: the retrieved `import.log`]**
 
-**连线 JIT 开机**（Mac 上 `lldb_jit_runner.py` 经 USB 附加，应答 QEMU 准备代码区的 `brk #0xf00d`，256 MB 逐页写，然后脱离；App 用 `-autodrive YES -idle 20` 自己认锁屏、解锁、待机后退出）
-- `device-boot.sh` 两种模式的文件操作都走 `idevice-tools`，所以写了一个会话临时目录里的变体 `devboot14.sh`：挂载部分照抄，文件操作改成 `devicectl device info files` 和 `device copy from`，不进仓库。
-- **9.3.5 第一次调用（`boot-13G36-1.log`）三次挂载都失败**：附加上了，但停下时没有线程带停止原因，每次「继续」都报 `Resume timed out`，连续 3 次后放弃，QEMU 一直没走到 `brk`。紧接着第二次调用（带 `LLDB_PACKET_LOG`）第一次挂载就成功；7.1.2 也是第一次就成功。失败的原因没查清。`device-boot.sh` 注释里记过大约每 4 到 5 次挂载有一次这样，这次是 5 次里 3 次。包日志在会话临时目录。
-- 每次脚本里 `device select <CoreDevice 标识>` 都报失败、但附加照样成功。单独跑 lldb 时 `device select` 是成功的，lldb 的设备表里只有 14 Pro 是连着的（18 Pro 显示断开），所以附加的是 14 Pro。【已核实：`xcrun lldb` 的 `device list`】
-- Xcode 和 lldb 都没有要求下载 27.0.1 的设备符号，没弹个性化开发者磁盘映像的提示；lldb 只读模块的段信息（脚本里的 `memory-module-load-level minimal`）。
+**Tethered JIT boot** (on the Mac, `lldb_jit_runner.py` attaches over USB, answers the `brk #0xf00d` with which QEMU prepares the code buffer, writes the 256 MB page by page, then detaches; the app uses `-autodrive YES -idle 20` to recognize the lock screen, unlock, idle and exit on its own)
+- File operations in both modes of `device-boot.sh` go through `idevice-tools`, so I wrote a variant `devboot14.sh` in the session's temporary directory: the attach part copied as is, the file operations changed to `devicectl device info files` and `device copy from`; it is not in the repository.
+- **In the first 9.3.5 invocation (`boot-13G36-1.log`) all three attach attempts failed**: lldb attached, but when stopped no thread had a stop reason, every "continue" reported `Resume timed out`, it gave up after 3 in a row, and QEMU never reached the `brk`. The second invocation right after it (with `LLDB_PACKET_LOG`) attached on the first attempt; 7.1.2 also succeeded on the first attempt. The cause of the failures was not found. A comment in `device-boot.sh` had noted this happening about once every 4 to 5 attaches; this time it was 3 out of 5. The packet logs are in the session's temporary directory.
+- Every time, `device select <CoreDevice identifier>` in the script reported failure, but attaching still succeeded. When lldb is run on its own, `device select` succeeds, and in lldb's device list only the 14 Pro is connected (the 18 Pro shows as disconnected), so it was the 14 Pro that was attached to. **[verified: `device list` in `xcrun lldb`]**
+- Neither Xcode nor lldb asked to download device symbols for 27.0.1, and there was no prompt about a personalized developer disk image; lldb only reads the modules' segment information (`memory-module-load-level minimal` in the script).
 
-| 运行（`work/ios/runs/device14/`） | 系统 | 准备代码区 | 第一帧 | 锁屏 | 主屏 | 解锁次数 | 主屏静止 CPU | 最大占用 | 最低可用内存 |
+| Run (`work/ios/runs/device14/`) | System | Code buffer prepared | First frame | Lock screen | Home screen | Unlock attempts | Idle home screen CPU | Max footprint | Min available memory |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| `20261104-211018-n78ap-13G36-jit` | 9.3.5 | 44.7 秒 | 45.5 秒 | 123 秒 | 141 秒 | 2 | 104% | 1204 MB | 1868 MB |
-| `20261104-211336-n78ap-11D257-jit` | 7.1.2 | 40.3 秒 | 41.0 秒 | 82 秒 | 142 秒 | 5 | 43% | 1096 MB | 1976 MB |
+| `20261104-211018-n78ap-13G36-jit` | 9.3.5 | 44.7 s | 45.5 s | 123 s | 141 s | 2 | 104% | 1204 MB | 1868 MB |
+| `20261104-211336-n78ap-11D257-jit` | 7.1.2 | 40.3 s | 41.0 s | 82 s | 142 s | 5 | 43% | 1096 MB | 1976 MB |
 
-- 时间从 App 调 `qemu_ios_main` 起算，前 40 多秒是 lldb 隔着 USB 逐页写 256 MB 代码区（StikDebug 在 18 Pro 上本机做同样的事是 0.7 到 0.85 秒，M1 第三阶段）。扣掉这一段，9.3.5 约 78 秒到锁屏，7.1.2 约 41 秒。两次都正常退出（`auto_quit`、`qemu_exit status=0`）。
-- 7.1.2 锁屏上挂着一条「Cannot Use Device：QEMU USB HARDDRIVE: The connected device is not supported.」（DeviceOMatic 把 USB 根盘当外接设备，10.3.4 在改盘时禁掉了，7.1.2 的包没禁），而且和大时钟叠在一起，解锁试了 5 次才进主屏；模拟器里那次一次就进了。原因没细查。
-- 截图（都是客体画面，没有个人信息）：
-  - 9.3.5：`docs/reports/img/ios14pro-935-lock.png`（第 123 秒）、`ios14pro-935-home.png`（第 145 秒）、`ios14pro-935-window.png`（第 155 秒，App 窗口）；
-  - 7.1.2：`ios14pro-712-lock.png`（第 110 秒，带那条通知）、`ios14pro-712-home.png`（第 149 秒）。
-- 收尾时手机上还有一个 ClassicTouch 进程（PID 729，比脚本结束的那个新，来历没查），已结束。Mac 上没有残留的调试器或 devicectl。
+- Times are counted from when the app calls `qemu_ios_main`; the first 40-odd seconds are lldb writing the 256 MB code buffer page by page over USB (StikDebug does the same thing locally on the 18 Pro in 0.7 to 0.85 seconds, M1 stage 3). Without that part, 9.3.5 reaches the lock screen in about 78 seconds and 7.1.2 in about 41 seconds. Both exited normally (`auto_quit`, `qemu_exit status=0`).
+- The 7.1.2 lock screen carried a "Cannot Use Device: QEMU USB HARDDRIVE: The connected device is not supported." notification (DeviceOMatic treats the USB root disk as an external device; for 10.3.4 it is disabled in the disk fix-up, but not in the 7.1.2 pack), overlapping the big clock, and unlocking took 5 tries to reach the home screen; in the simulator it took one. The reason was not looked into closely.
+- Screenshots (all guest frames, no personal information):
+  - 9.3.5: `docs/reports/img/ios14pro-935-lock.png` (at 123 seconds), `ios14pro-935-home.png` (at 145 seconds), `ios14pro-935-window.png` (at 155 seconds, the app window);
+  - 7.1.2: `ios14pro-712-lock.png` (at 110 seconds, with that notification), `ios14pro-712-home.png` (at 149 seconds).
+- At wrap-up there was still a ClassicTouch process on the phone (PID 729, newer than the one the script ended; where it came from was not investigated); it was ended. No debugger or devicectl was left running on the Mac.
 
-**还没做的**：没测解释器；没装 StikDebug（用户定的「先连线测，以后再说」）；手机剩余空间没核对；传包和开机的临时脚本没进仓库。
+**Not done yet**: the interpreter was not tested; StikDebug was not installed (the user decided "test tethered first, the rest later"); the phone's free space was not checked; the temporary scripts for the pack transfer and boot are not in the repository.
 
-## 7. 第四次：脚本不靠 idevice-tools、导入修复、挂载统计、7.1.2 的通知
+## 7. Fourth round: scripts without idevice-tools, import fix, attach statistics, the 7.1.2 notification
 
-用户说「继续做」。这一轮收拾第 6 节暴露的问题，没有下载东西，也没有碰 18 Pro。
+The user said "keep going". This round cleans up the problems section 6 exposed; nothing was downloaded, and the 18 Pro was not touched.
 
-### 7.1 脚本没有 idevice-tools 时改走 devicectl
+### 7.1 Scripts use devicectl when idevice-tools is missing
 
-- 新文件 `scripts/ios/devfiles.sh`：App 容器（Documents）里的文件操作，提供列目录、取文件、放文件三个函数，有两种后端。
-  - 有 `work/ios/tools/idevice-tools-0.1.68` 时照旧走 AFC；
-  - 没有时（或设 `FILES=devicectl`）走 `devicectl device info files`、`copy from`、`copy to`。`copy to` 会自动建目录。
-- `device-boot.sh`、`device-install.sh` 改用这三个函数。AFC 那条路只是换成共用函数，逻辑没变，但这台 Mac 上没有工具，没法实测。`devicectl` 读不到剩余空间（`device info details` 只有总容量），走它时 `device-install.sh` 只提示一句、不检查空间。
-- `device-app-flow.sh` 没改，还是只能走 AFC。
-- 实测：`device-install.sh`（走 `devicectl`）传新的 7.1.2 包 82 秒，App 解包 6.3 秒，整个 96 秒。【已核实：`work/ios/runs/device/install-20261104-221242`】
-- `devicectl` 没有删除命令。试验时在 App 的 `Documents/probe-dir/` 留下两个小文件（17 字节和 6 字节；后一个本来是 2.5 GB 的试验文件，用小文件覆盖掉了），不影响 App。
+- New file `scripts/ios/devfiles.sh`: file operations in the app container (Documents), providing three functions (list a directory, fetch a file, put a file), with two backends.
+  - With `work/ios/tools/idevice-tools-0.1.68` present, AFC as before;
+  - Without it (or with `FILES=devicectl`), `devicectl device info files`, `copy from` and `copy to`. `copy to` creates directories automatically.
+- `device-boot.sh` and `device-install.sh` now use these three functions. The AFC path only switched to the shared functions and its logic is unchanged, but this Mac does not have the tool, so it could not be tested. `devicectl` cannot read free space (`device info details` only has the total capacity), so on that path `device-install.sh` only prints a note and does not check space.
+- `device-app-flow.sh` was not changed and still only works over AFC.
+- Measured: `device-install.sh` (over `devicectl`) transferred the new 7.1.2 pack in 82 seconds and the app unpacked it in 6.3 seconds, 96 seconds in all. **[verified: `work/ios/runs/device/install-20261104-221242`]**
+- `devicectl` has no delete command. The experiments left two small files in the app's `Documents/probe-dir/` (17 bytes and 6 bytes; the second was originally a 2.5 GB test file, overwritten with a small one); they do not affect the app.
 
-### 7.2 App 在包没传完时就去解（已修）
+### 7.2 The app unpacked a pack before its transfer finished (fixed)
 
-- 用 `devicectl` 传一个 2.5 GB 的文件，传的过程中轮询它在手机上的大小（`work/ios/runs/device14/copy-size-probe.txt`），过程分三段：
-  - 先建一个 0 字节的文件，停约 5 秒才开始写；
-  - 之后每秒涨 40 MB 左右，修改时间跟着变；
-  - 写完再把修改时间改回 Mac 上原文件的时间。
-- App 原来的判断是「修改时间 3 秒没变就算拷完」，开头那 5 秒正好满足，就拿空文件去解，报「ctpack 提前结束」。解失败后，要等文件的大小或修改时间变了才会重试，可文件长大不触发目录事件，也就没人再去扫，只好等下次打开 App。
-- 修法（`app/ClassicTouch/ImportManager.swift`）：
-  - 0 字节的包不解；
-  - 每个包记下大小从什么时候起没再变，大小和修改时间都 3 秒没变才解；
-  - 目录里还有解失败的包时，每 3 秒再扫一次。
-- 验证：先把 `import/` 清空，App 开着时传 7.1.2 的包（82 秒），一次就解成功（5.9 秒），没有失败那一行。【已核实：取回的 `import-4.log`】第一次验证没测到这条路：上一轮失败留下的完整包还在 `import/`，`devicectl` 看到同样的文件 1 秒就跳过了。
+- Transferring a 2.5 GB file with `devicectl` while polling its size on the phone (`work/ios/runs/device14/copy-size-probe.txt`) shows three phases:
+  - it first creates a 0-byte file and waits about 5 seconds before writing;
+  - then it grows by about 40 MB per second, with the modification time changing along with it;
+  - when done, it sets the modification time back to that of the original file on the Mac.
+- The app's old rule was "if the modification time has not changed for 3 seconds, the copy is done"; those first 5 seconds met it exactly, so it unpacked an empty file and reported "ctpack ended early". After an unpack failure it only retried once the file's size or modification time changed, but a growing file does not trigger a directory event, so nothing scanned again, and it had to wait for the next time the app was opened.
+- Fix (`app/ClassicTouch/ImportManager.swift`):
+  - 0-byte packs are not unpacked;
+  - for each pack it records since when the size has stopped changing, and unpacks only when both the size and the modification time have not changed for 3 seconds;
+  - while the directory still has packs that failed to unpack, it rescans every 3 seconds.
+- Check: with `import/` emptied first, the 7.1.2 pack was transferred while the app was open (82 seconds) and unpacked successfully on the first try (5.9 seconds), with no failure line. **[verified: the retrieved `import-4.log`]** The first check did not exercise this path: the complete pack left by the failure in the previous round was still in `import/`, and `devicectl` saw the same file and skipped it in 1 second.
 
-### 7.3 连线 lldb 的挂载：开着包日志才稳定
+### 7.3 Tethered lldb attach: reliable only with the packet log on
 
-- **现象**：附加成功，但停下时没有线程带停止原因，接着每次「继续」都是 `Resume timed out`，QEMU 走不到准备 JIT 的 `brk`。
-- **按次数统计**：
-  - 不开包日志：3 次调用、9 次挂载全部这样失败（第 6 节一次、仓库脚本两次）；
-  - 开着包日志（`LLDB_PACKET_LOG`）：8 次调用都是第一下就挂上。
-  - 【推测】记日志拖慢了 LLDB，躲开了一处时序问题；根因没查清。
-  - 成功那次的包日志：附加后进程连收几次 SIGSTOP（`T11`），LLDB 自己发 `c` 继续，之后才是 QEMU 的 SIGUSR2 和 `brk`。中间有一行 `failed to get mutex, not sending packet 'jThreadsInfo'`。
-- **处理**：`device-boot.sh` 连线 JIT 时默认开包日志，写在 lldb 日志旁边（`lldb-*-packets.log`，一次约 9000 行）；`LLDB_PACKET_LOG=none` 可以关掉。中途试过把「没有停止原因」之后的等待从 0.5 秒改成 3 秒，没测到就撤回了（那三次被下面的锁屏检查挡住，没有附加）。
-- **锁屏**：
-  - 中途手机自动锁屏时，`device select` 报「Device needs to be unlocked.」。
-  - runner 原来的日志看不到这句，而且选设备失败后照样附加。现在 18 Pro 也连着，附加到别的手机上是有风险的。
-  - 改法（`scripts/ios/lldb_jit_runner.py`）：把报错原文打出来；遇到「需要解锁」每 2 秒重试，最多 2 分钟；其他错误就不附加；报错没有文字的当作选上了（14 Pro 上一直是这样，附加正常）。
-  - `device-boot.sh` 开机前也先用 `devicectl device info lockState` 查一次，锁着就提示并等最多 2 分钟。
-  - 不过前面 9 次失败时手机并没有锁（报错是空的），所以锁屏不是那 9 次失败的原因。
-- `device-boot.sh` 原来三次都挂不上时不退出，还会空等到时限（600 秒），现在直接退出。
-- **认锁屏的方式**：`device-boot.sh` 原来在 Mac 上每秒取一张客体截图做 OCR，走 `devicectl` 时一个文件要一秒左右，400 秒只取回 37 个文件，锁屏一直没认出来。
-  - 现在 StikDebug 模式和文件走 `devicectl` 时默认 `AUTODRIVE=1`：App 自己认锁屏、解锁、待机后退出，截图 5 秒一张，Mac 只轮询 `events.log`。
+- **Behavior**: attaching succeeds, but when stopped no thread has a stop reason, and every following "continue" gives `Resume timed out`; QEMU never reaches the `brk` that prepares JIT.
+- **Counts**:
+  - Without the packet log: 3 invocations, and all 9 attach attempts failed this way (one invocation in section 6, two with the repository script);
+  - With the packet log (`LLDB_PACKET_LOG`): all 8 invocations attached on the first attempt.
+  - **[inferred]** Logging slows LLDB down and sidesteps a timing problem; root cause not found.
+  - The packet log of a successful run: after attaching, the process receives several SIGSTOPs in a row (`T11`), LLDB itself sends `c` to continue, and only then come QEMU's SIGUSR2 and the `brk`. In between there is a line `failed to get mutex, not sending packet 'jThreadsInfo'`.
+- **What was done**: `device-boot.sh` turns the packet log on by default for tethered JIT, written next to the lldb log (`lldb-*-packets.log`, about 9000 lines each time); `LLDB_PACKET_LOG=none` turns it off. Along the way I tried changing the wait after "no stop reason" from 0.5 seconds to 3 seconds; it never got tested, so it was reverted (those three runs were stopped by the phone lock check below and never attached).
+- **Phone lock**:
+  - When the phone auto-locked midway, `device select` reported "Device needs to be unlocked."
+  - The runner's old log did not show this message, and it attached anyway after device selection failed. Now that the 18 Pro is also connected, attaching to the other phone is a real risk.
+  - Change (`scripts/ios/lldb_jit_runner.py`): print the error text as is; on "needs to be unlocked" retry every 2 seconds for up to 2 minutes; on other errors do not attach; an error with no text counts as selected (this is always the case on the 14 Pro, and attaching works).
+  - `device-boot.sh` also checks once with `devicectl device info lockState` before booting; if the phone is locked, it says so and waits up to 2 minutes.
+  - However, the phone was not locked during the 9 earlier failures (the error was empty), so the lock was not the cause of those 9 failures.
+- `device-boot.sh` used to not exit when all three attach attempts failed, and it would wait idly until the time limit (600 seconds); now it exits right away.
+- **How the lock screen is recognized**: `device-boot.sh` used to fetch one guest screenshot per second on the Mac for OCR; over `devicectl` one file takes about a second, so only 37 files came back in 400 seconds and the lock screen was never recognized.
+  - Now `AUTODRIVE=1` is the default in StikDebug mode and when files go over `devicectl`: the app itself recognizes the lock screen, unlocks, idles and exits, taking a screenshot every 5 seconds, and the Mac only polls `events.log`.
 
-### 7.4 统计（14 Pro，仓库脚本，连线 JIT，默认开包日志）
+### 7.4 Statistics (14 Pro, repository scripts, tethered JIT, packet log on by default)
 
-| 运行（`work/ios/runs/device/`） | 系统 | 挂载 | 准备代码区 | 锁屏 | 主屏 | 自动解锁次数 |
+| Run (`work/ios/runs/device/`) | System | Attach | Code buffer prepared | Lock screen | Home screen | Auto-unlock attempts |
 |---|---|---|---:|---:|---:|---:|
-| `20261104-215054-n78ap-13G36-jit` | 9.3.5 | 第 1 下 | 42.7 秒 | 128 秒 | 187 秒 | 5 |
-| `20261104-215443-n78ap-13G36-jit` | 9.3.5 | 第 1 下 | 41.1 秒 | 133 秒 | 没到 | 12（全失败） |
-| `20261104-220158-n78ap-13G36-jit` | 9.3.5 | 第 1 下 | 40.8 秒 | 131 秒 | 没到 | 12（全失败） |
-| `20261104-221426-n78ap-11D257-jit` | 7.1.2（新包） | 第 1 下 | 40.6 秒 | 80 秒 | 没到 | 12（全失败） |
-| `20261104-222137-n78ap-11D257-jit` | 7.1.2（新包） | 第 1 下 | 40.6 秒 | 78 秒 | 没到 | 12（全失败） |
+| `20261104-215054-n78ap-13G36-jit` | 9.3.5 | 1st attempt | 42.7 s | 128 s | 187 s | 5 |
+| `20261104-215443-n78ap-13G36-jit` | 9.3.5 | 1st attempt | 41.1 s | 133 s | Not reached | 12 (all failed) |
+| `20261104-220158-n78ap-13G36-jit` | 9.3.5 | 1st attempt | 40.8 s | 131 s | Not reached | 12 (all failed) |
+| `20261104-221426-n78ap-11D257-jit` | 7.1.2 (new pack) | 1st attempt | 40.6 s | 80 s | Not reached | 12 (all failed) |
+| `20261104-222137-n78ap-11D257-jit` | 7.1.2 (new pack) | 1st attempt | 40.6 s | 78 s | Not reached | 12 (all failed) |
 
-- **挂载 5 次里 5 次第一下成功，锁屏 5 次里 5 次**；**主屏 5 次里只有 1 次**。
-- 卡在 App 自己的解锁：按 Home，5 秒后从屏幕宽度的 18% 处滑到 92%（纵向 90% 处，600 毫秒分 20 步）。失败的几次，客体画面一直停在锁屏，时钟照走，滑动像是没被收到。
-  - 第 6 节那两次分别用 2 次和 5 次解开，模拟器里 1 到 3 次。
-  - QEMU 和串口日志里没有触摸相关的报错。
-  - 原因没查。【推测】手机上客体跑得慢（主屏静止就占满一个核），合成的滑动太快没被认成滑动；也可能和 A5 触摸纵向偏约 100 像素有关（a5-app.md 2.1）。这是下一步。
+- **5 of 5 attaches succeeded on the first attempt, 5 of 5 reached the lock screen**; **only 1 of 5 reached the home screen**.
+- Stuck on the app's own unlock: press Home, then 5 seconds later swipe from 18% to 92% of the screen width (at 90% of the height, 600 milliseconds in 20 steps). In the failed runs the guest screen stayed on the lock screen with the clock still running, as if the swipe was never received.
+  - The two runs in section 6 unlocked after 2 and 5 tries respectively; in the simulator it takes 1 to 3.
+  - No touch-related errors in the QEMU and serial logs.
+  - Cause not investigated. **[inferred]** The guest runs slowly on the phone (the idle home screen takes a full core), so the synthetic swipe is too fast to be recognized as a swipe; it may also be related to the A5's vertical touch offset of about 100 pixels (a5-app.md 2.1). This is the next step.
 
-### 7.5 7.1.2 锁屏上的「Cannot Use Device」（已修）
+### 7.5 "Cannot Use Device" on the 7.1.2 lock screen (fixed)
 
-- 文字出自 DeviceOMatic（`DeviceOMatic.app` 的 `UNSUPPORTED_FAILURE_TITLE`/`BODY`），不是 a5-step1.md 3.15 节写的 MobileStorageMounter（已在原处补了更正）。它的 launchd 配置在可移动的 `IOUSBDevice` 接上时拉起它，正好是我们挂根用的 USB 盘。9.3.5 的锁屏上没有这条。
-- `tools/a5/n78_diskfix.sh` 的 11D257 分支：在数据卷 `db/launchd.db/com.apple.launchd/overrides.plist` 里写入 `com.apple.device-o-matic` 的 `Disabled = true`。FirmwareKit 的种子里这个文件已经存在（0 字节，属 root），写进已有文件，属主不变。`build_nand.set_owner` 核对过，不用改。
-- 7.1.2 包用的黄金盘（`work/ios/devices/n78ap-11D257/disk.img`）只做了这一步（原盘克隆留在 `work/ios/devices/n78ap-11D257-disk-before-dom.img`），重新打包成 `work/ios/packs/n78ap-11D257.ctpack`（旧包留作 `n78ap-11D257-before-dom.ctpack.old`）。
-- 验证：
-  - Mac 上用改过的黄金盘开机（`work/a5/runs/dom712g`），38 到 54 秒都是锁屏，没有这条通知，没有 panic；
-  - 手机上新包两次开机共 105 张截图，OCR 一次都没认出这条通知。【已核实】
-- 有一处没查：7.1.2 的锁屏有时没画出时钟和日期（这次 Mac 上那张、上一轮模拟器那张都是），和这次的改动无关。
+- The text comes from DeviceOMatic (`UNSUPPORTED_FAILURE_TITLE`/`BODY` in `DeviceOMatic.app`), not from MobileStorageMounter as a5-step1.md section 3.15 says (a correction has been added there). Its launchd configuration launches it when a removable `IOUSBDevice` is attached, which is exactly the USB disk we mount root from. The 9.3.5 lock screen does not have this notification.
+- The 11D257 branch of `tools/a5/n78_diskfix.sh`: writes `Disabled = true` for `com.apple.device-o-matic` into `db/launchd.db/com.apple.launchd/overrides.plist` on the data volume. This file already exists in FirmwareKit's seed (0 bytes, owned by root); writing into the existing file keeps its owner. `build_nand.set_owner` was checked and needs no change.
+- The golden disk the 7.1.2 pack uses (`work/ios/devices/n78ap-11D257/disk.img`) got only this step (a clone of the original disk is kept at `work/ios/devices/n78ap-11D257-disk-before-dom.img`), and was repacked into `work/ios/packs/n78ap-11D257.ctpack` (the old pack kept as `n78ap-11D257-before-dom.ctpack.old`).
+- Checks:
+  - booting the modified golden disk on the Mac (`work/a5/runs/dom712g`): lock screen throughout 38 to 54 seconds, no such notification, no panic;
+  - on the phone, 105 screenshots from two boots of the new pack, and OCR never found this notification. **[verified]**
+- One thing not investigated: the 7.1.2 lock screen sometimes does not draw the clock and date (both this round's Mac screenshot and last round's simulator screenshot show this); it is unrelated to this change.
 
-### 7.6 文档、收尾
+### 7.6 Documents and wrap-up
 
-- 改了：
-  - `scripts/ios/devfiles.sh`（新文件）、`device-boot.sh`、`device-install.sh`、`lldb_jit_runner.py`；
-  - `app/ClassicTouch/ImportManager.swift`；
-  - `tools/a5/n78_diskfix.sh`、`tools/a5/README.md`；
-  - `docs/reports/a5-step1.md` 补了一句更正。
-- 结束时手机上 App 已结束，Mac 上没有残留的调试器、脚本。没有提交。
+- Changed:
+  - `scripts/ios/devfiles.sh` (new file), `device-boot.sh`, `device-install.sh`, `lldb_jit_runner.py`;
+  - `app/ClassicTouch/ImportManager.swift`;
+  - `tools/a5/n78_diskfix.sh`, `tools/a5/README.md`;
+  - `docs/reports/a5-step1.md` got a one-sentence correction.
+- At the end the app on the phone had been ended, and no debugger or script was left on the Mac. Not committed.

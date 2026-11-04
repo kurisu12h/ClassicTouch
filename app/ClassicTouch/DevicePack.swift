@@ -1,19 +1,20 @@
-// 解开 scripts/ios/pack-device.py 打的 .ctpack（格式见那个脚本）。文件按区段 pwrite，空洞不写，所以解出来的 NAND
-// 还是稀疏文件。什么时候解、解到哪、进度怎么报由 ImportManager 管：先解到暂存目录，完整解完才并进 Documents，
-// 中途失败或 App 被杀都不会留下半台设备。
+// Unpacks the .ctpack made by scripts/ios/pack-device.py (the format is described in that script). Files are written
+// extent by extent with pwrite and holes are skipped, so the unpacked NAND stays sparse. ImportManager decides when to
+// unpack, where to and how to report progress: it unpacks into a staging folder and merges into Documents only after a
+// complete unpack, so a failure or a killed app never leaves half a device behind.
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 import Foundation
 
 enum DevicePack {
-    /// 解到 root 下（路径相对 root），progress 收到已读的字节数。返回包里的设备 id（devices/<id>/ 这一级）。
-    /// 不删包。
+    /// Unpacks under root (paths are relative to root); progress gets the number of bytes read. Returns the device ids
+    /// in the pack (the devices/<id>/ level). Does not delete the pack.
     static func unpack(_ pack: URL, into root: URL, progress: @escaping (UInt64) -> Void) throws -> [String] {
-        guard let input = InputStream(url: pack) else { throw EngineError("打不开 \(pack.lastPathComponent)") }
+        guard let input = InputStream(url: pack) else { throw EngineError("Cannot open \(pack.lastPathComponent)") }
         input.open()
         defer { input.close() }
         var reader = Reader(input: input, progress: progress)
-        guard try reader.bytes(8) == Array("CTPACK1\n".utf8) else { throw EngineError("\(pack.lastPathComponent) 不是 ctpack") }
+        guard try reader.bytes(8) == Array("CTPACK1\n".utf8) else { throw EngineError("\(pack.lastPathComponent) is not a ctpack") }
         let rootPath = root.standardizedFileURL.path
         var devices: [String] = []
         while true {
@@ -21,10 +22,10 @@ enum DevicePack {
             if type == 0 { break }
             let pathBytes = try reader.bytes(Int(try reader.u16()))
             guard let rel = String(bytes: pathBytes, encoding: .utf8), !rel.contains("..") else {
-                throw EngineError("包里的路径不对")
+                throw EngineError("Bad path in the pack")
             }
             let target = root.appendingPathComponent(rel)
-            guard target.standardizedFileURL.path.hasPrefix(rootPath) else { throw EngineError("包里的路径越界：\(rel)") }
+            guard target.standardizedFileURL.path.hasPrefix(rootPath) else { throw EngineError("Path in the pack escapes its folder: \(rel)") }
             let parts = rel.split(separator: "/")
             if parts.count >= 2, parts[0] == "devices", !devices.contains(String(parts[1])) { devices.append(String(parts[1])) }
             let mode = mode_t(try reader.u32())
@@ -37,16 +38,16 @@ enum DevicePack {
             let count = try reader.u32()
             try? FileManager.default.removeItem(at: target)
             let fd = open(target.path, O_WRONLY | O_CREAT | O_TRUNC, mode)
-            guard fd >= 0 else { throw EngineError("写不了 \(rel)：errno \(errno)") }
+            guard fd >= 0 else { throw EngineError("Cannot write \(rel): errno \(errno)") }
             defer { close(fd) }
-            guard ftruncate(fd, off_t(size)) == 0 else { throw EngineError("ftruncate \(rel)：errno \(errno)") }
+            guard ftruncate(fd, off_t(size)) == 0 else { throw EngineError("ftruncate \(rel): errno \(errno)") }
             for _ in 0..<count {
                 var offset = try reader.u64()
                 var left = try reader.u64()
                 while left > 0 {
                     let chunk = try reader.bytes(Int(min(left, 8 << 20)))
                     let written = chunk.withUnsafeBytes { pwrite(fd, $0.baseAddress, chunk.count, off_t(offset)) }
-                    guard written == chunk.count else { throw EngineError("写 \(rel) 失败：errno \(errno)") }
+                    guard written == chunk.count else { throw EngineError("Writing \(rel) failed: errno \(errno)") }
                     offset += UInt64(chunk.count)
                     left -= UInt64(chunk.count)
                 }
@@ -55,11 +56,11 @@ enum DevicePack {
         return devices
     }
 
-    /// 把暂存目录里的文件逐个挪进 documents 的同一位置（同名的替换），目录里原有的其他文件（比如设备的 state/）不动。
-    /// 同一个卷上挪动只是改名，几秒钟的事。
+    /// Moves the staged files one by one to the same place in documents (replacing files of the same name); other files
+    /// already in those folders (such as a device's state/) stay. A move on the same volume is only a rename, a matter of seconds.
     static func merge(_ staging: URL, into documents: URL) throws {
         let fm = FileManager.default
-        // 先列全再挪：边读目录边把文件挪走，readdir 可能漏项
+        // List everything first, then move: moving files out while reading the directory can make readdir skip entries
         for rel in try fm.subpathsOfDirectory(atPath: staging.path) {
             let source = staging.appendingPathComponent(rel)
             let target = documents.appendingPathComponent(rel)
@@ -68,7 +69,7 @@ enum DevicePack {
             if isDirectory.boolValue {
                 try fm.createDirectory(at: target, withIntermediateDirectories: true)
             } else {
-                // 宿主克隆进来的设备目录可能是只读的（M0 的设备目录是 0555），重新导入同一台时要先能写
+                // A device folder cloned in from the host may be read-only (M0's device folders are 0555); re-importing the same device has to be able to write first
                 let parent = target.deletingLastPathComponent().path
                 if !fm.isWritableFile(atPath: parent) { try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: parent) }
                 try? fm.removeItem(at: target)
@@ -94,7 +95,7 @@ enum DevicePack {
             var got = 0
             while got < n {
                 let r = out.withUnsafeMutableBufferPointer { input.read($0.baseAddress! + got, maxLength: n - got) }
-                guard r > 0 else { throw EngineError("ctpack 提前结束") }
+                guard r > 0 else { throw EngineError("The ctpack ended early") }
                 got += r
             }
             read += UInt64(n)

@@ -1,9 +1,10 @@
-// 首页（LibraryViewController）的几种行，「年表」风格（Theme.swift）：
-//   表头：App 名、设置和导入按钮、「选择系统」、年份范围、统计、一道粗黑线
-//   系统行：左边大号年份，中间机型、系统版本、构建号、占用，最右线描机身；正在运行的那台年份变红、左边一道红条、带「继续」
-//   灰行：没导入的年份（「2010–11 · iOS 4、5 · 还没导入」），以及还不能模拟的 iOS 8 到 10（「以后」）
-//   消息行：导入进度和结果、没有系统时的说明
-//   脚注、JIT 框
+// The kinds of rows on the home page (LibraryViewController), in the "timeline" style (Theme.swift):
+//   header: app name, settings and import buttons, "Systems", year range, counts, a thick black rule
+//   system row: a large year on the left, the model, system version, build and size in the middle, a line drawing of
+//     the device on the far right; the running one has a red year, a red bar on the left and "Resume"
+//   gray row: years not imported ("2010–11 · iOS 4, 5 · Not imported"), and iOS 8 to 10, which cannot be emulated yet ("Later")
+//   message row: import progress and results, the explanation when there are no systems
+//   footnote, JIT box
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 import UIKit
@@ -28,7 +29,7 @@ class PaperCell: UITableViewCell {
     required init?(coder: NSCoder) { fatalError() }
 }
 
-/// 年份那一栏的宽度
+/// Width of the year column
 private let yearColumn: CGFloat = 92
 
 final class LibraryHeaderCell: PaperCell {
@@ -44,17 +45,17 @@ final class LibraryHeaderCell: PaperCell {
         let app = Theme.label(Theme.text(15, .semibold, .subheadline), Theme.ink)
         app.text = "Classic Touch"
         let title = Theme.label(Theme.text(31, .bold, .largeTitle), Theme.ink)
-        title.text = String(localized: "选择系统")
+        title.text = String(localized: "Systems")
         title.accessibilityTraits = .header
         importButton.setImage(UIImage(systemName: "square.and.arrow.down",
                                       withConfiguration: UIImage.SymbolConfiguration(pointSize: 19, weight: .medium)), for: .normal)
         importButton.tintColor = Theme.ink
-        importButton.accessibilityLabel = String(localized: "怎么导入")
+        importButton.accessibilityLabel = String(localized: "How to Import")
         importButton.translatesAutoresizingMaskIntoConstraints = false
         settingsButton.setImage(UIImage(systemName: "gearshape",
                                         withConfiguration: UIImage.SymbolConfiguration(pointSize: 19, weight: .medium)), for: .normal)
         settingsButton.tintColor = Theme.ink
-        settingsButton.accessibilityLabel = String(localized: "设置")
+        settingsButton.accessibilityLabel = String(localized: "Settings")
         settingsButton.translatesAutoresizingMaskIntoConstraints = false
         let bar = UIView()
         bar.backgroundColor = Theme.ink
@@ -92,12 +93,12 @@ final class LibraryHeaderCell: PaperCell {
 
     func configure(range text: String, meta info: String) {
         range.text = text
-        range.accessibilityLabel = text.replacingOccurrences(of: "–", with: String(localized: " 到 "))
+        range.accessibilityLabel = text.replacingOccurrences(of: "–", with: String(localized: " to "))
         meta.text = info
     }
 }
 
-/// 一台系统
+/// One system
 final class SystemCell: PaperCell {
     let resume = UIButton(type: .system)
     private let year = Theme.label(Theme.year(46), Theme.ink)
@@ -107,12 +108,12 @@ final class SystemCell: PaperCell {
     private let device = LineDeviceView(shape: .round)
     private let bar = UIView()
     private let text = UIStackView()
-    /// 提示行和「继续」并排（普通容器加约束；横排的 UIStackView 套多行文字时，第一次量行高会量错）
+    /// The note lines sit beside "Resume" (a plain container with constraints; a horizontal UIStackView holding multiline text measures the row height wrong the first time)
     private let noteRow = UIView()
     private var idle: [NSLayoutConstraint] = []
     private var busy: [NSLayoutConstraint] = []
     private var deviceHeight: NSLayoutConstraint!
-    /// 平时右边给线描机身留位置；正在运行的那台没有机身，文字和「继续」一直排到右边
+    /// Normally the right side leaves room for the line drawing; the running one has none, so the text and "Resume" run to the right edge
     private var trailing: NSLayoutConstraint!
     private var trailingLive: NSLayoutConstraint!
 
@@ -139,10 +140,10 @@ final class SystemCell: PaperCell {
             a.font = Theme.text(15, .semibold)
             return a
         }
-        config.title = String(localized: "继续")
+        config.title = String(localized: "Resume")
         resume.configuration = config
         resume.translatesAutoresizingMaskIntoConstraints = false
-        // 只是个样子：点到它就是点了这一行，由列表的 didSelect 处理
+        // Only for looks: tapping it taps the row, which the list's didSelect handles
         resume.isUserInteractionEnabled = false
         resume.setContentHuggingPriority(.required, for: .horizontal)
         resume.setContentCompressionResistancePriority(.required, for: .horizontal)
@@ -168,7 +169,7 @@ final class SystemCell: PaperCell {
             resume.topAnchor.constraint(greaterThanOrEqualTo: noteRow.topAnchor),
             resume.bottomAnchor.constraint(lessThanOrEqualTo: noteRow.bottomAnchor),
         ]
-        // 整宽排（不用 .leading），多行文字的行高才量得准
+        // Full-width arrangement (not .leading), so multiline text measures its row height correctly
         for v in [model, detail, noteRow] { text.addArrangedSubview(v) }
         text.axis = .vertical
         text.spacing = 3
@@ -204,7 +205,7 @@ final class SystemCell: PaperCell {
 
     required init?(coder: NSCoder) { fatalError() }
 
-    /// year 为 nil 时不显示年份（同一年的第二台）。notes 是下面的提示行（文字、颜色），live 是正在运行（已暂停）的那台
+    /// A nil year hides the year (the second device of the same year). notes are the lines below (text, color); live is the running (paused) one
     func configure(year text: String?, model name: String, detail info: String, notes lines: [(String, UIColor)],
                    board: String, live: Bool) {
         year.text = text
@@ -217,8 +218,9 @@ final class SystemCell: PaperCell {
             label.text = line
             notes.addArrangedSubview(label)
         }
-        // 不切换 isHidden：UIStackView 隐藏排列子视图时加的高度约束会残留到第一次量行高，把提示行压扁。
-        // 没有提示时这一块本来就是 0 高，间距也设成 0；正在运行的那台「继续」和提示并排，离上面那行远一点
+        // Do not toggle isHidden: the height constraint UIStackView adds when hiding an arranged subview lingers until the
+        // first row height measurement and squashes the note lines. Without notes this block is zero high anyway, and the
+        // spacing is set to zero too; the running one's "Resume" sits beside the notes, a bit further from the line above
         self.text.setCustomSpacing(live ? 12 : lines.isEmpty ? 0 : 6, after: detail)
         bar.isHidden = !live
         resume.isHidden = !live
@@ -228,12 +230,12 @@ final class SystemCell: PaperCell {
         device.shape = LineDeviceView.shape(for: board)
         deviceHeight.constant = 24 * device.aspect
         isAccessibilityElement = true
-        accessibilityLabel = ([text, name, info] + lines.map(\.0)).compactMap { $0 }.joined(separator: "，")
+        accessibilityLabel = ([text, name, info] + lines.map(\.0)).compactMap { $0 }.joined(separator: Theme.spokenSeparator)
         accessibilityTraits = .button
     }
 }
 
-/// 灰行：没导入的年份，或者还不能模拟的版本（later）
+/// Gray row: a year not imported, or a version that cannot be emulated yet (later)
 final class GhostCell: PaperCell {
     private let year = Theme.label(Theme.year(26), Theme.faint)
     private let text = Theme.label(Theme.text(14, .regular, .subheadline), Theme.mid, lines: 0)
@@ -241,7 +243,7 @@ final class GhostCell: PaperCell {
 
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: style, reuseIdentifier: reuseIdentifier)
-        soon.text = String(localized: "以后")
+        soon.text = String(localized: "Later")
         soon.font = Theme.text(11, .medium, .caption1)
         soon.textColor = Theme.mid
         soon.layer.borderColor = Theme.faint.cgColor
@@ -278,15 +280,15 @@ final class GhostCell: PaperCell {
         year.text = years
         text.text = info
         soon.isHidden = !later
-        // 「以后」比「还没导入」再淡一些，一看就知道还不能用
+        // "Later" is fainter than "Not imported", so it is clear at a glance that it cannot be used yet
         year.alpha = later ? 0.6 : 1
         text.alpha = later ? 0.6 : 1
         soon.alpha = later ? 0.8 : 1
-        accessibilityLabel = years + "，" + info + (later ? "，" + String(localized: "以后") : "")
+        accessibilityLabel = years + Theme.spokenSeparator + info + (later ? Theme.spokenSeparator + String(localized: "Later") : "")
     }
 }
 
-/// 导入进度和结果、没有系统时的说明：左边一栏放图标，右边标题、说明，导入中带一条细进度条
+/// Import progress and results, the explanation when there are no systems: an icon in the left column; on the right a title, detail and, while importing, a thin progress bar
 final class MessageCell: PaperCell {
     private let icon = UIImageView()
     private let title = Theme.label(Theme.text(15, .semibold, .subheadline), Theme.ink, lines: 0)
@@ -321,7 +323,7 @@ final class MessageCell: PaperCell {
 
     required init?(coder: NSCoder) { fatalError() }
 
-    /// fraction 不为 nil 时显示进度条
+    /// Shows the progress bar when fraction is not nil
     func configure(symbol: String, tint: UIColor = Theme.ink, title text: String, detail info: String?, fraction: Double? = nil) {
         icon.image = UIImage(systemName: symbol)
         icon.tintColor = tint
@@ -333,7 +335,7 @@ final class MessageCell: PaperCell {
     }
 }
 
-/// 列表底下的一行小字
+/// A line of small print under the list
 final class NoteCell: PaperCell {
     private let text = Theme.label(Theme.text(12.5, .regular, .footnote), Theme.mid, lines: 0)
 
@@ -355,7 +357,7 @@ final class NoteCell: PaperCell {
     func configure(_ note: String) { text.text = note }
 }
 
-/// JIT 状态：一个黑框，点了看说明
+/// JIT status: a black box that shows the explanation when tapped
 final class JITCell: PaperCell {
     private let box = UIView()
     private let icon = UIImageView()
@@ -414,12 +416,12 @@ final class JITCell: PaperCell {
         title.text = text
         detail.text = info
         isAccessibilityElement = true
-        accessibilityLabel = text + "，" + info
+        accessibilityLabel = text + Theme.spokenSeparator + info
         accessibilityTraits = .button
     }
 }
 
-/// 带内边距的小标签（「以后」）
+/// A small label with padding ("Later")
 final class PaddedLabel: UILabel {
     var insets = UIEdgeInsets(top: 1, left: 6, bottom: 1, right: 6)
 

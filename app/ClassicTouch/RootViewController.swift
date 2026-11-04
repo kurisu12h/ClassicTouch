@@ -1,14 +1,20 @@
-// 顶层：决定一启动做什么，在系统列表和模拟器画面之间切换，管虚拟机什么时候跑。
+// Top level: decides what to do at launch, switches between the system list and the emulator screen, and controls when
+// the VM runs.
 //
-// 一启动：
-//   1. 有启动参数或 Documents/autostart.json 指定设备（脚本的测试入口）：等导入完直接开这台，和 M1 以来一样；
-//   2. 有 PendingBoot（用户在列表里选了一台，App 去 StikDebug 开 JIT 或让用户重开后，这是新进程）：直接开那台；
-//   3. 否则显示列表。
-// 选系统（select）：
-//   - 这个进程还没起过 QEMU：有 JIT 就开；没有 JIT 但装了 StikDebug，记下 PendingBoot、打开 stikjit://、自己退出，
-//     StikDebug 会挂着调试器拉起一个新进程；没装 StikDebug 就说明一下，可以选解释器开机。
-//   - 起过 QEMU（一个进程只能起一次）：同一台就回去继续；换别的要新进程：有 StikDebug 同上，没有就请用户重开 App。
-// 虚拟机只在 App 处于前台、而且正显示模拟器画面时跑（updateRun）：进后台、回到列表都暂停。
+// At launch:
+//   1. A device given by launch arguments or Documents/autostart.json (a test entry point for scripts): boot it directly
+//      once imports are done, as since M1;
+//   2. A PendingBoot (the user picked a device in the list, and the app went to StikDebug for JIT or asked the user to
+//      reopen it; this is the new process): boot that device directly;
+//   3. Otherwise show the list.
+// Selecting a system (select):
+//   - This process has not started QEMU yet: boot if JIT is there; without JIT but with StikDebug installed, save a
+//     PendingBoot, open stikjit:// and exit, and StikDebug launches a new process with the debugger attached; without
+//     StikDebug, explain and offer to boot with the interpreter.
+//   - QEMU has started (it can start only once per process): the same device goes back to it; another one needs a new
+//     process: with StikDebug as above, otherwise ask the user to reopen the app.
+// The VM runs only while the app is in the foreground and showing the emulator screen (updateRun): it pauses in the
+// background and on the list.
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 import UIKit
@@ -48,7 +54,7 @@ final class RootViewController: UIViewController {
         } else if let pending = PendingBoot.take() {
             bootPending(pending)
         } else if let id = options.string(forKey: "select") {
-            // 测试入口：模拟用户在列表里点了这一台（走完整的选系统流程，包括去 StikDebug）
+            // Test entry point: as if the user tapped this device in the list (the full selection flow, including StikDebug)
             whenImportsIdle { [weak self] in
                 guard let self, let device = self.device(id) else { return }
                 self.select(device, confirm: false)
@@ -71,7 +77,7 @@ final class RootViewController: UIViewController {
         try? DeviceProfile(base: documents.appendingPathComponent("devices/\(id)", isDirectory: true))
     }
 
-    // MARK: 前后台
+    // MARK: Foreground and background
 
     func setAppActive(_ active: Bool) {
         appActive = active
@@ -87,12 +93,12 @@ final class RootViewController: UIViewController {
         emulator.setRunning(run, reason: appActive ? "list" : "background")
     }
 
-    // MARK: 切换画面
+    // MARK: Switching screens
 
     private func show(_ vc: UIViewController) {
         guard vc !== shown else { return }
         let old = shown
-        // 先登记再取 vc.view：模拟器画面的 viewDidLoad 里就开机，引擎一起来就会问 updateRun「现在在不在显示」
+        // Register before reading vc.view: the emulator screen boots in viewDidLoad, and once the engine is up it asks updateRun whether it is being shown
         shown = vc
         addChild(vc)
         vc.view.frame = view.bounds
@@ -102,7 +108,7 @@ final class RootViewController: UIViewController {
         old?.willMove(toParent: nil)
         old?.view.removeFromSuperview()
         old?.removeFromParent()
-        // 模拟器画面开着时不让手机自动锁屏；列表页照常
+        // While the emulator screen is up the phone does not auto-lock; the list behaves normally
         UIApplication.shared.isIdleTimerDisabled = vc is EmulatorViewController
         setNeedsStatusBarAppearanceUpdate()
         setNeedsUpdateOfHomeIndicatorAutoHidden()
@@ -135,7 +141,7 @@ final class RootViewController: UIViewController {
         imports.busyDevice = emulator?.engineStarted == true ? emulator?.profile?.id : nil
     }
 
-    // MARK: 开机
+    // MARK: Boot
 
     private func boot(_ id: String, backend: Engine.Backend?, test: Bool) {
         let vc = EmulatorViewController(deviceID: id, backend: backend, test: test, options: options, documents: documents)
@@ -152,8 +158,9 @@ final class RootViewController: UIViewController {
         updateRun()
     }
 
-    /// StikDebug 拉起的新进程，或用户按提示重开的 App。StikDebug 是挂起启动、先挂上调试器再放行的，所以多半一起来就有 JIT；
-    /// 保险起见等 5 秒。等不到就回列表说明。
+    /// The new process StikDebug launched, or the app the user reopened as asked. StikDebug launches it suspended and lets
+    /// it run only after attaching the debugger, so JIT is usually there right away; wait 5 seconds to be safe. If it never
+    /// comes, go back to the list and explain.
     private func bootPending(_ pending: PendingBoot) {
         guard let device = device(pending.device) else { return }
         guard pending.wantJIT, !JIT.ready else {
@@ -172,7 +179,7 @@ final class RootViewController: UIViewController {
         }
     }
 
-    /// 用户在列表里点了一台。confirm 为 false 时跳过「换系统」的确认（测试入口 -select、control/select 用）。
+    /// The user tapped a device in the list. With confirm false the "switch system" confirmation is skipped (for the -select test entry point and control/select).
     private func select(_ device: DeviceProfile, confirm: Bool) {
         guard !exiting else { return }
         if let emulator, emulator.engineStarted {
@@ -181,8 +188,8 @@ final class RootViewController: UIViewController {
         }
         if JIT.ready { return boot(device.id, backend: .jit, test: false) }
         if StikDebug.installed { return relaunch(into: device, viaStikDebug: true) }
-        askInterpreter(for: device, title: String(localized: "没有 JIT"),
-                       message: String(localized: "没找到 StikDebug，拿不到 JIT。"))
+        askInterpreter(for: device, title: String(localized: "No JIT"),
+                       message: String(localized: "StikDebug wasn't found, so JIT isn't available."))
     }
 
     private func switchSystem(to device: DeviceProfile, confirm: Bool) {
@@ -190,50 +197,50 @@ final class RootViewController: UIViewController {
         guard confirm else { return relaunch(into: device, viaStikDebug: viaStikDebug) }
         let running = emulator?.stopped == false ? emulator?.profile?.displayName : nil
         var message = viaStikDebug
-            ? String(localized: "一次只能开一个系统。App 会跳到 StikDebug 开 JIT，再自动回来开这台。")
-            : String(format: String(localized: "一次只能开一个系统，换系统要重新打开 App。点「关闭 App」后，在主屏幕上再点一次本 App 的图标（或者从多任务里划掉再打开），就会直接用解释器开 %@。"), device.displayName)
+            ? String(localized: "Only one system can run at a time. The app will switch to StikDebug to turn on JIT, then come back and boot this one.")
+            : String(format: String(localized: "Only one system can run at a time, and switching systems means reopening the app. After tapping “Close App”, tap this app's icon on the Home Screen again (or swipe it away in the app switcher and reopen it), and %@ will boot with the interpreter."), device.displayName)
         if let running {
-            message += "\n" + String(format: String(localized: "正在运行的 %@ 会被关掉，相当于直接拔电池。"), running)
+            message += "\n" + String(format: String(localized: "The running %@ will be shut down, like pulling the battery."), running)
         }
-        let alert = UIAlertController(title: String(format: String(localized: "换成 %@？"), device.displayName),
+        let alert = UIAlertController(title: String(format: String(localized: "Switch to %@?"), device.displayName),
                                       message: message, preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: viaStikDebug ? String(localized: "换系统") : String(localized: "关闭 App"),
+        alert.addAction(UIAlertAction(title: viaStikDebug ? String(localized: "Switch System") : String(localized: "Close App"),
                                       style: .destructive) { [weak self] _ in
             self?.relaunch(into: device, viaStikDebug: viaStikDebug)
         })
-        alert.addAction(UIAlertAction(title: String(localized: "取消"), style: .cancel))
+        alert.addAction(UIAlertAction(title: String(localized: "Cancel"), style: .cancel))
         present(alert, animated: true)
     }
 
-    /// 换进程：记下要开的那台；QEMU 在跑就先让它正常退出（落盘），再去 StikDebug（或直接退出，等用户重开）。
+    /// Switching processes: note the device to boot; if QEMU is running, let it exit normally first (flushing to disk), then go to StikDebug (or just exit and wait for the user to reopen the app).
     private func relaunch(into device: DeviceProfile, viaStikDebug: Bool) {
         exiting = true
         do {
             try PendingBoot(device: device.id, wantJIT: viaStikDebug).save()
         } catch {
             exiting = false
-            return alert(String(localized: "出错了"), "\(error)")
+            return alert(String(localized: "Something Went Wrong"), "\(error)")
         }
         emulator?.event("relaunch device=\(device.id) stikdebug=\(viaStikDebug)")
         stopQEMU { [weak self] in
             guard let self else { return }
             guard viaStikDebug else { exit(0) }
             if JIT.fake != nil {
-                // 模拟器：假装 StikDebug 收到了请求。宿主再带 -fakejit on 启动 App，就是 StikDebug 拉起的新进程
+                // Simulator: pretend StikDebug got the request. The host relaunches the app with -fakejit on, which stands in for the new process StikDebug would launch
                 exit(0)
             }
-            // StikDebug 不杀已有进程就去启动本 App，所以 URL 一交出去就得退出
+            // StikDebug launches this app without killing the existing process, so exit as soon as the URL is handed over
             UIApplication.shared.open(StikDebug.url) { ok in
                 if ok { exit(0) }
                 PendingBoot.clear()
                 self.exiting = false
-                self.alert(String(localized: "打不开 StikDebug"),
-                           String(localized: "请确认装了 StikDebug，然后重新打开本 App 再试。"))
+                self.alert(String(localized: "Couldn't Open StikDebug"),
+                           String(localized: "Make sure StikDebug is installed, then reopen this app and try again."))
             }
         }
     }
 
-    /// 让 QEMU 走正常的退出（qmp quit，块设备落盘），最多等 2 秒
+    /// Lets QEMU exit the normal way (qmp quit, block devices flushed to disk), waiting at most 2 seconds
     private func stopQEMU(_ then: @escaping () -> Void) {
         guard let emulator, emulator.engineStarted, !emulator.stopped else { return then() }
         var done = false
@@ -244,52 +251,52 @@ final class RootViewController: UIViewController {
 
     private func noJITAfterStikDebug(_ device: DeviceProfile) {
         let alert = UIAlertController(
-            title: String(localized: "没拿到 JIT"),
-            message: String(localized: "StikDebug 没有给本 App 开 JIT。请确认 LocalDevVPN 开着、StikDebug 里导入过配对文件，再试一次。"),
+            title: String(localized: "JIT Not Enabled"),
+            message: String(localized: "StikDebug didn't turn on JIT for this app. Make sure LocalDevVPN is on and a pairing file is imported in StikDebug, then try again."),
             preferredStyle: .alert)
         if StikDebug.installed {
-            alert.addAction(UIAlertAction(title: String(localized: "再试一次"), style: .default) { [weak self] _ in
+            alert.addAction(UIAlertAction(title: String(localized: "Try Again"), style: .default) { [weak self] _ in
                 self?.relaunch(into: device, viaStikDebug: true)
             })
         }
-        alert.addAction(UIAlertAction(title: String(localized: "用解释器开机（很慢）"), style: .default) { [weak self] _ in
+        alert.addAction(UIAlertAction(title: String(localized: "Boot with Interpreter (Slow)"), style: .default) { [weak self] _ in
             self?.boot(device.id, backend: .interp, test: false)
         })
-        alert.addAction(UIAlertAction(title: String(localized: "取消"), style: .cancel))
+        alert.addAction(UIAlertAction(title: String(localized: "Cancel"), style: .cancel))
         present(alert, animated: true)
     }
 
     private func askInterpreter(for device: DeviceProfile, title: String, message: String) {
         var text = message + "\n"
         text += device.majorVersion >= 7
-            ? String(localized: "也可以用解释器开机，但 iOS 7 在解释器下基本不能用。")
-            : String(localized: "也可以用解释器开机，但会慢很多：iPhone OS 3 约 1 分钟、iOS 6 约 2 分钟才到锁屏，用起来也卡。")
+            ? String(localized: "You can also boot with the interpreter, but iOS 7 is barely usable that way.")
+            : String(localized: "You can also boot with the interpreter, but it's much slower: about 1 minute to the lock screen for iPhone OS 3 and about 2 minutes for iOS 6, and it feels sluggish.")
         let alert = UIAlertController(title: title, message: text, preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: String(localized: "用解释器开机（很慢）"), style: .default) { [weak self] _ in
+        alert.addAction(UIAlertAction(title: String(localized: "Boot with Interpreter (Slow)"), style: .default) { [weak self] _ in
             self?.boot(device.id, backend: .interp, test: false)
         })
-        alert.addAction(UIAlertAction(title: String(localized: "怎么装 StikDebug"), style: .default) { [weak self] _ in
+        alert.addAction(UIAlertAction(title: String(localized: "How to Install StikDebug"), style: .default) { [weak self] _ in
             self?.showJITHelp()
         })
-        alert.addAction(UIAlertAction(title: String(localized: "取消"), style: .cancel))
+        alert.addAction(UIAlertAction(title: String(localized: "Cancel"), style: .cancel))
         present(alert, animated: true)
     }
 
     private func showJITHelp() {
-        alert(String(localized: "JIT 和 StikDebug"), String(localized: """
-            JIT 让系统快 5 到 10 倍。iPhone 不直接给侧载 App 开 JIT，要靠开源的 StikDebug 在手机上给。
-            一次性准备：侧载装好 StikDebug；从 App Store 装 LocalDevVPN；照 StikDebug 的说明在电脑上生成一次配对文件、导入 StikDebug。
-            以后每次：打开 LocalDevVPN，回到本 App 点系统，会自动跳到 StikDebug，开好 JIT 后回来开机。StikDebug 可能会弹一次确认，点确认即可。
+        alert(String(localized: "JIT and StikDebug"), String(localized: """
+            JIT makes systems run 5 to 10 times faster. iPhone doesn't give sideloaded apps JIT directly; the open-source StikDebug provides it on the phone.
+            One-time setup: sideload StikDebug, install LocalDevVPN from the App Store, and follow StikDebug's instructions to create a pairing file on a computer once and import it into StikDebug.
+            Each time after that: open LocalDevVPN, come back to this app and tap a system. The app switches to StikDebug, which turns on JIT, then comes back and boots. StikDebug may ask you to confirm once; just confirm.
             """))
     }
 
     private func alert(_ title: String, _ message: String) {
         let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: String(localized: "好"), style: .default))
+        alert.addAction(UIAlertAction(title: String(localized: "OK"), style: .default))
         present(alert, animated: true)
     }
 
-    // MARK: 测试入口：Documents/control/ 里 back、resume、select（文件内容是设备 id）
+    // MARK: Test entry point: back, resume, select in Documents/control/ (the file content is a device id)
 
     private func control(_ command: String, _ argument: String) {
         switch command {
@@ -303,7 +310,7 @@ final class RootViewController: UIViewController {
         }
     }
 
-    /// 每次开机都在 Documents/logs/ 下建一个运行目录，只留最近 30 个
+    /// Every boot creates a run folder under Documents/logs/; only the latest 30 are kept
     private func pruneLogs() {
         let dir = documents.appendingPathComponent("logs", isDirectory: true)
         let runs = ((try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? [])

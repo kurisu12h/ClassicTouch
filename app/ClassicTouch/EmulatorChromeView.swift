@@ -1,11 +1,14 @@
-// 模拟器画面的「年表」外观（设计稿 docs/design/mockups/a-run.html）：黑底；顶上大号年份、机型和系统、「⋯」；一道细线；
-// 下面一行运行状态（等宽小字，点「⋯」收起或展开，记在 UserDefaults）；中间留给客体屏幕；底部三个方正的大按键：
-// 年表（返回列表）、Home、电源。
+// The "timeline" look around the emulator screen (mockup docs/design/mockups/a-run.html): a black background; at the
+// top a large year, the model and system, and "⋯"; a thin rule; below it a line of run status (small monospaced text,
+// collapsed or expanded with "⋯" and remembered in UserDefaults); the middle is left for the guest screen; at the
+// bottom three large square buttons: Back (to the timeline), Home, Power.
 //
-// EmulatorViewController 用它（2026-11-02 接入）：先把它加进 view、再加客体屏幕（屏幕盖在上面；这里的空白处不接触摸），
-// 原来的 status、backButton、homeButton、powerButton 就是这里的 status、back、home、power；
-// viewDidLayoutSubviews 里 frame 铺满、layoutIfNeeded，再按 screenFrame(for:) 摆客体屏幕。
-// 调试版另有预览：启动参数 -uipreview <设备 id>（见 LibraryViewController 和下面的 EmulatorChromePreviewController），不起 QEMU。
+// EmulatorViewController uses it (since 2026-11-02): it adds this view first, then the guest screen (the screen sits on
+// top; the empty areas here take no touches). The old status, backButton, homeButton and powerButton are status, back,
+// home and power here; viewDidLayoutSubviews fills the frame, calls layoutIfNeeded, then places the guest screen at
+// screenFrame(for:).
+// Debug builds also have a preview: launch argument -uipreview <device id> (see LibraryViewController and
+// EmulatorChromePreviewController below), which starts no QEMU.
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 import UIKit
@@ -28,7 +31,7 @@ final class EmulatorChromeView: UIView {
         get { UserDefaults.standard.object(forKey: Self.statusKey) as? Bool ?? true }
         set {
             UserDefaults.standard.set(newValue, forKey: Self.statusKey)
-            // 屏幕的位置由外面的 viewDidLayoutSubviews 按 screenFrame 摆，要让它也重排
+            // The outer viewDidLayoutSubviews places the screen at screenFrame, so it has to lay out again too
             setNeedsLayout()
             superview?.setNeedsLayout()
         }
@@ -54,15 +57,16 @@ final class EmulatorChromeView: UIView {
         more.setImage(UIImage(systemName: "ellipsis", withConfiguration: UIImage.SymbolConfiguration(pointSize: 18, weight: .semibold)),
                       for: .normal)
         more.tintColor = .white
-        more.accessibilityLabel = String(localized: "显示或隐藏运行状态")
+        more.accessibilityLabel = String(localized: "Show or hide status")
         more.addAction(UIAction { [weak self] _ in self?.showsStatus.toggle() }, for: .touchUpInside)
 
-        style(back, title: String(localized: "年表"), symbol: "chevron.left", primary: false)
+        style(back, title: String(localized: "Back", comment: "The emulator screen's button that returns to the timeline"),
+              symbol: "chevron.left", primary: false)
         style(home, title: "Home", symbol: "circle", primary: true)
-        style(power, title: String(localized: "电源"), symbol: "power", primary: false)
-        back.accessibilityLabel = String(localized: "返回年表")
-        power.accessibilityLabel = String(localized: "电源键")
-        home.accessibilityLabel = String(localized: "Home 键")
+        style(power, title: String(localized: "Power"), symbol: "power", primary: false)
+        back.accessibilityLabel = String(localized: "Back to Timeline")
+        power.accessibilityLabel = String(localized: "Power button")
+        home.accessibilityLabel = String(localized: "Home button")
 
         for v in [year, model, system, more, rule, status, back, home, power] { addSubview(v) }
     }
@@ -89,7 +93,7 @@ final class EmulatorChromeView: UIView {
         button.configuration = config
     }
 
-    /// backend 是「JIT」或「解释器」这类短词，可以为 nil
+    /// backend is a short word such as "JIT" or "Interpreter", and may be nil
     func configure(_ profile: DeviceProfile?, backend: String?) {
         year.text = profile.flatMap { Era.year($0.majorVersion) }.map(String.init) ?? "—"
         model.text = profile?.modelName
@@ -98,7 +102,7 @@ final class EmulatorChromeView: UIView {
         setNeedsLayout()
     }
 
-    /// 只有按键接触摸；空白处让给下面（EmulatorViewController 自己的触摸处理）
+    /// Only the buttons take touches; empty areas go to the view below (EmulatorViewController's own touch handling)
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
         let hit = super.hitTest(point, with: event)
         return hit === self ? nil : hit
@@ -108,7 +112,7 @@ final class EmulatorChromeView: UIView {
         super.layoutSubviews()
         let safe = bounds.inset(by: safeAreaInsets)
         let m = Theme.margin, width = bounds.width - 2 * m
-        // 没有刘海的机型（SE）安全区上下都是 0，至少留出一点边
+        // Devices without a notch (SE) have zero top and bottom safe areas; leave at least a little margin
         let top = max(safe.minY + 4, 14)
 
         year.sizeToFit()
@@ -133,11 +137,11 @@ final class EmulatorChromeView: UIView {
         home.frame = CGRect(x: back.frame.maxX + gap, y: buttonY, width: unit * 1.25, height: buttonH)
         power.frame = CGRect(x: home.frame.maxX + gap, y: buttonY, width: unit, height: buttonH)
 
-        // 客体屏幕左右各留 21 pt（402 宽的屏上正好 360 × 540，原机的 1.125 倍）
+        // The guest screen leaves 21 pt on each side (exactly 360 × 540 on a 402-wide screen, 1.125 times the original)
         screenArea = CGRect(x: 21, y: y + 8, width: bounds.width - 42, height: buttonY - 20 - (y + 8))
     }
 
-    /// 客体屏幕放在哪：按比例缩放，放进中间那块，横向居中、纵向居中
+    /// Where the guest screen goes: scaled to fit the middle area, centered horizontally and vertically
     func screenFrame(for guest: CGSize) -> CGRect {
         guard guest.width > 0, guest.height > 0, screenArea.width > 0, screenArea.height > 0 else { return .zero }
         let scale = min(screenArea.width / guest.width, screenArea.height / guest.height)
@@ -148,8 +152,8 @@ final class EmulatorChromeView: UIView {
 }
 
 #if DEBUG
-/// 看新外观用（启动参数 -uipreview <设备 id>）：屏幕位置放 Documents/ui-preview.png（没有就是暗灰色），
-/// Home 和电源只记一行日志，「年表」关掉预览。不起 QEMU。
+/// For viewing the new look (launch argument -uipreview <device id>): the screen area shows Documents/ui-preview.png
+/// (dark gray if it is missing), Home and Power only log a line, and "Back" closes the preview. Starts no QEMU.
 final class EmulatorChromePreviewController: UIViewController {
     private let profile: DeviceProfile?
     private let documents: URL
@@ -171,7 +175,9 @@ final class EmulatorChromePreviewController: UIViewController {
         super.viewDidLoad()
         view.backgroundColor = .black
         chrome.configure(profile, backend: "JIT")
-        chrome.status.text = "\(profile?.displayName ?? "?") · JIT · 0:54\nCPU 10%（累计 33 秒）· 占用 805 MB · 可用 2.1 GB · 帧 1234"
+        chrome.status.text = String(
+            format: String(localized: "%@ · %@ · %d:%02d\nCPU %.0f%% (%.0f s total) · using %.0f MB · %.0f MB free · frame %d"),
+            profile?.displayName ?? "?", "JIT", 0, 54, 10.0, 33.0, 805.0, 2150.0, 1234)
         chrome.back.addAction(UIAction { [weak self] _ in self?.dismiss(animated: false) }, for: .touchUpInside)
         chrome.home.addAction(UIAction { _ in NSLog("ui-preview: home") }, for: .touchUpInside)
         chrome.power.addAction(UIAction { _ in NSLog("ui-preview: power") }, for: .touchUpInside)
