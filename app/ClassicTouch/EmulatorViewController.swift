@@ -16,7 +16,7 @@
 //                       8 times), 0 is off
 //   -guestpng <s>       save the guest screen as PNG every few seconds (only when it changed); 5 by default for test
 //                       entry points, none when booted from the list
-//   -qemuargs "<...>"   extra QEMU arguments, separated by spaces
+//   -qemuargs "<...>"   extra QEMU arguments, separated by spaces (in autostart.json: "qemuargs": "<...>")
 //   -resetstate YES     delete state/ before booting and start over from golden-state/ (if any) or the device itself,
 //                       for cold-boot measurements
 //   -waitdebugger YES   with -tcg jit: wait for a debugger to attach (up to 120 seconds) before starting QEMU
@@ -240,6 +240,7 @@ final class EmulatorViewController: UIViewController {
             // Not UserDefaults: it treats values starting with "-" (such as "-qmp tcp:…") as the next key, so take the item right after -qemuargs
             let launch = ProcessInfo.processInfo.arguments
             let raw = launch.firstIndex(of: "-qemuargs").flatMap { $0 + 1 < launch.count ? launch[$0 + 1] : nil }
+                ?? defaults.string(forKey: "qemuargs")
             let extra = (raw ?? "").split(separator: " ").map(String.init)
             let tb = defaults.integer(forKey: "tbsize")
             let usbKeyboard = defaults.bool(forKey: "usbkbd")
@@ -577,11 +578,33 @@ final class EmulatorViewController: UIViewController {
         }
     }
 
+    /// Presses Home to wake the screen, then swipes to unlock. iOS 10 opens on the Home press itself (no slider; a swipe
+    /// after it would page the home screen to Today). On iOS 7 to 9 the whole lock screen follows the finger, so the
+    /// swipe crosses its lower middle (along the "slide to unlock" line it often stuck halfway). They ignore touches for
+    /// a while after waking (about 2 seconds on a Mac, from under 3 to over 5 on a phone) and go dark again 7 to 10
+    /// seconds after waking whatever the finger does; on a phone the lock screen also trails the finger by over a
+    /// second, and a swipe still being played out when the screen goes dark leaves it stuck halfway. A second Home
+    /// press on the lit lock screen restarts that timer. So: Home, Home again 5 seconds later, and the swipe a second
+    /// after that, taking a second, with the finger kept at the end for another second before lifting so that the lock
+    /// screen has caught up and settles on the unlocked side (docs/reports/touch-calibration.md). iPhone OS 1 to 6 need
+    /// the slider at the bottom.
     private func unlock(_ engine: Engine) {
         pressHome(engine)
-        // iOS 10 opens on the Home press itself (no slider); a swipe after it would page the home screen to Today
-        if (profile?.majorVersion ?? 0) >= 10 { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { engine.drag(from: (0.18, 0.9), to: (0.92, 0.9)) }
+        let major = profile?.majorVersion ?? 0
+        if major >= 10 { return }
+        guard major >= 7 else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { engine.drag(from: (0.18, 0.9), to: (0.92, 0.9)) }
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+            guard let self, !self.stopped, self.homeSeenAt == nil else { return }
+            self.pressHome(engine)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in
+            guard let self, !self.stopped, self.homeSeenAt == nil else { return }
+            self.event("unlock_swipe")
+            engine.drag(from: (0.18, 0.7), to: (0.92, 0.7), milliseconds: 1000, steps: 40, holdMilliseconds: 1000)
+        }
     }
 
     private func pressHome(_ engine: Engine) {

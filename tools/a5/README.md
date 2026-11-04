@@ -186,10 +186,10 @@ mkdir -p work/a5/nandfmt/nand-ui work/a5/runs/ui && cp -c work/a5/nandfmt/nand-f
 (DISK=work/a5/nandfmt/disk-ui.img SNAP=off tools/a5/n78_run.sh work/a5/runs/ui work/a5/kboot/n78-11D257-fmi.bin 220 \
   -global driver=s5l8940.iop,property=nand,value=work/a5/nandfmt/nand-ui &)
 sleep 3; python3 -I tools/a5/qinput.py work/a5/runs/ui/qmp.sock work/a5/runs/ui \
-  148:key:h 151:shot 152:swipe:140,975,620,975,500 157:shot 160:tap:92,920,300 190:shot 200:key:h 205:shot
+  148:key:h 151:shot 152:swipe:140,795,620,795,500 157:shot 160:tap:82,835,300 190:shot 200:key:h 205:shot
 ```
 
-The vertical coordinates are not calibrated: taps land about 100 pixels above the aimed point, which is why the tap on Settings uses y=920.
+Taps land where they are aimed: (82,835) is the center of the Settings icon. The swipe crosses the lower middle of the lock screen rather than the "slide to unlock" line, where it often stopped halfway (`docs/reports/touch-calibration.md`). Until 2026-11-05 the touch frame put taps above the aim (about 100 pixels around this icon, more higher up), and this recipe used y=920 for Settings.
 
 ## 9.3.5 (13G36): lock screen, home screen, Settings (report section 3.17)
 
@@ -230,7 +230,7 @@ mkdir -p work/a5/nandfmt/nand-935 work/a5/runs/ui935 && cp -c work/a5/nandfmt/na
   -global driver=s5l8940.iop,property=nand,value=work/a5/nandfmt/nand-935 &)
 # After the lock screen appears (about 100 seconds on the second boot): Home to wake, slide to unlock, dismiss "Trust This Computer?", tap Settings
 sleep 3; python3 -I -B tools/a5/qinput.py work/a5/runs/ui935/qmp.sock work/a5/runs/ui935 \
-  105:key:h 108:shot 110:swipe:140,975,620,975,500 115:shot 120:tap:455,785 125:tap:244,930 140:shot
+  105:key:h 108:shot 110:swipe:140,795,620,795,500 115:shot 120:tap:456,685 125:tap:243,817 140:shot
 ```
 
 Adjust the times to the actual boot progress: the screen turns off about 20 seconds after the lock screen appears, and a Home press wakes it. The "Trust This Computer?" on the home screen is lockdownd's pairing prompt; tap "Don't Trust".
@@ -250,10 +250,10 @@ scripts/ios/build-deps.sh iphonesimulator
 TCG=jit scripts/ios/build-qemu.sh iphonesimulator && TCG=jit scripts/ios/make-dylib.sh iphonesimulator
 # Put the pack in the app's Documents/import/ in the simulator and open the app, which imports it; then time the boot and open Settings
 SIM_UDID=$(cat work/ios/sim-udid) scripts/ios/sim-boot.sh n78ap-13G36 jit 420
-scripts/ios/sim-settings.sh n78ap-13G36 0.381,0.819     # 0.144,0.810 for 7.1.2
+scripts/ios/sim-settings.sh n78ap-13G36 0.380,0.719     # 0.128,0.735 for 7.1.2, 0.619,0.722 for 10.3.4 (n41ap-14G61)
 ```
 
-`build-qemu.sh` applies `patches/ios-*.patch`, `a5-n78-skeleton.patch` and `a5-n78-ios-ui.patch` in turn to the iOS working tree; the iOS working tree must first be cloned locally from `upstream/qemu-ios`, with the meson subprojects (berkeley-softfloat-3, berkeley-testfloat-3, dtc, keycodemapdb) copied in. Touch is about 100 pixels too high vertically; the tap coordinates in the scripts already compensate downward.
+`build-qemu.sh` applies `patches/ios-*.patch`, `a5-n78-skeleton.patch` and `a5-n78-ios-ui.patch` in turn to the iOS working tree; the iOS working tree must first be cloned locally from `upstream/qemu-ios`, with the meson subprojects (berkeley-softfloat-3, berkeley-testfloat-3, dtc, keycodemapdb) copied in. Taps land where they are aimed, so the scripts take the centers of what they tap (`docs/reports/touch-calibration.md`).
 
 ## A6: 10.3.4 (14G61) on the iPhone 5 (n41) (report `docs/reports/a6-step1.md`)
 
@@ -296,6 +296,6 @@ MACHINE=iPhone-5 DISK=work/a6/nandfmt/disk-n2.img SNAP=off tools/a5/n78_run.sh w
 MACHINE=iPhone-5 DISK=work/a6/nandfmt/disk-n2.img tools/a5/n78_run.sh work/a6/runs/f2 work/a6/kboot/n41-14G61-n2.bin 230 \
   -global driver=s5l8940.iop,property=nand,value=work/a6/nandfmt/nand-n2 &
 python3 -I -B tools/a5/qinput.py work/a6/runs/f2/qmp.sock work/a6/runs/f2 100:shot 120:key:h 128:shot \
-  135:swipe:560,600,80,600 145:shot 150:swipe:80,600,560,600 170:tap:396,860 182:shot
+  135:swipe:560,600,80,600 145:shot 150:swipe:80,600,560,600 170:tap:396,820 182:shot
 ```
 

@@ -9,7 +9,7 @@ import UIKit
 
 /// External links
 enum Links {
-    static let source = URL(string: "https://github.com/kurisu12h/ClassicTouch")!
+    static let source = URL(string: "https://github.com/kurisu12h/slide-to-unlock")!
     static let qemuIOS = URL(string: "https://github.com/samhenrigold/qemu-ios")!
     static let lightTouch = URL(string: "https://github.com/samhenrigold/LightTouchMac")!
     static let qemu = URL(string: "https://www.qemu.org")!
@@ -254,7 +254,7 @@ final class SettingsViewController: PageViewController {
         list.append(Item(kind: .row(String(localized: "JIT and StikDebug"), nil, chevron: true)) { [weak self] in self?.onJITHelp?() })
 
         list.append(Item(kind: .section(String(localized: "About"))))
-        list.append(Item(kind: .row(String(localized: "About Classic Touch"), Self.version, chevron: true)) { [weak self] in
+        list.append(Item(kind: .row(String(localized: "About Slide to Unlock"), Self.version, chevron: true)) { [weak self] in
             self?.navigationController?.pushViewController(AboutViewController(), animated: true)
         })
         list.append(Item(kind: .coffee) { [weak self] in self?.openCoffee() })
@@ -334,7 +334,7 @@ final class AboutViewController: PageViewController {
             Item(kind: .section(String(localized: "Open Source"))),
             Item(kind: .row(String(localized: "Source Code"), "GitHub", chevron: true)) { [weak self] in self?.open(Links.source) },
             Item(kind: .row(String(localized: "License"), "GPL-2.0-or-later", chevron: true)) { [weak self] in self?.showLicenses() },
-            Item(kind: .paragraph(String(localized: "Classic Touch is free software, released under the GNU General Public License, version 2 or later. You are free to use, modify, and redistribute it, but it comes with no warranty."))),
+            Item(kind: .paragraph(String(localized: "Slide to Unlock is free software, released under the GNU General Public License, version 2 or later. You are free to use, modify, and redistribute it, but it comes with no warranty."))),
 
             Item(kind: .section(String(localized: "Acknowledgments"))),
             Item(kind: .row("qemu-ios", "GPL-2.0", chevron: true)) { [weak self] in self?.open(Links.qemuIOS) },
@@ -447,7 +447,7 @@ final class AboutHeaderCell: PaperCell {
         let icon = IconView()
         icon.translatesAutoresizingMaskIntoConstraints = false
         let name = Theme.label(Theme.text(28, .bold, .largeTitle), Theme.ink)
-        name.text = "Classic Touch"
+        name.text = "Slide to Unlock"
         name.accessibilityTraits = .header
         let version = Theme.label(Theme.text(13.5, .regular, .footnote), Theme.mid)
         version.text = PageViewController.version
@@ -608,7 +608,7 @@ final class CoffeeCell: PaperCell {
         let title = Theme.label(Theme.text(17, .semibold, .headline), Theme.paper, lines: 0)
         title.text = String(localized: "Buy Me a Coffee")
         let detail = Theme.label(Theme.text(13, .regular, .footnote), Theme.paper.withAlphaComponent(0.7), lines: 0)
-        detail.text = String(localized: "Classic Touch is an open-source project made in spare time. If you enjoy it, you can buy the developer a coffee.")
+        detail.text = String(localized: "Slide to Unlock is an open-source project made in spare time. If you enjoy it, you can buy the developer a coffee.")
         let stack = UIStackView(arrangedSubviews: [title, detail])
         stack.axis = .vertical
         stack.spacing = 3

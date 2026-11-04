@@ -192,7 +192,9 @@ final class Engine {
     }
 
     /// One-finger drag, timed in the guest's virtual milliseconds (much slower in real time under the interpreter, but the gesture keeps its shape).
-    func drag(from a: (Double, Double), to b: (Double, Double), milliseconds: Int64 = 600, steps: Int = 20) {
+    /// holdMilliseconds keeps the finger still at the end before lifting it.
+    func drag(from a: (Double, Double), to b: (Double, Double), milliseconds: Int64 = 600, steps: Int = 20,
+              holdMilliseconds: Int64 = 0) {
         var at: [Int64] = [], kind: [Int32] = [], value: [Int32] = [], phase: [Int32] = []
         var xs: [Double] = [], ys: [Double] = []
         for i in 0...steps {
@@ -204,7 +206,15 @@ final class Engine {
             xs.append(a.0 + (b.0 - a.0) * t)
             ys.append(a.1 + (b.1 - a.1) * t)
         }
-        at.append(milliseconds + 50)
+        for held in stride(from: Int64(100), to: holdMilliseconds, by: 100) {
+            at.append(milliseconds + held)
+            kind.append(1)
+            value.append(0)
+            phase.append(TouchPhase.update.rawValue)
+            xs.append(b.0)
+            ys.append(b.1)
+        }
+        at.append(milliseconds + holdMilliseconds + 50)
         kind.append(1)
         value.append(0)
         phase.append(TouchPhase.end.rawValue)

@@ -12,7 +12,7 @@ The project was called Classic Touch until 2026-11-04; internal names such as th
   <img src="docs/reports/img/m2gl-device-n90ap-7.1.2-stikdebug-jit256-home.png" width="200" alt="iOS 7.1.2 running in the app on an iPhone 18 Pro">
 </p>
 
-## Status (2026-11-04)
+## Status (2026-11-05)
 
 | Year | Emulated device | Chip | OS | Mac | App in the iOS Simulator | App on an iPhone |
 |---|---|---|---|---|---|---|
@@ -28,11 +28,11 @@ The project was called Classic Touch until 2026-11-04; internal names such as th
 | 2016 | iPhone 5 | **A6** (new machine) | iOS 10.3.4 | Settings, with wallpaper; wakes from screen off | Settings | 14 Pro, 102 s |
 
 - Times are from boot to the home screen. On both phones JIT comes from [StikDebug](https://github.com/StikDebug/StikDebug) on the phone, with no computer needed (LocalDevVPN has to be on). On the iPhone 14 Pro (iOS 27.0.1), StikDebug prepares the 256 MiB code buffer in about 1.2 s.
-- On the phone, the app's automatic slide-to-unlock for iOS 7 and 9 often fails, so 9.3.5 took 8 tries and 7.1.2 stayed on its lock screen; iOS 10 unlocks with a Home press. With JIT from a tethered Mac instead, 7.1.2 reached the home screen in 142 s.
+- On the phone, the app's automatic slide-to-unlock for iOS 7 and 9 is unreliable: every swipe reaches the guest, but its lock screen lags seconds behind the finger, so 9.3.5 needs anywhere from 3 to more than 10 swipes and 7.1.2 stays on its lock screen ([`docs/reports/touch-calibration.md`](docs/reports/touch-calibration.md)). iOS 10 unlocks with a Home press. With JIT from a tethered Mac instead, 7.1.2 reached the home screen in 142 s.
 - A5 and A6 are machines this project added to qemu-ios. As far as we know, no public emulator went past iOS 7.1.2 on the A4 before. See [`docs/reports/a5-step1.md`](docs/reports/a5-step1.md), [`docs/reports/a6-step1.md`](docs/reports/a6-step1.md), [`docs/reports/a6-app.md`](docs/reports/a6-app.md), [`docs/reports/ios-device-14pro.md`](docs/reports/ios-device-14pro.md) and [`docs/reports/stikdebug-14pro.md`](docs/reports/stikdebug-14pro.md).
 - Graphics run on the phone's own GPU (OpenGL ES). The app opens on a timeline of systems; tap one to boot it. Switching systems restarts the app.
 
-**Not done yet:** iOS 8; sound; multi-touch; downloading firmware and building devices on the phone itself. **Known issues:** the automatic slide-to-unlock on the phone (above); touch on the A5 is off by about 100 pixels vertically; iOS 10 shows the wrong battery level.
+**Not done yet:** iOS 8; sound; multi-touch; downloading firmware and building devices on the phone itself. **Known issues:** the automatic slide-to-unlock on the phone (above); iOS 10 shows the wrong battery level.
 
 ## How it works
 

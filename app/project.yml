@@ -20,7 +20,7 @@ targets:
     info:
       path: ClassicTouch/Info.plist
       properties:
-        CFBundleDisplayName: Classic Touch
+        CFBundleDisplayName: Unlock
         CFBundleShortVersionString: "0.1"
         CFBundleVersion: "1"
         UILaunchScreen: {}

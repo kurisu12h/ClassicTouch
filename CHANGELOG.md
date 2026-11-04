@@ -4,6 +4,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The
 
 ## Unreleased
 
+### 2026-11-05
+
+- **Touch is calibrated on the A5 and A6.** Taps used to land higher than aimed, more so toward the top of the screen (on iOS 10 the top could not be reached at all); now they land where aimed on iOS 7, 9 and 10, confirmed for iOS 10 on the iPhone 14 Pro. (`docs/reports/touch-calibration.md`)
+- **The app takes the new name**: "Unlock" under its icon, "Slide to Unlock" inside the app. The bundle ID is unchanged, so imported devices are kept.
+- The app's automatic slide to unlock for iOS 7 to 9 swipes across the lower middle of the lock screen, more slowly, and holds the finger before lifting. It unlocks on the Mac and in the simulator; on the phone it is still unreliable, because the guest's lock screen lags seconds behind the finger.
+
 ### 2026-11-04
 
 - **Renamed to Slide to Unlock** (was Classic Touch, which combined two Apple product names). The repository is now `kurisu12h/slide-to-unlock`; the old URL redirects. The repository is public.

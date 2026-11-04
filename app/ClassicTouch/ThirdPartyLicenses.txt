@@ -1,10 +1,10 @@
-Classic Touch and third-party license texts.
+Slide to Unlock and third-party license texts.
 The QEMU in the app (qemu-ios) statically links GLib, PCRE2, proxy-libintl, pixman, libslirp, OpenSSL, Nettle and libffi.
 This file is put together from the repository's LICENSE, upstream/, and the licenses collected by scripts/ios/build-deps.sh (work/ios/sysroot-*/share/licenses/).
 StikDebug (AGPL-3.0) is a separately installed app and is not part of this app.
 
 ====================================
-Classic Touch: GNU GPL 2.0 or later
+Slide to Unlock: GNU GPL 2.0 or later
 (LICENSE)
 ====================================
 

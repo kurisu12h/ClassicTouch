@@ -6,10 +6,11 @@
 # EmulatorViewController.pollControl), so no Simulator tapping tool is needed.
 #
 # Usage: scripts/ios/sim-settings.sh <device id> <normalized x,y of the Settings icon> [maximum seconds, default 400]
-#   iPod touch 5G: taps land about 100 pixels above the aim point (docs/reports/a5-app.md 2.1), so aim that much lower;
-#   Settings on the 9.3.5 home screen is at (244,830), so pass 0.381,0.819. The home screen sometimes first shows
-#   lockdownd's "Trust This Computer?" (modal, blocks taps); once it is recognized, tap its "Don't Trust" first (aim
-#   lower the same way: TRUST_TAP, default 0.711,0.691).
+#   Pass the center of the Settings icon: 0.380,0.719 on 9.3.5, 0.128,0.735 on 7.1.2 (iPod touch 5), 0.619,0.722 on
+#   10.3.4 (iPhone 5). The home screen sometimes first shows lockdownd's "Trust This Computer?" (modal, blocks taps);
+#   once it is recognized, tap its "Don't Trust" first (TRUST_TAP, default 0.713,0.603, the button's center on 9.3.5).
+#   Until 2026-11-05 taps on these machines landed above the aim and the coordinates here were moved down to make up
+#   for it (docs/reports/touch-calibration.md).
 # Environment: SIM_UDID (default work/ios/sim-udid). Results: the app's run directory is copied to
 # work/ios/runs/<run directory name>/.
 set -euo pipefail
@@ -37,7 +38,7 @@ done
 [ -n "$R" ] || { echo "The app did not create a run directory" >&2; exit 1; }
 echo "Run directory: $R"
 
-TRUST_TAP="${TRUST_TAP:-0.711,0.691}"
+TRUST_TAP="${TRUST_TAP:-0.713,0.603}"
 lock="" home="" tapped="" settings="" seen="" last_try=0 trust=""
 t0=$(date +%s)
 while [ $(($(date +%s) - t0)) -lt "$LIMIT" ] && [ -z "$settings" ]; do

@@ -26,6 +26,9 @@
 #              PERF=1 (QEMU logs the time spent in the GL bridge, the display and frame publishing every second,
 #              IT_PERF=1),
 #              QEMUENV (extra environment variables for QEMU, a JSON object, for example {"IT_GLES_STRICT": "0"})
+#              QEMUARGS (extra QEMU arguments in STIK mode, for example "-d trace:ipod_touch_multitouch_log", whose
+#              output goes to the run's qemu.log),
+#              GUESTPNG (seconds between guest screenshots in STIK mode, default 5),
 #              FILES (afc or devicectl: how files in the app container are moved; AFC by default when idevice-tools
 #              is there, devicectl otherwise; see devfiles.sh),
 #              AUTODRIVE (1 makes the app recognize the lock and home screens itself; default 1 in StikDebug mode and
@@ -130,9 +133,9 @@ if [ "${STIK:-0}" = 1 ]; then
     flag() { [ "${1:-0}" = 1 ] && echo true || echo false; }
     QEMUENV_JSON="${QEMUENV:-}"
     [ -n "$QEMUENV_JSON" ] || QEMUENV_JSON='{}'
-    printf '{"device": "%s", "tcg": "%s", "tbsize": %s, "guestpng": 5, "resetstate": true, "waitdebugger": true, "autodrive": true, "idle": %s, "opensettings": %s, "usbkbd": %s, "swipetest": %s, "perf": %s, "qemuenv": %s}\n' \
-        "$DEVICE" "$TCG" "${TBSIZE:-256}" "$IDLE" "$(flag "${OPENSETTINGS:-0}")" "$(flag "${USBKBD:-0}")" \
-        "$(flag "${SWIPETEST:-0}")" "$(flag "${PERF:-0}")" "$QEMUENV_JSON" > "$cfg"
+    printf '{"device": "%s", "tcg": "%s", "tbsize": %s, "guestpng": %s, "resetstate": true, "waitdebugger": true, "autodrive": true, "idle": %s, "opensettings": %s, "usbkbd": %s, "swipetest": %s, "perf": %s, "qemuenv": %s, "qemuargs": "%s"}\n' \
+        "$DEVICE" "$TCG" "${TBSIZE:-256}" "${GUESTPNG:-5}" "$IDLE" "$(flag "${OPENSETTINGS:-0}")" "$(flag "${USBKBD:-0}")" \
+        "$(flag "${SWIPETEST:-0}")" "$(flag "${PERF:-0}")" "$QEMUENV_JSON" "${QEMUARGS:-}" > "$cfg"
     dput "$cfg" /Documents/autostart.json
     rm -f "$cfg"
     # Stop the app if it is still running, so that StikDebug launches it again

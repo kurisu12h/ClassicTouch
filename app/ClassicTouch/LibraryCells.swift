@@ -43,7 +43,7 @@ final class LibraryHeaderCell: PaperCell {
         selectionStyle = .none
         rule.isHidden = true
         let app = Theme.label(Theme.text(15, .semibold, .subheadline), Theme.ink)
-        app.text = "Classic Touch"
+        app.text = "Slide to Unlock"
         let title = Theme.label(Theme.text(31, .bold, .largeTitle), Theme.ink)
         title.text = String(localized: "Systems")
         title.accessibilityTraits = .header

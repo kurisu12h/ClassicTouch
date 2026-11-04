@@ -163,12 +163,12 @@
         }
       }
     },
-    "About Classic Touch" : {
+    "About Slide to Unlock" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "关于 Classic Touch"
+            "value" : "关于 Slide to Unlock"
           }
         }
       }
@@ -320,26 +320,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "写不了 %@：errno %d"
-          }
-        }
-      }
-    },
-    "Classic Touch is an open-source project made in spare time. If you enjoy it, you can buy the developer a coffee." : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Classic Touch 是业余时间做的开源项目。喜欢的话，可以请开发者喝杯咖啡。"
-          }
-        }
-      }
-    },
-    "Classic Touch is free software, released under the GNU General Public License, version 2 or later. You are free to use, modify, and redistribute it, but it comes with no warranty." : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Classic Touch 是自由软件，按 GNU 通用公共许可证第 2 版或更新版本发布。可以自由使用、修改和再分发，但不提供任何担保。"
           }
         }
       }
@@ -940,6 +920,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "已关机。再开一次要重新打开 App，点下面的系统即可。"
+          }
+        }
+      }
+    },
+    "Slide to Unlock is an open-source project made in spare time. If you enjoy it, you can buy the developer a coffee." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Slide to Unlock 是业余时间做的开源项目。喜欢的话，可以请开发者喝杯咖啡。"
+          }
+        }
+      }
+    },
+    "Slide to Unlock is free software, released under the GNU General Public License, version 2 or later. You are free to use, modify, and redistribute it, but it comes with no warranty." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Slide to Unlock 是自由软件，按 GNU 通用公共许可证第 2 版或更新版本发布。可以自由使用、修改和再分发，但不提供任何担保。"
           }
         }
       }

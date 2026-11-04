@@ -599,10 +599,10 @@ index eaada66cad..eb6ddb0f28 100644
          if (gles_host_refuse("guest-read:fault-dropped")) {
 diff --git a/hw/arm/ipod_touch_5g.c b/hw/arm/ipod_touch_5g.c
 new file mode 100644
-index 0000000000..a778cd3a47
+index 0000000000..220bc80fdf
 --- /dev/null
 +++ b/hw/arm/ipod_touch_5g.c
-@@ -0,0 +1,734 @@
+@@ -0,0 +1,740 @@
 +/*
 + * iPod touch 5G (N78AP, S5L8942X "A5", -M iPod-Touch-5G) and iPhone 5 (N41AP, S5L8950X "A6", -M iPhone-5).
 + *
@@ -729,8 +729,11 @@ index 0000000000..a778cd3a47
 + * The iPod touch 5's sensor: an N1-class part the kernel drives as AppleMultitouchN1SPI
 + * (multi-touch,n78), whose firmware mtmergeprops loads from N78.mtprops' "C1F58,1" entry: family 0x58,
 + * "Constructed Firmware Version" 0x0264, 61520 bytes in one SPI burst. Rows and columns are the A4 iPod's;
-+ * the surface is the 4-inch panel's (640x1136 at 326 ppi, 49.9 x 88.6 mm), and the frame the N81's
-+ * scaled to 1136 lines, not measured.
++ * the surface is the 4-inch panel's (640x1136 at 326 ppi, 49.9 x 88.6 mm). x is the N81's measured frame;
++ * y is the n41's measured one (below), checked on 13G36: taps at icon centers from the top row to the dock
++ * open their apps. With the N81's frame scaled to 1136 lines, taps had landed on 1.28 y - c here too, which
++ * the old reading of "about 100 px high" (a5-app.md 2.1) took for a plain offset
++ * (docs/reports/touch-calibration.md).
 + */
 +static const MTSensorProfile mt_profile_n78 = {
 +    .family_id = 0x58,
@@ -741,14 +744,17 @@ index 0000000000..a778cd3a47
 +    .region_desc = { MT_SENSOR_REGION_DESC }, .region_desc_len = 1,
 +    .region_param = { MT_SENSOR_REGION_PARAM }, .region_param_len = 1,
 +    .frame_x0 = -69, .frame_width = 4748,
-+    .frame_y0 = -254, .frame_height = 8709,
++    .frame_y0 = -373, .frame_height = 6804,
 +};
 +
 +/*
 + * The iPhone 5's: 14G61's N41.mtprops has one entry, "C1F57,1" (firmware 0x0266, 64340 bytes), and the kernel's
 + * N41 personality is AppleMultitouchSPIC1F57's, so family 0x57. Answering as the iPod's 0x58, the firmware
 + * still goes down but iOS 10 (which dropped the iPod touch 5) never turns a frame into a touch (a6-step1.md
-+ * 15.2). The same 4-inch panel, so the n78's geometry.
++ * 15.2). The same 4-inch panel, so the n78's surface. x keeps the N81's measured frame (the same 640 px width).
++ * y measured on 14G61 (docs/reports/touch-calibration.md): with the n78's frame, iOS 10 put a tap aimed at
++ * panel line y on 1.28 y - 338, so the top 260 lines could not be reached and taps landed further up the higher
++ * they were. Solved for y = -373 + 6804v (the sensor's y runs bottom-up).
 + */
 +static const MTSensorProfile mt_profile_n41 = {
 +    .family_id = 0x57,
@@ -759,7 +765,7 @@ index 0000000000..a778cd3a47
 +    .region_desc = { MT_SENSOR_REGION_DESC }, .region_desc_len = 1,
 +    .region_param = { MT_SENSOR_REGION_PARAM }, .region_param_len = 1,
 +    .frame_x0 = -69, .frame_width = 4748,
-+    .frame_y0 = -254, .frame_height = 8709,
++    .frame_y0 = -373, .frame_height = 6804,
 +};
 +
 +/* The sensor's ATN: DT multi-touch interrupts 0x15 on the GPIO controller, pin 0x205 as on the A4. */
